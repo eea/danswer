@@ -52,7 +52,6 @@ export const Header: React.FC<HeaderProps> = ({ user }) => {
       document.removeEventListener("click", handleClickOutside);
     };
   }, [dropdownOpen]);
-
   return (
     <header className="border-b border-border bg-background-emphasis">
       <div className="mx-8 flex h-16">
@@ -90,35 +89,46 @@ export const Header: React.FC<HeaderProps> = ({ user }) => {
 
         <div className="ml-auto h-full flex flex-col">
           <div className="my-auto">
-            <CustomDropdown
-              dropdown={
-                <div
-                  className={
-                    "absolute right-0 mt-2 bg-background rounded border border-border " +
-                    "w-48 overflow-hidden shadow-xl z-10 text-sm"
-                  }
-                >
-                  {/* Show connector option if (1) auth is disabled or (2) user is an admin */}
-                  {(!user || user.role === "admin") && (
-                    <Link href="/admin/indexing/status">
-                      <DefaultDropdownElement name="Admin Panel" />
-                    </Link>
-                  )}
-                  {user && (
-                    <DefaultDropdownElement
-                      name="Logout"
-                      onSelect={handleLogout}
-                    />
-                  )}
+            { user && user.email !== "guest@guest.com" &&
+              <CustomDropdown
+                dropdown={
+                  <div
+                    className={
+                      "absolute right-0 mt-2 bg-background rounded border border-border " +
+                      "w-48 overflow-hidden shadow-xl z-10 text-sm"
+                    }
+                  >
+                    {/* Show connector option if (1) auth is disabled or (2) user is an admin */}
+                    {(!user || user.role === "admin") && (
+                      <Link href="/admin/indexing/status">
+                        <DefaultDropdownElement name="Admin Panel" />
+                      </Link>
+                    )}
+                    {user && (
+                      <DefaultDropdownElement
+                        name="Logout"
+                        onSelect={handleLogout}
+                      />
+                    )}
+                  </div>
+                }
+              >
+                <div className="hover:bg-hover rounded p-1 w-fit">
+                  <div className="my-auto bg-user text-sm rounded-lg px-1.5 select-none">
+                    {user && user.email ? user.email[0].toUpperCase() : "A"}
+                  </div>
                 </div>
-              }
-            >
-              <div className="hover:bg-hover rounded p-1 w-fit">
-                <div className="my-auto bg-user text-sm rounded-lg px-1.5 select-none">
-                  {user && user.email ? user.email[0].toUpperCase() : "A"}
+              </CustomDropdown>
+            }
+            { user && user.email === "guest@guest.com" &&
+              <Link href="#" onClick={handleLogout}>
+                <div className="hover:bg-hover rounded p-1 w-fit">
+                  <div className="my-auto bg-user text-sm rounded-lg px-1.5 select-none">
+                    Login
+                  </div>
                 </div>
-              </div>
-            </CustomDropdown>
+              </Link>
+            }
           </div>
         </div>
       </div>

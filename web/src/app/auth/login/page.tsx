@@ -13,6 +13,7 @@ import { EmailPasswordForm } from "./EmailPasswordForm";
 import { Card, Title, Text } from "@tremor/react";
 import Link from "next/link";
 import { Footer } from "@/components/Footer";
+import { GuestLogin } from "./GuestLogin";
 
 const Page = async ({
   searchParams,
@@ -100,6 +101,9 @@ const Page = async ({
                     Create an account
                   </Link>
                 </Text>
+              </div>
+              <div className="flex">
+                <GuestLogin></GuestLogin>
               </div>
             </Card>
           )}

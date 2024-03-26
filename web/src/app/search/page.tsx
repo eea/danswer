@@ -24,6 +24,7 @@ import { personaComparator } from "../admin/personas/lib";
 import { FullEmbeddingModelResponse } from "../admin/models/embedding/embeddingModels";
 import { NoSourcesModal } from "@/components/initialSetup/search/NoSourcesModal";
 import { NoCompleteSourcesModal } from "@/components/initialSetup/search/NoCompleteSourceModal";
+import { GuestDisclaimerModal } from "@/components/search/GuestDisclaimerModal";
 import { UserDisclaimerModal } from "@/components/search/UserDisclaimerModal";
 
 export default async function Home() {
@@ -143,12 +144,22 @@ export default async function Home() {
     !shouldDisplayNoSourcesModal &&
     !shouldShowWelcomeModal;
 
+  let shouldDisplayGuestDisclaimerModal = true;
+  let shouldDisplayUserDisclaimerModal = false;
+  if (!authDisabled){
+    if (user?.email !== "guest@guest.com"){
+      shouldDisplayGuestDisclaimerModal = false;
+      shouldDisplayUserDisclaimerModal = true;
+    }
+  }
+
   return (
     <>
       <Header user={user} />
       <div className="m-3">
         <HealthCheckBanner />
       </div>
+
       {shouldShowWelcomeModal && <WelcomeModal />}
       {!shouldShowWelcomeModal &&
         !shouldDisplayNoSourcesModal &&
@@ -158,7 +169,8 @@ export default async function Home() {
         <NoCompleteSourcesModal ccPairs={ccPairs} />
       )}
 
-      <UserDisclaimerModal />
+      {shouldDisplayGuestDisclaimerModal && <GuestDisclaimerModal />}
+      {shouldDisplayUserDisclaimerModal && <UserDisclaimerModal />}
       <InstantSSRAutoRefresh />
 
       <div className="px-24 pt-10 flex flex-col items-center min-h-screen overflow-y-auto">
