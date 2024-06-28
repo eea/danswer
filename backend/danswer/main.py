@@ -94,6 +94,7 @@ from shared_configs.configs import MODEL_SERVER_PORT
 
 
 from danswer.server.eea_config.eea_config_backend import router as eea_config_router
+from danswer.server.llm_guard.llm_guard import router as llm_guard
 
 logger = setup_logger()
 
@@ -290,6 +291,8 @@ def get_application() -> FastAPI:
     include_router_with_global_prefix_prepended(application, llm_router)
 
     include_router_with_global_prefix_prepended(application, eea_config_router)
+    include_router_with_global_prefix_prepended(application, llm_guard)
+
 
     if AUTH_TYPE == AuthType.DISABLED:
         # Server logs this during auth setup verification step
