@@ -1,4 +1,5 @@
 import platform
+import re
 import socket
 from enum import auto
 from enum import Enum
@@ -44,6 +45,12 @@ DISABLED_GEN_AI_MSG = (
     "You can still use Onyx as a search engine."
 )
 
+#####
+# Version Pattern Configs
+#####
+# Version patterns for Docker image tags
+STABLE_VERSION_PATTERN = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+DEV_VERSION_PATTERN = re.compile(r"^v(\d+)\.(\d+)\.(\d+)-beta\.(\d+)$")
 
 DEFAULT_PERSONA_ID = 0
 DEFAULT_CC_PAIR_ID = 1
