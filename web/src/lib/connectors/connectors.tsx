@@ -427,6 +427,11 @@ export const connectorConfigs: Record<
     values: [],
     advanced_values: [],
   },
+  outline: {
+    description: "Configure Outline connector",
+    values: [],
+    advanced_values: [],
+  },
   confluence: {
     description: "Configure Confluence connector",
     initialConnectorName: "cloud_name",
@@ -1597,6 +1602,8 @@ export interface GoogleDriveConfig {
 export interface GmailConfig {}
 
 export interface BookstackConfig {}
+
+export interface OutlineConfig {}
 
 export interface ConfluenceConfig {
   wiki_base: string;

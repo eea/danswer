@@ -1,5 +1,4 @@
 import platform
-import re
 import socket
 from enum import auto
 from enum import Enum
@@ -45,12 +44,6 @@ DISABLED_GEN_AI_MSG = (
     "You can still use Onyx as a search engine."
 )
 
-#####
-# Version Pattern Configs
-#####
-# Version patterns for Docker image tags
-STABLE_VERSION_PATTERN = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
-DEV_VERSION_PATTERN = re.compile(r"^v(\d+)\.(\d+)\.(\d+)-beta\.(\d+)$")
 
 DEFAULT_PERSONA_ID = 0
 DEFAULT_CC_PAIR_ID = 1
@@ -228,6 +221,9 @@ class BlobType(str, Enum):
     S3 = "s3"
     GOOGLE_CLOUD_STORAGE = "google_cloud_storage"
     OCI_STORAGE = "oci_storage"
+
+    # Special case, for internet search
+    NOT_APPLICABLE = "not_applicable"
 
 
 class DocumentIndexType(str, Enum):
