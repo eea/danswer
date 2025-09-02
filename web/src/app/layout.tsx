@@ -32,6 +32,7 @@ import Error from "@/components/errorPages/ErrorPage";
 
 import AccessRestrictedPage from "@/components/errorPages/AccessRestrictedPage";
 import { fetchAssistantData } from "@/lib/chat/fetchAssistantdata";
+import { TooltipProvider } from "@/components/ui/tooltip";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -129,7 +130,9 @@ export default async function RootLayout({
           disableTransitionOnChange
         >
           <div className="text-text min-h-screen bg-background">
-            <PHProvider>{content}</PHProvider>
+            <TooltipProvider>
+              <PHProvider>{content}</PHProvider>
+            </TooltipProvider>
           </div>
         </ThemeProvider>
       </body>
