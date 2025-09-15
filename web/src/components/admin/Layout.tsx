@@ -66,6 +66,7 @@ export async function Layout({ children }: { children: React.ReactNode }) {
     ccPairs,
     inputPrompts,
     proSearchToggled,
+    availableTools,
   } = data;
 
   return (
@@ -79,6 +80,7 @@ export async function Layout({ children }: { children: React.ReactNode }) {
         availableSources,
         ccPairs,
         documentSets,
+        availableTools,
         tags,
         availableDocumentSets: documentSets,
         availableTags: tags,
