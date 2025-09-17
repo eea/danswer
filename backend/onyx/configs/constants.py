@@ -470,6 +470,8 @@ class OnyxCeleryTask:
 
     AUTOGENERATE_USAGE_REPORT_TASK = "autogenerate_usage_report_task"
 
+    EVAL_RUN_TASK = "eval_run_task"
+
     EXPORT_QUERY_HISTORY_TASK = "export_query_history_task"
     EXPORT_QUERY_HISTORY_CLEANUP_TASK = "export_query_history_cleanup_task"
 
