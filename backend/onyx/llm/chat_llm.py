@@ -26,6 +26,7 @@ from langchain_core.messages.tool import ToolMessage
 from langchain_core.prompt_values import PromptValue
 from litellm.utils import get_supported_openai_params
 
+from onyx.configs.app_configs import BRAINTRUST_ENABLED
 from onyx.configs.app_configs import LOG_DANSWER_MODEL_INTERACTIONS
 from onyx.configs.app_configs import MOCK_LLM_RESPONSE
 from onyx.configs.chat_configs import QA_TIMEOUT
@@ -42,7 +43,6 @@ from onyx.server.utils import mask_string
 from onyx.utils.logger import setup_logger
 from onyx.utils.long_term_log import LongTermLogger
 
-
 logger = setup_logger()
 
 # If a user configures a different model and it doesn't support all the same
@@ -50,6 +50,9 @@ logger = setup_logger()
 litellm.drop_params = True
 litellm.telemetry = False
 litellm.enable_preview_features = True
+
+if BRAINTRUST_ENABLED:
+    litellm.callbacks = ["braintrust"]
 
 _LLM_PROMPT_LONG_TERM_LOG_CATEGORY = "llm_prompt"
 VERTEX_CREDENTIALS_FILE_KWARG = "vertex_credentials"
