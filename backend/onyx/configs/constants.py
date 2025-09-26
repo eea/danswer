@@ -5,8 +5,6 @@ from enum import Enum
 
 ONYX_DEFAULT_APPLICATION_NAME = "EEA GPT Lab"
 ONYX_SLACK_URL = "https://join.slack.com/t/onyx-dot-app/shared_invite/zt-2twesxdr6-5iQitKZQpgq~hYIZ~dv3KA"
-SLACK_USER_TOKEN_PREFIX = "xoxp-"
-SLACK_BOT_TOKEN_PREFIX = "xoxb-"
 ONYX_EMAILABLE_LOGO_MAX_DIM = 512
 
 SOURCE_TYPE = "source_type"
@@ -471,8 +469,6 @@ class OnyxCeleryTask:
     PERFORM_TTL_MANAGEMENT_TASK = "perform_ttl_management_task"
 
     AUTOGENERATE_USAGE_REPORT_TASK = "autogenerate_usage_report_task"
-
-    EVAL_RUN_TASK = "eval_run_task"
 
     EXPORT_QUERY_HISTORY_TASK = "export_query_history_task"
     EXPORT_QUERY_HISTORY_CLEANUP_TASK = "export_query_history_cleanup_task"
