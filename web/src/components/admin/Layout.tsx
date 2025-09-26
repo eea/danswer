@@ -65,6 +65,7 @@ export async function Layout({ children }: { children: React.ReactNode }) {
     inputPrompts,
     proSearchToggled,
     availableTools,
+    projects,
   } = data;
 
   return (
@@ -85,6 +86,7 @@ export async function Layout({ children }: { children: React.ReactNode }) {
         llmProviders,
         shouldShowWelcomeModal,
         defaultAssistantId,
+        projects,
       }}
     >
       <ClientLayout
