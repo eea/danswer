@@ -4,7 +4,6 @@ import { use } from "react";
 import { ErrorCallout } from "@/components/ErrorCallout";
 //import { useDocumentSets } from "../hooks";
 import {
-  useConnectorCredentialIndexingStatus,
   useUserGroups,
 } from "@/lib/hooks";
 import { ThreeDotsLoader } from "@/components/Loading";

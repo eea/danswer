@@ -10,7 +10,7 @@ SKIP_WARM_UP=True
 
 # Always keep these on for Dev
 # Logs all model prompts to stdout
-LOG_DANSWER_MODEL_INTERACTIONS=True
+LOG_ONYX_MODEL_INTERACTIONS=True
 # More verbose logging
 LOG_LEVEL=debug
 
@@ -23,6 +23,9 @@ DISABLE_LLM_DOC_RELEVANCE=False
 # Useful if you want to toggle auth on/off (google_oauth/OIDC specifically)
 OAUTH_CLIENT_ID=<REPLACE THIS>
 OAUTH_CLIENT_SECRET=<REPLACE THIS>
+OPENID_CONFIG_URL=<REPLACE THIS>
+SAML_CONF_DIR=/<ABSOLUTE PATH TO ONYX>/onyx/backend/ee/onyx/configs/saml_config
+
 # Generally not useful for dev, we don't generally want to set up an SMTP server for dev
 REQUIRE_EMAIL_VERIFICATION=False
 
@@ -36,8 +39,8 @@ FAST_GEN_AI_MODEL_VERSION=gpt-4o
 
 # For Danswer Slack Bot, overrides the UI values so no need to set this up via UI every time
 # Only needed if using DanswerBot
-#DANSWER_BOT_SLACK_APP_TOKEN=<REPLACE THIS>
-#DANSWER_BOT_SLACK_BOT_TOKEN=<REPLACE THIS>
+#ONYX_BOT_SLACK_APP_TOKEN=<REPLACE THIS>
+#ONYX_BOT_SLACK_BOT_TOKEN=<REPLACE THIS>
 
 
 # Python stuff
@@ -46,7 +49,6 @@ PYTHONUNBUFFERED=1
 
 
 # Internet Search
-BING_API_KEY=<REPLACE THIS>
 EXA_API_KEY=<REPLACE THIS>
 
 
@@ -65,3 +67,12 @@ S3_ENDPOINT_URL=http://localhost:9004
 S3_FILE_STORE_BUCKET_NAME=onyx-file-store-bucket
 S3_AWS_ACCESS_KEY_ID=minioadmin
 S3_AWS_SECRET_ACCESS_KEY=minioadmin
+
+# Show extra/uncommon connectors
+SHOW_EXTRA_CONNECTORS=True
+
+# Local langsmith tracing
+LANGSMITH_TRACING="true"
+LANGSMITH_ENDPOINT="https://api.smith.langchain.com"
+LANGSMITH_API_KEY=<REPLACE_THIS>
+LANGSMITH_PROJECT=<REPLACE_THIS>

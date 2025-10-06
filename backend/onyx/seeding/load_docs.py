@@ -21,6 +21,7 @@ from onyx.db.connector import create_connector
 from onyx.db.connector_credential_pair import add_credential_to_connector
 from onyx.db.credentials import PUBLIC_CREDENTIAL_ID
 from onyx.db.document import check_docs_exist
+from onyx.db.document import mark_document_as_indexed_for_cc_pair__no_commit
 from onyx.db.enums import AccessType
 from onyx.db.enums import ConnectorCredentialPairStatus
 from onyx.db.index_attempt import mock_successful_index_attempt
@@ -98,8 +99,7 @@ def _create_indexable_chunks(
             tenant_id=tenant_id if MULTI_TENANT else POSTGRES_DEFAULT_SCHEMA,
             access=default_public_access,
             document_sets=set(),
-            user_file=None,
-            user_folder=None,
+            user_project=[],
             boost=DEFAULT_BOOST,
             large_chunk_id=None,
             image_file_id=None,
@@ -177,11 +177,11 @@ def seed_initial_documents(
     # Create a connector so the user can delete it if they want
     # or reindex it with a new search model if they want
     connector_data = ConnectorBase(
-        name="Sample Use Cases",
+        name="Onyx Docs Overview",
         source=DocumentSource.WEB,
         input_type=InputType.LOAD_STATE,
         connector_specific_config={
-            "base_url": "https://docs.onyx.app/more/use_cases",
+            "base_url": "https://docs.onyx.app/",
             "web_connector_type": "recursive",
         },
         refresh_freq=None,  # Never refresh by default
@@ -263,6 +263,14 @@ def seed_initial_documents(
             .where(DbDocument.id == doc.id)
             .values(chunk_count=doc.chunk_count)
         )
+
+    # Since we bypass the indexing flow, we need to manually mark the document as indexed
+    mark_document_as_indexed_for_cc_pair__no_commit(
+        connector_id=connector_id,
+        credential_id=PUBLIC_CREDENTIAL_ID,
+        document_ids=[doc.id for doc in docs],
+        db_session=db_session,
+    )
 
     db_session.commit()
     kv_store.store(KV_DOCUMENTS_SEEDED_KEY, True)

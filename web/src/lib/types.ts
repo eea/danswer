@@ -3,6 +3,15 @@ import { Credential } from "./connectors/credentials";
 import { Connector } from "./connectors/connectors";
 import { ConnectorCredentialPairStatus } from "@/app/admin/connector/[ccPairId]/types";
 
+export interface UserSpecificAssistantPreference {
+  disabled_tool_ids?: number[];
+}
+
+export type UserSpecificAssistantPreferences = Record<
+  number,
+  UserSpecificAssistantPreference
+>;
+
 interface UserPreferences {
   chosen_assistants: number[] | null;
   visible_assistants: number[];
@@ -173,6 +182,43 @@ export interface ConnectorIndexingStatus<
   in_repeated_error_state: boolean;
   latest_index_attempt: IndexAttemptSnapshot | null;
   docs_indexed: number;
+}
+
+export interface ConnectorIndexingStatusLite {
+  cc_pair_id: number;
+  name: string | null;
+  source: ValidSources;
+  access_type: AccessType;
+  in_progress: boolean;
+  cc_pair_status: ConnectorCredentialPairStatus;
+  last_finished_status: ValidStatuses | null;
+  last_status: ValidStatuses | null;
+  last_success: string | null;
+  is_editable: boolean;
+  docs_indexed: number;
+  in_repeated_error_state: boolean;
+  latest_index_attempt_docs_indexed: number | null;
+}
+
+export interface FederatedConnectorStatus {
+  id: number;
+  source: ValidSources;
+  name: string;
+}
+
+export interface SourceSummary {
+  total_connectors: number;
+  active_connectors: number;
+  public_connectors: number;
+  total_docs_indexed: number;
+}
+
+export interface ConnectorIndexingStatusLiteResponse {
+  source: ValidSources;
+  summary: SourceSummary;
+  current_page: number;
+  total_pages: number;
+  indexing_statuses: (ConnectorIndexingStatusLite | FederatedConnectorStatus)[];
 }
 
 export interface FederatedConnectorDetail {
@@ -367,11 +413,13 @@ export type SlackBot = {
   }>;
   bot_token: string;
   app_token: string;
+  user_token?: string;
 };
 
 export interface SlackBotTokens {
   bot_token: string;
   app_token: string;
+  user_token?: string;
 }
 
 /* EE Only Types */
@@ -395,6 +443,7 @@ export enum ValidSources {
   GoogleDrive = "google_drive",
   Gmail = "gmail",
   Bookstack = "bookstack",
+  Outline = "outline",
   Confluence = "confluence",
   Jira = "jira",
   Productboard = "productboard",
@@ -407,6 +456,7 @@ export enum ValidSources {
   Hubspot = "hubspot",
   Document360 = "document360",
   File = "file",
+  UserFile = "user_file",
   GoogleSites = "google_sites",
   Loopio = "loopio",
   Dropbox = "dropbox",
@@ -435,6 +485,7 @@ export enum ValidSources {
   Gitbook = "gitbook",
   Highspot = "highspot",
   Imap = "imap",
+  Bitbucket = "bitbucket",
 
   // Federated Connectors
   FederatedSlack = "federated_slack",
@@ -451,11 +502,13 @@ export const federatedSourceToRegularSource = (
 
 export const validAutoSyncSources = [
   ValidSources.Confluence,
+  ValidSources.Jira,
   ValidSources.GoogleDrive,
   ValidSources.Gmail,
   ValidSources.Slack,
   ValidSources.Salesforce,
   ValidSources.GitHub,
+  ValidSources.Sharepoint,
 ] as const;
 
 // Create a type from the array elements
@@ -466,6 +519,7 @@ export type ConfigurableSources = Exclude<
   | ValidSources.NotApplicable
   | ValidSources.IngestionApi
   | ValidSources.FederatedSlack // is part of ValiedSources.Slack
+  | ValidSources.UserFile
 >;
 
 export const oauthSupportedSources: ConfigurableSources[] = [
@@ -499,4 +553,15 @@ export interface FederatedConnectorCreateRequest {
 export interface FederatedConnectorCreateResponse {
   id: number;
   source: string;
+}
+
+export interface IndexingStatusRequest {
+  secondary_index?: boolean;
+  access_type_filters?: string[];
+  last_status_filters?: string[];
+  docs_count_operator?: ">" | "<" | "=" | null;
+  docs_count_value?: number | null;
+  source_to_page?: Record<ValidSources, number>;
+  source?: ValidSources;
+  get_all_connectors?: boolean;
 }

@@ -27,6 +27,26 @@ CLOUD_DOC_PERMISSION_SYNC_MULTIPLIER_DEFAULT = 1.0
 # tasks that run in either self-hosted on cloud
 beat_task_templates: list[dict] = [
     {
+        "name": "check-for-user-file-processing",
+        "task": OnyxCeleryTask.CHECK_FOR_USER_FILE_PROCESSING,
+        "schedule": timedelta(seconds=20),
+        "options": {
+            "priority": OnyxCeleryPriority.MEDIUM,
+            "expires": BEAT_EXPIRES_DEFAULT,
+            "queue": OnyxCeleryQueues.USER_FILE_PROCESSING,
+        },
+    },
+    {
+        "name": "user-file-docid-migration",
+        "task": OnyxCeleryTask.USER_FILE_DOCID_MIGRATION,
+        "schedule": timedelta(minutes=1),
+        "options": {
+            "priority": OnyxCeleryPriority.LOW,
+            "expires": BEAT_EXPIRES_DEFAULT,
+            "queue": OnyxCeleryQueues.USER_FILE_PROCESSING,
+        },
+    },
+    {
         "name": "check-for-kg-processing",
         "task": OnyxCeleryTask.CHECK_KG_PROCESSING,
         "schedule": timedelta(seconds=60),
@@ -63,6 +83,15 @@ beat_task_templates: list[dict] = [
         },
     },
     {
+        "name": "check-for-index-attempt-cleanup",
+        "task": OnyxCeleryTask.CHECK_FOR_INDEX_ATTEMPT_CLEANUP,
+        "schedule": timedelta(hours=1),
+        "options": {
+            "priority": OnyxCeleryPriority.LOW,
+            "expires": BEAT_EXPIRES_DEFAULT,
+        },
+    },
+    {
         "name": "check-for-connector-deletion",
         "task": OnyxCeleryTask.CHECK_FOR_CONNECTOR_DELETION,
         "schedule": timedelta(seconds=20),
@@ -75,17 +104,6 @@ beat_task_templates: list[dict] = [
         "name": "check-for-vespa-sync",
         "task": OnyxCeleryTask.CHECK_FOR_VESPA_SYNC_TASK,
         "schedule": timedelta(seconds=20),
-        "options": {
-            "priority": OnyxCeleryPriority.MEDIUM,
-            "expires": BEAT_EXPIRES_DEFAULT,
-        },
-    },
-    {
-        "name": "check-for-user-file-folder-sync",
-        "task": OnyxCeleryTask.CHECK_FOR_USER_FILE_FOLDER_SYNC,
-        "schedule": timedelta(
-            days=1
-        ),  # This should essentially always be triggered manually for user folder updates.
         "options": {
             "priority": OnyxCeleryPriority.MEDIUM,
             "expires": BEAT_EXPIRES_DEFAULT,

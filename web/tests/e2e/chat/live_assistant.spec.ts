@@ -4,7 +4,7 @@ import {
   navigateToAssistantInHistorySidebar,
   sendMessage,
   startNewChat,
-  switchModel,
+  verifyAssistantIsChosen,
 } from "../utils/chatActions";
 
 test("Chat workflow", async ({ page }) => {
@@ -14,30 +14,16 @@ test("Chat workflow", async ({ page }) => {
 
   // Navigate to the chat page
   await page.goto("http://localhost:3000/chat");
+  await page.waitForLoadState("networkidle");
 
-  // Test interaction with the Art assistant
-  await navigateToAssistantInHistorySidebar(
-    page,
-    "[-3]",
-    "Assistant for generating"
-  );
+  // Test interaction with the Default assistant
   await sendMessage(page, "Hi");
 
   // Start a new chat session
   await startNewChat(page);
 
   // Verify the presence of the expected text
-  await expect(page.getByText("Assistant for generating")).toBeVisible();
-
-  // Test interaction with the General assistant
-  await navigateToAssistantInHistorySidebar(
-    page,
-    "[-1]",
-    "Assistant with no search"
-  );
-
-  // Verify the URL after selecting the General assistant
-  await expect(page).toHaveURL("http://localhost:3000/chat?assistantId=-1");
+  await verifyAssistantIsChosen(page, "Onyx");
 
   // Test creation of a new assistant
   await page.getByRole("button", { name: "Explore Assistants" }).click();
@@ -51,20 +37,12 @@ test("Chat workflow", async ({ page }) => {
   await page.getByRole("button", { name: "Create" }).click();
 
   // Verify the successful creation of the new assistant
-  await expect(page.getByText("Test Assistant Description")).toBeVisible({
-    timeout: 5000,
-  });
+  await verifyAssistantIsChosen(page, "Test Assistant");
 
   // Start another new chat session
   await startNewChat(page);
+  await page.waitForLoadState("networkidle");
 
   // Verify the presence of the default assistant text
-  try {
-    await expect(page.getByText("Assistant with access to")).toBeVisible({
-      timeout: 5000,
-    });
-  } catch (error) {
-    console.error("Live Assistant final page content:");
-    console.error(await page.content());
-  }
+  await verifyAssistantIsChosen(page, "Onyx");
 });

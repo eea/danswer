@@ -28,9 +28,6 @@ from onyx.db.connector_credential_pair import add_deletion_failure_message
 from onyx.db.connector_credential_pair import (
     delete_connector_credential_pair__no_commit,
 )
-from onyx.db.connector_credential_pair import (
-    delete_userfiles_for_cc_pair__no_commit,
-)
 from onyx.db.connector_credential_pair import get_connector_credential_pair_from_id
 from onyx.db.connector_credential_pair import get_connector_credential_pairs
 from onyx.db.document import (
@@ -193,12 +190,7 @@ def check_for_connector_deletion_task(self: Task, *, tenant_id: str) -> bool | N
                             task_logger.info(
                                 "Timed out waiting for tasks blocking deletion. Resetting blocking fences."
                             )
-                            search_settings_list = get_all_search_settings(db_session)
-                            for search_settings in search_settings_list:
-                                redis_connector_index = redis_connector.new_index(
-                                    search_settings.id
-                                )
-                                redis_connector_index.reset()
+
                             redis_connector.prune.reset()
                             redis_connector.permissions.reset()
                             redis_connector.external_group_sync.reset()
@@ -488,12 +480,6 @@ def monitor_connector_deletion_taskset(
             # Expire the cc_pair to ensure SQLAlchemy doesn't try to manage its state
             # related to the deleted DocumentByConnectorCredentialPair during commit
             db_session.expire(cc_pair)
-
-            # delete all userfiles for the cc_pair
-            delete_userfiles_for_cc_pair__no_commit(
-                db_session=db_session,
-                cc_pair_id=cc_pair_id,
-            )
 
             # finally, delete the cc-pair
             delete_connector_credential_pair__no_commit(

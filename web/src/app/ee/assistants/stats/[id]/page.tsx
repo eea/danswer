@@ -24,18 +24,18 @@ export default async function GalleryPage(props: {
   const {
     user,
     chatSessions,
-    folders,
-    openedFolders,
     sidebarInitiallyVisible,
     shouldShowWelcomeModal,
     availableSources,
     ccPairs,
     documentSets,
+    availableTools,
     tags,
     llmProviders,
     defaultAssistantId,
     inputPrompts,
     proSearchToggled,
+    projects,
   } = data;
 
   return (
@@ -48,14 +48,14 @@ export default async function GalleryPage(props: {
         availableSources,
         ccPairs,
         documentSets,
+        availableTools,
         tags,
         availableDocumentSets: documentSets,
         availableTags: tags,
         llmProviders,
-        folders,
-        openedFolders,
         shouldShowWelcomeModal,
         defaultAssistantId,
+        projects,
       }}
     >
       {shouldShowWelcomeModal && (

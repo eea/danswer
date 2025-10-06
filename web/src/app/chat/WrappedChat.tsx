@@ -1,9 +1,11 @@
 "use client";
-import { useChatContext } from "@/components/context/ChatContext";
-import { ChatPage } from "./ChatPage";
-import FunctionalWrapper from "../../components/chat/FunctionalWrapper";
 
-export default function WrappedChat({
+import { useChatContext } from "@/components/context/ChatContext";
+import { ChatPage } from "./components/ChatPage";
+import { ProjectsProvider } from "./projects/ProjectsContext";
+import { useCallback, useState } from "react";
+
+export default function ChatLayout({
   firstMessage,
   defaultSidebarOff,
 }: {
@@ -12,18 +14,27 @@ export default function WrappedChat({
   // we don't want to show the sidebar by default when the user opens the side panel
   defaultSidebarOff?: boolean;
 }) {
-  const { sidebarInitiallyVisible } = useChatContext();
+  const { sidebarInitiallyVisible, projects } = useChatContext();
+
+  const [sidebarVisible, setSidebarVisible] = useState(
+    (sidebarInitiallyVisible && !defaultSidebarOff) ?? false
+  );
+
+  const toggle = useCallback((value?: boolean) => {
+    setSidebarVisible((sidebarVisiblePrevValue) =>
+      value !== undefined ? value : !sidebarVisiblePrevValue
+    );
+  }, []);
 
   return (
-    <FunctionalWrapper
-      initiallyVisible={sidebarInitiallyVisible && !defaultSidebarOff}
-      content={(sidebarVisible, toggle) => (
+    <ProjectsProvider initialProjects={projects}>
+      <div className="overscroll-y-contain overflow-y-scroll overscroll-contain left-0 top-0 w-full h-svh">
         <ChatPage
           toggle={toggle}
           sidebarVisible={sidebarVisible}
           firstMessage={firstMessage}
         />
-      )}
-    />
+      </div>
+    </ProjectsProvider>
   );
 }

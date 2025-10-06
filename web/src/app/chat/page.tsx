@@ -1,8 +1,7 @@
-import { fetchEEASettings } from "@/lib/eea/fetchEEASettings";
-import { DocumentsProvider } from "./my-documents/DocumentsContext";
-import { SEARCH_PARAMS } from "@/lib/extension/constants";
-import WrappedChat from "./WrappedChat";
 import { UserDisclaimerModal } from "@/components/search/UserDisclaimerModal";
+import { fetchEEASettings } from "@/lib/eea/fetchEEASettings";
+import { SEARCH_PARAMS } from "@/lib/extension/constants";
+import ChatLayout from "./WrappedChat";
 
 export default async function Page(props: {
   searchParams: Promise<{ [key: string]: string }>;
@@ -22,12 +21,10 @@ export default async function Page(props: {
   return (
     <>
       <UserDisclaimerModal disclaimerText={disclaimerText} disclaimerTitle={disclaimerTitle}/>
-      <DocumentsProvider>
-        <WrappedChat
-          firstMessage={firstMessage}
-          defaultSidebarOff={defaultSidebarOff}
-        />
-      </DocumentsProvider>
+      <ChatLayout
+        firstMessage={firstMessage}
+        defaultSidebarOff={defaultSidebarOff}
+      />
     </>
   );
 }

@@ -56,6 +56,25 @@ class SyncStatus(str, PyEnum):
         return self in terminal_states
 
 
+class MCPAuthenticationType(str, PyEnum):
+    NONE = "NONE"
+    API_TOKEN = "API_TOKEN"
+    OAUTH = "OAUTH"
+
+
+class MCPTransport(str, PyEnum):
+    """MCP transport types"""
+
+    STDIO = "STDIO"  # TODO: currently unsupported, need to add a user guide for setup
+    SSE = "SSE"  # Server-Sent Events (deprecated but still used)
+    STREAMABLE_HTTP = "STREAMABLE_HTTP"  # Modern HTTP streaming
+
+
+class MCPAuthenticationPerformer(str, PyEnum):
+    ADMIN = "ADMIN"
+    PER_USER = "PER_USER"
+
+
 # Consistent with Celery task statuses
 class TaskStatus(str, PyEnum):
     PENDING = "PENDING"
@@ -71,6 +90,9 @@ class IndexModelStatus(str, PyEnum):
 
     def is_current(self) -> bool:
         return self == IndexModelStatus.PRESENT
+
+    def is_future(self) -> bool:
+        return self == IndexModelStatus.FUTURE
 
 
 class ChatSessionSharedStatus(str, PyEnum):
@@ -94,6 +116,13 @@ class ConnectorCredentialPairStatus(str, PyEnum):
             ConnectorCredentialPairStatus.INITIAL_INDEXING,
         ]
 
+    @classmethod
+    def indexable_statuses(self) -> list["ConnectorCredentialPairStatus"]:
+        # Superset of active statuses for indexing model swaps
+        return self.active_statuses() + [
+            ConnectorCredentialPairStatus.PAUSED,
+        ]
+
     def is_active(self) -> bool:
         return self in self.active_statuses()
 
@@ -110,3 +139,10 @@ class EmbeddingPrecision(str, PyEnum):
     # good reason to specify anything else
     BFLOAT16 = "bfloat16"
     FLOAT = "float"
+
+
+class UserFileStatus(str, PyEnum):
+    PROCESSING = "PROCESSING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    CANCELED = "CANCELED"

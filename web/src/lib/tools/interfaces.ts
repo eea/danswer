@@ -1,3 +1,19 @@
+export enum MCPAuthenticationType {
+  NONE = "NONE",
+  API_TOKEN = "API_TOKEN",
+  OAUTH = "OAUTH",
+}
+
+export enum MCPAuthenticationPerformer {
+  ADMIN = "ADMIN",
+  PER_USER = "PER_USER",
+}
+
+export enum MCPTransportType {
+  STDIO = "STDIO",
+  STREAMABLE_HTTP = "STREAMABLE_HTTP",
+  SSE = "SSE",
+}
 export interface ToolSnapshot {
   id: number;
   name: string;
@@ -16,6 +32,25 @@ export interface ToolSnapshot {
 
   // whether to pass through the user's OAuth token as Authorization header
   passthrough_auth: boolean;
+
+  // If this is an MCP tool, which server it belongs to
+  mcp_server_id?: number | null;
+}
+
+export interface MCPServer {
+  id: number;
+  name: string;
+  server_url: string;
+  transport: MCPTransportType;
+  auth_type: MCPAuthenticationType;
+  auth_performer: MCPAuthenticationPerformer;
+  is_authenticated: boolean;
+  user_authenticated?: boolean | null;
+}
+
+export interface MCPServersResponse {
+  assistant_id: string;
+  mcp_servers: MCPServer[];
 }
 
 export interface MethodSpec {

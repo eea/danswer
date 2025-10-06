@@ -44,6 +44,13 @@ class AuthTypeResponse(BaseModel):
     anonymous_user_enabled: bool | None = None
 
 
+class UserSpecificAssistantPreference(BaseModel):
+    disabled_tool_ids: list[int]
+
+
+UserSpecificAssistantPreferences = dict[int, UserSpecificAssistantPreference]
+
+
 class UserPreferences(BaseModel):
     chosen_assistants: list[int] | None = None
     hidden_assistants: list[int] = []
@@ -55,6 +62,9 @@ class UserPreferences(BaseModel):
     # These will default to workspace settings on the frontend if not set
     auto_scroll: bool | None = None
     temperature_override_enabled: bool | None = None
+
+    # controls which tools are enabled for the user for a specific assistant
+    assistant_specific_configs: UserSpecificAssistantPreferences | None = None
 
 
 class TenantSnapshot(BaseModel):
@@ -94,6 +104,7 @@ class UserInfo(BaseModel):
         team_name: str | None = None,
         is_anonymous_user: bool | None = None,
         tenant_info: TenantInfo | None = None,
+        assistant_specific_configs: UserSpecificAssistantPreferences | None = None,
     ) -> "UserInfo":
         return cls(
             id=str(user.id),
@@ -113,6 +124,7 @@ class UserInfo(BaseModel):
                     visible_assistants=user.visible_assistants,
                     auto_scroll=user.auto_scroll,
                     temperature_override_enabled=user.temperature_override_enabled,
+                    assistant_specific_configs=assistant_specific_configs,
                 )
             ),
             team_name=team_name,
@@ -171,11 +183,13 @@ class SlackBotCreationRequest(BaseModel):
 
     bot_token: str
     app_token: str
+    user_token: str | None = None
 
 
 class SlackBotTokens(BaseModel):
     bot_token: str
     app_token: str
+    user_token: str | None = None
     model_config = ConfigDict(frozen=True)
 
 
@@ -280,6 +294,7 @@ class SlackBot(BaseModel):
 
     bot_token: str
     app_token: str
+    user_token: str | None = None
 
     @classmethod
     def from_model(cls, slack_bot_model: SlackAppModel) -> "SlackBot":
@@ -287,9 +302,10 @@ class SlackBot(BaseModel):
             id=slack_bot_model.id,
             name=slack_bot_model.name,
             enabled=slack_bot_model.enabled,
+            configs_count=len(slack_bot_model.slack_channel_configs),
             bot_token=slack_bot_model.bot_token,
             app_token=slack_bot_model.app_token,
-            configs_count=len(slack_bot_model.slack_channel_configs),
+            user_token=slack_bot_model.user_token,
         )
 
 
@@ -406,3 +422,16 @@ class StandardAnswerCreationRequest(BaseModel):
                         ["invalid regex pattern", pattern, f"in `keyword`: {err.msg}"]
                     )
                 )
+
+
+class ContainerVersions(BaseModel):
+    onyx: str
+    relational_db: str
+    index: str
+    nginx: str
+
+
+class AllVersions(BaseModel):
+    stable: ContainerVersions
+    dev: ContainerVersions
+    migration: ContainerVersions
