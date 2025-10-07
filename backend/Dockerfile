@@ -61,6 +61,8 @@ RUN touch ~/.cache/ms-playwright/chromium-1097/INSTALLATION_COMPLETE
 # Remove py which is pulled in by retry, py is not needed and is a CVE
 COPY ./requirements/default.txt /tmp/requirements.txt
 COPY ./requirements/ee.txt /tmp/ee-requirements.txt
+
+ENV NODE_OPTIONS="--dns-result-order=ipv4first"
 RUN pip install --no-cache-dir --upgrade \
         --retries 5 \
         --timeout 30 \
