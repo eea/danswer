@@ -343,9 +343,9 @@ export function CCPairIndexingStatusTable({
                       <TableHead></TableHead>
                     </TableRow>
                     {ccPairStatus.indexing_statuses.sort((a, b) => {
-                        if (a.name < b.name) {
+                        if ((a?.name ?? '') < (b?.name ?? '')) {
                             return -1;
-                        } else if (a.name > b.name) {
+                        } else if ((a?.name ?? '') > (b?.name ?? '')) {
                             return 1;
                         } else {
                             return 0;
@@ -463,13 +463,3 @@ export function CCPairIndexingStatusTable({
     </Table>
   );
 }
-
-// statuses.sort((a, b) => {
-//   if (a.connector.name < b.connector.name) {
-//     return -1;
-//   } else if (a.connector.name > b.connector.name) {
-//     return 1;
-//   } else {
-//     return 0;
-//   };
-// });
