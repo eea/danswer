@@ -34,7 +34,7 @@ pipeline {
               }
               try {
                 dir('web') {
-                  dockerImage = docker.build("$registry:$tagNameW", "--no-cache .")
+                  dockerImage = docker.build("$registry:$tagNameW", "--network=host --no-cache .")
                   docker.withRegistry( '', 'eeajenkins' ) {
                   dockerImage.push()
                   }    
@@ -57,7 +57,7 @@ pipeline {
               }
               try {
                 dir('backend') {
-                  dockerImage = docker.build("$registry:$tagNameB", "--no-cache .")
+                  dockerImage = docker.build("$registry:$tagNameB", "--network=host --no-cache .")
                   docker.withRegistry( '', 'eeajenkins' ) {
                   dockerImage.push()
                   }
