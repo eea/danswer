@@ -360,7 +360,7 @@ def extract_urls_from_sitemap(sitemap_url: str) -> dict[str, str | None]:
             urls_data = list_pages_for_site(sitemap_url)
 
         if len(urls_data.keys()) == 0:
-            urls_data = list_pages_for_site_eea(sitemap_url):
+            urls_data = list_pages_for_site_eea(sitemap_url)
 
         if len(urls_data.keys()) == 0:
             raise ValueError(
