@@ -299,7 +299,7 @@ services:
       - "80:80"
       - "13000:80"  # allow for localhost:3000 usage, since that is the norm
     volumes:
-      - ./deployment/data/nginx:/etc/nginx/conf.d
+      - ../../../deployment/data/nginx:/etc/nginx/conf.d
     logging:
       driver: json-file
       options:
