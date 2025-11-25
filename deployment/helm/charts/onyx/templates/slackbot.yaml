@@ -36,11 +36,19 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- $backendRepo := .Values.global.image.repository }}
+      {{- if and .Values.slackbot.image .Values.slackbot.image.repository }}
+        {{- $backendRepo = .Values.slackbot.image.repository }}
+      {{- end }}
+      {{- $backendTag := default .Values.global.image.tags.backend (printf "backend-%s" .Values.global.version) }}
+      {{- if and .Values.slackbot.image .Values.slackbot.image.tag }}
+        {{- $backendTag = .Values.slackbot.image.tag }}
+      {{- end }}
       containers:
         - name: slackbot
           securityContext:
             {{- toYaml .Values.slackbot.securityContext | nindent 12 }}
-          image: "{{ .Values.slackbot.image.repository }}:{{ .Values.slackbot.image.tag | default .Values.global.version }}"
+          image: "{{ $backendRepo }}:{{ $backendTag }}"
           imagePullPolicy: {{ .Values.global.pullPolicy }}
           command: ["python", "onyx/onyxbot/slack/listener.py"]
           resources:

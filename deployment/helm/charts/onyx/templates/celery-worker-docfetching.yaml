@@ -39,11 +39,19 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- $backendRepo := .Values.global.image.repository }}
+      {{- if and .Values.celery_shared.image .Values.celery_shared.image.repository }}
+        {{- $backendRepo = .Values.celery_shared.image.repository }}
+      {{- end }}
+      {{- $backendTag := default .Values.global.image.tags.backend (printf "backend-%s" .Values.global.version) }}
+      {{- if and .Values.celery_shared.image .Values.celery_shared.image.tag }}
+        {{- $backendTag = .Values.celery_shared.image.tag }}
+      {{- end }}
       containers:
         - name: celery-worker-docfetching
           securityContext:
             {{- toYaml .Values.celery_shared.securityContext | nindent 12 }}
-          image: "{{ .Values.celery_shared.image.repository }}:{{ .Values.celery_shared.image.tag | default .Values.global.version }}"
+          image: "{{ $backendRepo }}:{{ $backendTag }}"
           imagePullPolicy: {{ .Values.global.pullPolicy }}
           command:
             [

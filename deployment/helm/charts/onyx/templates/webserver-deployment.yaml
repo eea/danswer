@@ -39,11 +39,19 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- $webRepo := .Values.global.image.repository }}
+      {{- if and .Values.webserver.image .Values.webserver.image.repository }}
+        {{- $webRepo = .Values.webserver.image.repository }}
+      {{- end }}
+      {{- $webTag := default .Values.global.image.tags.web (printf "web-%s" .Values.global.version) }}
+      {{- if and .Values.webserver.image .Values.webserver.image.tag }}
+        {{- $webTag = .Values.webserver.image.tag }}
+      {{- end }}
       containers:
         - name: web-server
           securityContext:
             {{- toYaml .Values.webserver.securityContext | nindent 12 }}
-          image: "{{ .Values.webserver.image.repository }}:{{ .Values.webserver.image.tag | default .Values.global.version }}"
+          image: "{{ $webRepo }}:{{ $webTag }}"
           imagePullPolicy: {{ .Values.global.pullPolicy }}
           ports:
             - name: http

@@ -1,0 +1,123 @@
+{{- if and .Values.nginx.enabled .Values.nginx.useSimpleDeployment }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "onyx.fullname" . }}-nginx-simple-config
+  namespace: {{ .Release.Namespace }}
+data:
+  nginx.conf: |
+    events {
+        worker_connections 1024;
+    }
+
+    http {
+        upstream web_server {
+            server {{ include "onyx.fullname" . }}-webserver:3000;
+        }
+
+        upstream api_server {
+            server {{ include "onyx.fullname" . }}-api-service:8080;
+        }
+
+        proxy_connect_timeout {{ .Values.nginx.timeouts.connect }}s;
+        proxy_send_timeout {{ .Values.nginx.timeouts.send }}s;
+        proxy_read_timeout {{ .Values.nginx.timeouts.read }}s;
+
+        server {
+            listen 80;
+            server_name {{ .Values.configMap.DOMAIN | default "localhost" }};
+
+            client_max_body_size 100M;
+
+            location /api/ {
+                proxy_pass http://api_server/;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+            }
+
+            location / {
+                proxy_pass http://web_server;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                proxy_set_header Upgrade $http_upgrade;
+                proxy_set_header Connection "upgrade";
+            }
+        }
+    }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "onyx.fullname" . }}-nginx
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: nginx
+    {{- include "onyx.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.nginx.simple.serviceType | default "LoadBalancer" }}
+  ports:
+  - port: 80
+    targetPort: 80
+    name: http
+    {{- if and (eq (.Values.nginx.simple.serviceType | default "LoadBalancer") "NodePort") .Values.nginx.simple.nodePort }}
+    nodePort: {{ .Values.nginx.simple.nodePort }}
+    {{- end }}
+  selector:
+    app: nginx
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "onyx.fullname" . }}-nginx
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: nginx
+    {{- include "onyx.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.nginx.simple.replicas | default 1 }}
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:{{ .Values.nginx.simple.tag | default "alpine" }}
+        imagePullPolicy: {{ .Values.global.pullPolicy }}
+        ports:
+        - containerPort: 80
+          name: http
+        volumeMounts:
+        - name: nginx-config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+        - name: nginx-cache
+          mountPath: /var/cache/nginx
+        - name: nginx-run
+          mountPath: /var/run
+        resources:
+          {{- toYaml .Values.nginx.simple.resources | nindent 10 }}
+        {{- if .Values.nginx.simple.securityContext }}
+        securityContext:
+          {{- toYaml .Values.nginx.simple.securityContext | nindent 10 }}
+        {{- end }}
+      {{- if .Values.nginx.simple.podSecurityContext }}
+      securityContext:
+        {{- toYaml .Values.nginx.simple.podSecurityContext | nindent 8 }}
+      {{- end }}
+      volumes:
+      - name: nginx-config
+        configMap:
+          name: {{ include "onyx.fullname" . }}-nginx-simple-config
+      - name: nginx-cache
+        emptyDir: {}
+      - name: nginx-run
+        emptyDir: {}
+{{- end }}
