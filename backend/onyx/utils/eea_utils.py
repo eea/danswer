@@ -15,6 +15,7 @@ from onyx.db.engine.sql_engine import get_session
 from onyx.db.enums import ConnectorCredentialPairStatus
 from onyx.db.models import ChatMessage, User
 from onyx.configs.constants import DANSWER_API_KEY_PREFIX, DocumentSource
+from onyx.server.documents.models import IndexingStatusRequest
 from onyx.server.models import StatusResponse
 from onyx.utils.logger import setup_logger
 
@@ -262,7 +263,8 @@ def get_connectors_health(
     db_session: Session = Depends(get_session),
 ) -> StatusResponse:
     from onyx.server.documents.connector import get_connector_indexing_status
-    indexing_status = get_connector_indexing_status(user = user, db_session = db_session)
+    mock_request = IndexingStatusRequest()
+    indexing_status = get_connector_indexing_status(request = mock_request, user = user, db_session = db_session)
 
     success = True
     message = "ok"
