@@ -38,8 +38,8 @@ services:
 #    image: node:20.19.2-bullseye
     depends_on:
       - api_server
-    environment:
-      - APP_VERSION=2.2.4-eea.0.0.84
+    env_file:
+      - ./.env
     volumes:
       - ../../../web:/web
 
