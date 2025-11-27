@@ -1,0 +1,24 @@
+{{- if and .Values.postgresql.enabled .Values.postgresql.backup.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "onyx.fullname" . }}-postgresql-backup
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: postgresql-backup
+    {{- include "onyx.labels" . | nindent 4 }}
+  {{- if .Values.postgresql.backup.retainPvc }}
+  annotations:
+    "helm.sh/resource-policy": keep
+  {{- end }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- $sc := default .Values.global.storageClass .Values.postgresql.backup.storageClass }}
+  {{- if $sc }}
+  storageClassName: {{ $sc }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.postgresql.backup.storage | default "10Gi" }}
+{{- end }}

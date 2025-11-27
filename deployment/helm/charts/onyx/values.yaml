@@ -4,20 +4,96 @@
 
 global:
   # Global version for all Onyx components (overrides .Chart.AppVersion)
-  version: "latest"
+  version: "v2.3.0-eea.0.0.83-dev"
+  # Optional global image settings. If repository is set, all core components default to this repo.
+  # Component-specific tags can be set under tags; fall back to per-component tags or global.version.
+  image:
+    repository: "eeacms/danswer"
+    tags:
+      backend: ""
+      web: ""
+      modelServer: ""
   # Global pull policy for all Onyx component images
   pullPolicy: "IfNotPresent"
+  # Global storage class override applied where component-specific storageClass is unset
+  storageClass: "nfs-client"
+  # Add Helm keep annotation to PVCs managed by this chart
+  pvcRetain: true
 
 postgresql:
   enabled: true
-  cluster:
-    instances: 1
-    storage:
-      storageClass: ""
-      size: 10Gi
-    enableSuperuserAccess: true
-    superuserSecret:
-      name: onyx-postgresql  # keep in sync with auth.postgresql
+  # Set to false to use an external Postgres instance instead of deploying one
+  external:
+    host: ""
+    port: 5432
+  # Simple StatefulSet configuration (default)
+  simple:
+    tag: "16"
+    database: "onyx"
+    storage: "10Gi"
+    storageClass: ""
+    # Add Helm keep policy to retain the PVC on uninstall
+    retainPvc: true
+    # Use an existing PVC instead of creating one (skips volumeClaimTemplates)
+    existingClaim: ""
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+    securityContext:
+      runAsNonRoot: false
+      runAsUser: 999
+  # Database initialization configuration
+  # Creates additional databases and users on PostgreSQL startup
+  initdb:
+    enabled: false
+    databases: []
+    # Example configuration:
+    # databases:
+    #   - name: myapp_db          # Database name
+    #     user: myapp_user        # Database user
+    #     password: changeme      # User password
+    #     createSecret: true      # Auto-create Kubernetes secret with connection details
+
+  # Backup configuration
+  backup:
+    enabled: false
+    schedule: "0 2 * * *"  # Daily at 2 AM (cron format)
+    storage: "10Gi"
+    storageClass: ""
+    retainPvc: true
+    successfulJobsHistoryLimit: 3
+    failedJobsHistoryLimit: 3
+    retention:
+      enabled: true
+      days: 7  # Keep backups for 7 days
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+  # Restore configuration
+  restore:
+    enabled: false
+    # Specify one of: backupFile, timestamp, or leave empty for latest
+    backupFile: ""  # Full path: /backups/onyx_20240101_120000.sql.gz
+    timestamp: ""   # Format: 20240101_120000
+    database: "onyx"  # Database to restore
+    dropDatabase: false  # Drop existing database before restore (DANGER!)
+    createDatabase: true  # Create database if it doesn't exist
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
 
 vespa:
   name: da-vespa-0
@@ -44,8 +120,13 @@ vespa:
     app.kubernetes.io/instance: onyx
     app.kubernetes.io/name: vespa
   securityContext:
-    privileged: true
-    runAsUser: 0
+    privileged: false
+    runAsNonRoot: true
+    runAsUser: 1000
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+      - ALL
   resources:
     # The Vespa Helm chart specifies default resources, which are quite modest. We override
     # them here to increase chances of the chart running successfully. If you plan to index at
@@ -82,10 +163,6 @@ inferenceCapability:
   labels:
     - key: app
       value: inference-model-server
-  image:
-    repository: onyxdotapp/onyx-model-server
-    # Overrides the image tag whose default is the chart appVersion.
-    tag: ""
   containerPorts:
     server: 9000
   podLabels:
@@ -100,9 +177,28 @@ inferenceCapability:
       memory: 10Gi
   podSecurityContext: {}
   securityContext:
-    privileged: true
-    runAsUser: 0
+    privileged: false
+    runAsNonRoot: true
+    runAsUser: 1000
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+      - ALL
   nodeSelector: {}
+  volumes:
+    - name: cache
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
+    - name: logs
+      emptyDir: {}
+  volumeMounts:
+    - name: logs
+      mountPath: /var/log/onyx  
+    - name: cache
+      mountPath: /.cache
+    - name: tmp
+      mountPath: /tmp
 
 indexCapability:
   service:
@@ -120,10 +216,6 @@ indexCapability:
   podAnnotations: {}
   containerPorts:
     server: 9000
-  image:
-    repository: onyxdotapp/onyx-model-server
-    # Overrides the image tag whose default is the chart appVersion.
-    tag: ""
   limitConcurrency: 10
   resources:
     requests:
@@ -134,9 +226,28 @@ indexCapability:
       memory: 6Gi
   podSecurityContext: {}
   securityContext:
-    privileged: true
-    runAsUser: 0
+    privileged: false
+    runAsNonRoot: true
+    runAsUser: 1000
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+      - ALL
   nodeSelector: {}
+  volumes:
+    - name: cache
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
+    - name: logs
+      emptyDir: {}
+  volumeMounts:
+    - name: logs
+      mountPath: /var/log/onyx  
+    - name: cache
+      mountPath: /.cache
+    - name: tmp
+      mountPath: /tmp
 config:
   envConfigMapName: env-configmap
 
@@ -153,68 +264,65 @@ serviceAccount:
 
 nginx:
   enabled: true
+  # Namespace-scoped nginx deployed by this chart
+  useSimpleDeployment: true
   # Nginx proxy timeout settings (in seconds)
   timeouts:
     connect: 300  # Time to establish connection with upstream server
     send: 300     # Time to send request to upstream server
     read: 300     # Time to read response from upstream server
-  controller:
-    containerPort:
-      http: 1024
-
-    # Propagate DOMAIN into nginx so server_name continues to use the same env var
-    extraEnvs:
-      - name: DOMAIN
-        value: localhost
-
-    config:
-      # Expose DOMAIN to the nginx config and pull in our custom snippets
-      main-snippet: |
-        env DOMAIN;
-      http-snippet: |
-        include /etc/nginx/custom-snippets/upstreams.conf;
-        include /etc/nginx/custom-snippets/server.conf;
-
-    # Mount the existing nginx ConfigMap that holds the upstream and server snippets
-    extraVolumes:
-      - name: nginx-config
-        configMap:
-          name: onyx-nginx-conf
-    extraVolumeMounts:
-      - name: nginx-config
-        mountPath: /etc/nginx/custom-snippets
-        readOnly: true
-
-    service:
-      type: LoadBalancer
-      ports:
-        http: 80
-      targetPorts:
-        http: http
+  # Simple Deployment configuration (when useSimpleDeployment: true)
+  simple:
+    tag: "alpine"
+    replicas: 1
+    serviceType: "ClusterIP"
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 101
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop:
+        - ALL
+  # Ingress configuration (when useSimpleDeployment: true)
+  ingress:
+    enabled: false
+    className: "nginx"
+    annotations: {}
+      # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    hosts:
+      - host: onyx.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+      # - secretName: onyx-tls-cert
+      #   hosts:
+      #     - onyx.example.com
 
 webserver:
   replicaCount: 1
-  image:
-    repository: onyxdotapp/onyx-web-server
-    # Overrides the image tag whose default is the chart appVersion.
-    tag: ""
   deploymentLabels:
     app: web-server
   podAnnotations: {}
   podLabels:
     app: web-server
   podSecurityContext:
-    {}
-    # fsGroup: 2000
+    fsGroup: 2000
 
   securityContext:
-    {}
-    # capabilities:
-    #   drop:
-    #   - ALL
-    # readOnlyRootFilesystem: true
-    # runAsNonRoot: true
-    # runAsUser: 1000
+    capabilities:
+      drop:
+      - ALL
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 1000
 
   containerPorts:
     server: 3000
@@ -254,17 +362,22 @@ webserver:
     customTriggers: []
 
   # Additional volumes on the output Deployment definition.
-  volumes: []
-  # - name: foo
-  #   secret:
-  #     secretName: mysecret
-  #     optional: false
+  volumes:
+    - name: logs
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
+    - name: cache
+      emptyDir: {}
 
   # Additional volumeMounts on the output Deployment definition.
-  volumeMounts: []
-  # - name: foo
-  #   mountPath: "/etc/foo"
-  #   readOnly: true
+  volumeMounts:
+    - name: logs
+      mountPath: /var/log/onyx
+    - name: tmp
+      mountPath: /tmp
+    - name: cache
+      mountPath: /.cache
 
   nodeSelector: {}
   tolerations: []
@@ -272,10 +385,6 @@ webserver:
 
 api:
   replicaCount: 1
-  image:
-    repository: onyxdotapp/onyx-backend
-    # Overrides the image tag whose default is the chart appVersion.
-    tag: ""
   deploymentLabels:
     app: api-server
   podAnnotations: {}
@@ -287,17 +396,15 @@ api:
     server: 8080
 
   podSecurityContext:
-    {}
-    # fsGroup: 2000
+    fsGroup: 2000
 
   securityContext:
-    {}
-    # capabilities:
-    #   drop:
-    #   - ALL
-    # readOnlyRootFilesystem: true
-    # runAsNonRoot: true
-    # runAsUser: 1000
+    capabilities:
+      drop:
+      - ALL
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 1000
 
   service:
     type: ClusterIP
@@ -335,17 +442,22 @@ api:
     customTriggers: []
 
   # Additional volumes on the output Deployment definition.
-  volumes: []
-  # - name: foo
-  #   secret:
-  #     secretName: mysecret
-  #     optional: false
+  volumes:
+    - name: logs
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
+    - name: cache
+      emptyDir: {}
 
   # Additional volumeMounts on the output Deployment definition.
-  volumeMounts: []
-  # - name: foo
-  #   mountPath: "/etc/foo"
-  #   readOnly: true
+  volumeMounts:
+    - name: logs
+      mountPath: /var/log/onyx
+    - name: tmp
+      mountPath: /tmp
+    - name: cache
+      mountPath: /.cache
 
   nodeSelector: {}
   tolerations: []
@@ -358,9 +470,6 @@ api:
 ######################################################################
 
 celery_shared:
-  image:
-    repository: onyxdotapp/onyx-backend
-    tag: ""  # Overrides the image tag whose default is the chart appVersion.
   startupProbe:
     # startupProbe fails after 2m
     exec:
@@ -383,8 +492,13 @@ celery_shared:
     timeoutSeconds: 3
   podSecurityContext: {}
   securityContext:
-    privileged: true
-    runAsUser: 0
+    privileged: false
+    runAsNonRoot: true
+    runAsUser: 1000
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+      - ALL
 
 celery_beat:
   replicaCount: 1
@@ -394,6 +508,10 @@ celery_beat:
     app: celery-beat
   deploymentLabels:
     app: celery-beat
+  persistence:
+    enabled: false
+    size: 1Gi
+    storageClass: ""
   resources:
     requests:
       cpu: 500m
@@ -401,8 +519,24 @@ celery_beat:
     limits:
       cpu: 1000m
       memory: 1Gi
-  volumes: []  # Additional volumes on the output Deployment definition.
-  volumeMounts: []  # Additional volumeMounts on the output Deployment definition.
+  volumes:
+    - name: logs
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
+    - name: cache
+      emptyDir: {}
+    - name: data
+      emptyDir: {}
+  volumeMounts:
+    - name: logs
+      mountPath: /var/log/onyx
+    - name: tmp
+      mountPath: /tmp
+    - name: cache
+      mountPath: /.cache
+    - name: data
+      mountPath: /app/data
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -436,8 +570,20 @@ celery_worker_heavy:
     limits:
       cpu: 1000m
       memory: 2Gi
-  volumes: []  # Additional volumes on the output Deployment definition.
-  volumeMounts: []  # Additional volumeMounts on the output Deployment definition.
+  volumes:
+    - name: logs
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
+    - name: cache
+      emptyDir: {}
+  volumeMounts:
+    - name: logs
+      mountPath: /var/log/onyx
+    - name: tmp
+      mountPath: /tmp
+    - name: cache
+      mountPath: /.cache
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -471,8 +617,20 @@ celery_worker_docprocessing:
     limits:
       cpu: 1000m
       memory: 12Gi
-  volumes: []  # Additional volumes on the output Deployment definition.
-  volumeMounts: []  # Additional volumeMounts on the output Deployment definition.
+  volumes:
+    - name: logs
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
+    - name: cache
+      emptyDir: {}
+  volumeMounts:
+    - name: logs
+      mountPath: /var/log/onyx
+    - name: tmp
+      mountPath: /tmp
+    - name: cache
+      mountPath: /.cache
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -506,8 +664,20 @@ celery_worker_light:
     limits:
       cpu: 2000m
       memory: 4Gi
-  volumes: []  # Additional volumes on the output Deployment definition.
-  volumeMounts: []  # Additional volumeMounts on the output Deployment definition.
+  volumes:
+    - name: logs
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
+    - name: cache
+      emptyDir: {}
+  volumeMounts:
+    - name: logs
+      mountPath: /var/log/onyx
+    - name: tmp
+      mountPath: /tmp
+    - name: cache
+      mountPath: /.cache
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -541,8 +711,20 @@ celery_worker_monitoring:
     limits:
       cpu: 1000m
       memory: 4Gi
-  volumes: []  # Additional volumes on the output Deployment definition.
-  volumeMounts: []  # Additional volumeMounts on the output Deployment definition.
+  volumes:
+    - name: logs
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
+    - name: cache
+      emptyDir: {}
+  volumeMounts:
+    - name: logs
+      mountPath: /var/log/onyx
+    - name: tmp
+      mountPath: /tmp
+    - name: cache
+      mountPath: /.cache
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -576,8 +758,20 @@ celery_worker_primary:
     limits:
       cpu: 1000m
       memory: 4Gi
-  volumes: []  # Additional volumes on the output Deployment definition.
-  volumeMounts: []  # Additional volumeMounts on the output Deployment definition.
+  volumes:
+    - name: logs
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
+    - name: cache
+      emptyDir: {}
+  volumeMounts:
+    - name: logs
+      mountPath: /var/log/onyx
+    - name: tmp
+      mountPath: /tmp
+    - name: cache
+      mountPath: /.cache
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -611,8 +805,20 @@ celery_worker_user_files_indexing:
     limits:
       cpu: 2000m
       memory: 2Gi
-  volumes: []  # Additional volumes on the output Deployment definition.
-  volumeMounts: []  # Additional volumeMounts on the output Deployment definition.
+  volumes:
+    - name: logs
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
+    - name: cache
+      emptyDir: {}
+  volumeMounts:
+    - name: logs
+      mountPath: /var/log/onyx
+    - name: tmp
+      mountPath: /tmp
+    - name: cache
+      mountPath: /.cache
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -646,8 +852,20 @@ celery_worker_user_file_processing:
     limits:
       cpu: 2000m
       memory: 2Gi
-  volumes: []  # Additional volumes on the output Deployment definition.
-  volumeMounts: []  # Additional volumeMounts on the output Deployment definition.
+  volumes:
+    - name: logs
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
+    - name: cache
+      emptyDir: {}
+  volumeMounts:
+    - name: logs
+      mountPath: /var/log/onyx
+    - name: tmp
+      mountPath: /tmp
+    - name: cache
+      mountPath: /.cache
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -655,9 +873,6 @@ celery_worker_user_file_processing:
 slackbot:
   enabled: true
   replicaCount: 1
-  image:
-    repository: onyxdotapp/onyx-backend
-    tag: ""  # Overrides the image tag whose default is the chart appVersion.
   podAnnotations: {}
   podLabels:
     scope: onyx-backend
@@ -665,9 +880,14 @@ slackbot:
   deploymentLabels:
     app: slack-bot
   podSecurityContext:
-    {}
+    fsGroup: 2000
   securityContext:
-    {}
+    capabilities:
+      drop:
+      - ALL
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 1000
   resources:
     requests:
       cpu: "500m"
@@ -675,7 +895,23 @@ slackbot:
     limits:
       cpu: "1000m"
       memory: "2000Mi"
+  volumes:
+    - name: logs
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
+    - name: cache
+      emptyDir: {}
+  volumeMounts:
+    - name: logs
+      mountPath: /var/log/onyx
+    - name: tmp
+      mountPath: /tmp
+    - name: cache
+      mountPath: /.cache
   nodeSelector: {}
+  tolerations: []
+  affinity: {}
 
 celery_worker_docfetching:
   replicaCount: 1
@@ -706,8 +942,20 @@ celery_worker_docfetching:
     limits:
       cpu: 1000m
       memory: 16Gi
-  volumes: []  # Additional volumes on the output Deployment definition.
-  volumeMounts: []  # Additional volumeMounts on the output Deployment definition.
+  volumes:
+    - name: logs
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
+    - name: cache
+      emptyDir: {}
+  volumeMounts:
+    - name: logs
+      mountPath: /var/log/onyx
+    - name: tmp
+      mountPath: /tmp
+    - name: cache
+      mountPath: /.cache
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -720,11 +968,11 @@ celery_worker_docfetching:
 
 redis:
   enabled: true
-  redisStandalone:
-    image: quay.io/opstree/redis
-    tag: v7.0.15
-    imagePullPolicy: IfNotPresent
-    serviceType: ClusterIP
+  useSimpleDeployment: true
+  simple:
+    tag: "7.0-alpine"
+    storage: "1Gi"
+    storageClass: ""
     resources:
       requests:
         cpu: 100m
@@ -732,23 +980,24 @@ redis:
       limits:
         cpu: 500m
         memory: 512Mi
-    # Use existing secret for Redis password
-    redisSecret:
-      secretName: onyx-redis
-      secretKey: redis_password
-  # Redis configuration
-  externalConfig:
-    enabled: true
-    data: |
-      appendonly no
-      save ""
-  storageSpec:
-    volumeClaimTemplate:
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        resources:
-          requests:
-            storage: 1Gi
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 999
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop:
+        - ALL
+  service:
+    port: 6379
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 999
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+      - ALL
+  podSecurityContext:
+    fsGroup: 2000
 
 minio:
   enabled: true

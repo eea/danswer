@@ -1,0 +1,51 @@
+{{- if and .Values.postgresql.enabled .Values.postgresql.initdb.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "onyx.fullname" . }}-postgresql-init
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: postgresql
+    {{- include "onyx.labels" . | nindent 4 }}
+data:
+  01-init-databases.sh: |
+    #!/bin/bash
+    set -e
+
+    echo "Starting database initialization..."
+
+    {{- range .Values.postgresql.initdb.databases }}
+    # Create database: {{ .name }}
+    echo "Creating database: {{ .name }}"
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
+        -- Create database if it doesn't exist
+        SELECT 'CREATE DATABASE {{ .name }}'
+        WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '{{ .name }}')\gexec
+
+        -- Create user if it doesn't exist
+        DO $$ 
+        BEGIN
+          IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '{{ .user }}') THEN
+            CREATE USER {{ .user }} WITH PASSWORD '{{ .password }}';
+          END IF;
+        END
+        $$;
+
+        -- Grant privileges
+        GRANT ALL PRIVILEGES ON DATABASE {{ .name }} TO {{ .user }};
+
+        -- Connect to the new database and grant schema privileges
+        \c {{ .name }}
+        GRANT ALL ON SCHEMA public TO {{ .user }};
+        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO {{ .user }};
+        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO {{ .user }};
+
+        -- Make user owner of the database
+        ALTER DATABASE {{ .name }} OWNER TO {{ .user }};
+    EOSQL
+
+    echo "Database {{ .name }} created successfully with user {{ .user }}"
+    {{- end }}
+
+    echo "Database initialization completed!"
+{{- end }}

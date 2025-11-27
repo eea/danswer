@@ -1,0 +1,22 @@
+{{- if gt (int .Values.celery_beat.replicaCount) 0 }}
+{{- if .Values.celery_beat.persistence.enabled }}
+{{- if not .Values.celery_beat.persistence.existingClaim }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "onyx.fullname" . }}-celery-beat-data
+  labels:
+    {{- include "onyx.labels" . | nindent 4 }}
+    app.kubernetes.io/component: celery-beat
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.celery_beat.persistence.size }}
+  {{- if .Values.celery_beat.persistence.storageClass }}
+  storageClassName: {{ .Values.celery_beat.persistence.storageClass }}
+  {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

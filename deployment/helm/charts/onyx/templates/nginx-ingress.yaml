@@ -1,0 +1,43 @@
+{{- if and .Values.nginx.enabled .Values.nginx.useSimpleDeployment .Values.nginx.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "onyx.fullname" . }}-nginx
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: nginx
+    {{- include "onyx.labels" . | nindent 4 }}
+  {{- with .Values.nginx.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.nginx.ingress.className }}
+  ingressClassName: {{ .Values.nginx.ingress.className }}
+  {{- end }}
+  {{- if .Values.nginx.ingress.tls }}
+  tls:
+    {{- range .Values.nginx.ingress.tls }}
+    - hosts:
+        {{- range .hosts }}
+        - {{ . | quote }}
+        {{- end }}
+      secretName: {{ .secretName }}
+    {{- end }}
+  {{- end }}
+  rules:
+    {{- range .Values.nginx.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ include "onyx.fullname" $ }}-nginx
+                port:
+                  number: 80
+          {{- end }}
+    {{- end }}
+{{- end }}

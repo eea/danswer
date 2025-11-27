@@ -1,0 +1,90 @@
+{{- if .Values.postgresql.restore.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "onyx.fullname" . }}-postgresql-restore-{{ .Values.postgresql.restore.timestamp }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: postgresql-restore
+    {{- include "onyx.labels" . | nindent 4 }}
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: postgresql-restore
+        {{- include "onyx.labels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: postgresql-restore
+          image: postgres:{{ .Values.postgresql.simple.tag | default "16" }}
+          env:
+            - name: POSTGRES_HOST
+              value: {{ include "onyx.fullname" . }}-postgresql
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.postgresql.secretName }}
+                  key: {{ .Values.auth.postgresql.secretKeys.POSTGRES_USER }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.postgresql.secretName }}
+                  key: {{ .Values.auth.postgresql.secretKeys.POSTGRES_PASSWORD }}
+          args:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+              
+              # Determine the backup file to restore
+              {{- if .Values.postgresql.restore.backupFile }}
+              BACKUP_FILE="{{ .Values.postgresql.restore.backupFile }}"
+              {{- else if .Values.postgresql.restore.timestamp }}
+              TIMESTAMP="{{ .Values.postgresql.restore.timestamp }}"
+              BACKUP_FILE="/backups/onyx_${TIMESTAMP}.sql.gz"
+              {{- else }}
+              BACKUP_FILE=$(find /backups -type f -name "onyx_*.sql.gz" -print0 | xargs -0 ls -t | head -n 1)
+              {{- end }}
+
+              if [ -z "$BACKUP_FILE" ]; then
+                echo "No backup file found. Exiting."
+                exit 1
+              fi
+
+              # Determine the target database
+              {{- if .Values.postgresql.restore.database }}
+              TARGET_DB="{{ .Values.postgresql.restore.database }}"
+              {{- else }}
+              TARGET_DB="onyx"
+              {{- end }}
+
+              echo "Restoring backup from: $BACKUP_FILE to database: $TARGET_DB"
+
+              # Create the database if required
+              {{- if .Values.postgresql.restore.createDatabase }}
+              echo "Creating database $TARGET_DB if it doesn't exist..."
+              PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -d postgres -c "CREATE DATABASE $TARGET_DB;" || echo "Database $TARGET_DB already exists."
+              {{- end }}
+
+              # Drop the database if required
+              {{- if .Values.postgresql.restore.dropDatabase }}
+              echo "Dropping database $TARGET_DB..."
+              PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -d postgres -c "DROP DATABASE IF EXISTS $TARGET_DB;"
+              {{- end }}
+
+              # Restore the backup
+              echo "Restoring backup..."
+              gunzip -c "$BACKUP_FILE" | PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -d "$TARGET_DB" --single-transaction
+
+              echo "Backup restored successfully."
+          volumeMounts:
+            - name: postgresql-backup
+              mountPath: /backups
+          {{- toYaml .Values.postgresql.restore.resources | nindent 10 }}
+      volumes:
+        - name: postgresql-backup
+          persistentVolumeClaim:
+            claimName: {{ include "onyx.fullname" . }}-postgresql-backup
+{{- end }}

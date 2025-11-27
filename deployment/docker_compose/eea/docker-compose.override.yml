@@ -13,9 +13,9 @@ services:
       - index
       - cache
     volumes:
-      - ./backend/onyx:/app/onyx
-      - ./backend/alembic:/app/alembic
-      - ./backend/shared_configs:/app/shared_configs
+      - ../../../backend/onyx:/app/onyx
+      - ../../../backend/alembic:/app/alembic
+      - ../../../backend/shared_configs:/app/shared_configs
     environment:
       - AUTH_TYPE=basic
       - GEN_AI_TEMPERATURE=0.1
@@ -30,7 +30,7 @@ services:
     env_file:
       - ./.env
     volumes:
-      - ./backend/onyx:/app/onyx
+      - ../../../backend/onyx:/app/onyx
 
 
   web_server:
@@ -38,8 +38,8 @@ services:
 #    image: node:20.19.2-bullseye
     depends_on:
       - api_server
-    environment:
-      - APP_VERSION=2.2.4-eea.0.0.84
+    env_file:
+      - ./.env
     volumes:
-      - ./web:/web
+      - ../../../web:/web
 

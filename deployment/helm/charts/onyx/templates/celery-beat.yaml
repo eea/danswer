@@ -37,11 +37,19 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- $backendRepo := .Values.global.image.repository }}
+      {{- if and .Values.celery_shared.image .Values.celery_shared.image.repository }}
+        {{- $backendRepo = .Values.celery_shared.image.repository }}
+      {{- end }}
+      {{- $backendTag := default .Values.global.image.tags.backend (printf "backend-%s" .Values.global.version) }}
+      {{- if and .Values.celery_shared.image .Values.celery_shared.image.tag }}
+        {{- $backendTag = .Values.celery_shared.image.tag }}
+      {{- end }}
       containers:
         - name: celery-beat
           securityContext:
             {{- toYaml .Values.celery_shared.securityContext | nindent 12 }}
-          image: "{{ .Values.celery_shared.image.repository }}:{{ .Values.celery_shared.image.tag | default .Values.global.version }}"
+          image: "{{ $backendRepo }}:{{ $backendTag }}"
           imagePullPolicy: {{ .Values.global.pullPolicy }}
           command:
             [
@@ -50,6 +58,7 @@ spec:
               "onyx.background.celery.versioned_apps.beat",
               "beat",
               "--loglevel=INFO",
+              "--schedule=/app/data/celerybeat-schedule",
             ]
           resources:
             {{- toYaml .Values.celery_beat.resources | nindent 12 }}
@@ -84,8 +93,22 @@ spec:
                     python onyx/background/celery/celery_k8s_probe.py
                     --probe liveness
                     --filename /tmp/onyx_k8s_beat_liveness.txt
-      {{- with .Values.celery_beat.volumes }}
+      {{- if .Values.celery_beat.volumes }}
       volumes:
-        {{- toYaml . | nindent 8 }}
+        {{- range .Values.celery_beat.volumes }}
+        {{- if ne .name "data" }}
+        - name: {{ .name }}
+          {{- if .emptyDir }}
+          emptyDir: {{- toYaml .emptyDir | nindent 12 }}
+          {{- end }}
+        {{- end }}
+        {{- end }}
+        - name: data
+          {{- if .Values.celery_beat.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-celery-beat-data" (include "onyx.fullname" .)) .Values.celery_beat.persistence.existingClaim }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
       {{- end }}
 {{- end }}

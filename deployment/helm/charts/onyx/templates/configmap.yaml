@@ -5,15 +5,19 @@ metadata:
   labels:
     {{- include "onyx.labels" . | nindent 4 }}
 data:
+  ONYX_VERSION: "{{ .Values.global.version }}"
   INTERNAL_URL: "http://{{ include "onyx.fullname" . }}-api-service:{{ .Values.api.service.port | default 8080 }}"
   {{- if .Values.postgresql.enabled }}
-  POSTGRES_HOST: {{ .Release.Name }}-postgresql-rw
+  POSTGRES_HOST: {{ include "onyx.fullname" . }}-postgresql
+  {{- else if .Values.postgresql.external.host }}
+  POSTGRES_HOST: {{ .Values.postgresql.external.host | quote }}
+  POSTGRES_PORT: {{ .Values.postgresql.external.port | default 5432 | quote }}
   {{- end }}
   {{- if .Values.vespa.enabled }}
   VESPA_HOST: {{ .Values.vespa.name }}.{{ .Values.vespa.service.name }}.{{ .Release.Namespace }}.svc.cluster.local
   {{- end }}
   {{- if .Values.redis.enabled }}
-  REDIS_HOST: {{ .Release.Name }}-redis-master
+  REDIS_HOST: {{ include "onyx.fullname" . }}-redis
   {{- end }}
   MODEL_SERVER_HOST: "{{ include "onyx.fullname" . }}-inference-model-service"
   INDEXING_MODEL_SERVER_HOST: "{{ include "onyx.fullname" . }}-indexing-model-service"

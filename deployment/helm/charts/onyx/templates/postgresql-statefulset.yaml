@@ -1,0 +1,125 @@
+{{- if .Values.postgresql.enabled }}
+{{- $existingClaim := .Values.postgresql.simple.existingClaim }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "onyx.fullname" . }}-postgresql
+  labels:
+    app: postgresql
+    {{- include "onyx.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5432
+      targetPort: 5432
+      protocol: TCP
+      name: postgresql
+  selector:
+    app: postgresql
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "onyx.fullname" . }}-postgresql
+  labels:
+    app: postgresql
+    {{- include "onyx.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "onyx.fullname" . }}-postgresql
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgresql
+  template:
+    metadata:
+      labels:
+        app: postgresql
+        {{- include "onyx.labels" . | nindent 8 }}
+    spec:
+      {{- with .Values.postgresql.simple.securityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: postgresql
+          image: postgres:{{ .Values.postgresql.simple.tag | default "16" }}
+          ports:
+            - containerPort: 5432
+              name: postgresql
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.postgresql.secretName }}
+                  key: {{ .Values.auth.postgresql.secretKeys.POSTGRES_USER }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.postgresql.secretName }}
+                  key: {{ .Values.auth.postgresql.secretKeys.POSTGRES_PASSWORD }}
+            - name: POSTGRES_DB
+              value: {{ .Values.postgresql.simple.database | default "onyx" }}
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: postgresql-data
+              mountPath: /var/lib/postgresql/data
+          {{- if .Values.postgresql.initdb.enabled }}
+            - name: postgresql-init
+              mountPath: /docker-entrypoint-initdb.d
+          {{- end }}
+          resources:
+            {{- toYaml .Values.postgresql.simple.resources | nindent 12 }}
+          {{- if .Values.postgresql.simple.securityContext }}
+          securityContext:
+            {{- toYaml .Values.postgresql.simple.securityContext | nindent 12 }}
+          {{- end }}
+      {{- if .Values.postgresql.initdb.enabled }}
+      initContainers:
+        - name: init-scripts
+          image: postgres:{{ .Values.postgresql.simple.tag | default "16" }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              cp /init-scripts/* /workdir
+          volumeMounts:
+            - name: postgresql-init
+              mountPath: /init-scripts
+            - name: postgresql-init-workdir
+              mountPath: /workdir
+      {{- end }}
+      volumes:
+        - name: postgresql-data
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-postgresql" (include "onyx.fullname" .)) $existingClaim }}
+        {{- if .Values.postgresql.initdb.enabled }}
+        - name: postgresql-init
+          configMap:
+            name: {{ include "onyx.fullname" . }}-postgresql-init
+            defaultMode: 0755
+        - name: postgresql-init-workdir
+          emptyDir: {}
+        {{- end }}
+  {{- if not $existingClaim }}
+  volumeClaimTemplates:
+    - metadata:
+        name: postgresql-data
+        labels:
+          app: postgresql
+          {{- include "onyx.labels" . | nindent 10 }}
+        {{- if .Values.postgresql.simple.retainPvc }}
+        annotations:
+          "helm.sh/resource-policy": keep
+        {{- end }}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.postgresql.simple.storage | default "10Gi" }}
+        {{- $sc := default .Values.global.storageClass .Values.postgresql.simple.storageClass }}
+        {{- if $sc }}
+        storageClassName: {{ $sc }}
+        {{- end }}
+  {{- end }}
+{{- end }}

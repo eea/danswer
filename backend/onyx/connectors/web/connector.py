@@ -229,9 +229,6 @@ def is_valid_url(url: str) -> bool:
         return False
 
 
-<<<<<<< HEAD
-def get_internal_links(base_url: str, url: str, soup: BeautifulSoup, should_ignore_pound: bool = True) -> set[str]:
-=======
 def _same_site(base_url: str, candidate_url: str) -> bool:
     base, candidate = urlparse(base_url), urlparse(candidate_url)
     base_netloc = base.netloc.lower().removeprefix("www.")
@@ -254,7 +251,6 @@ def _same_site(base_url: str, candidate_url: str) -> bool:
 def get_internal_links(
     base_url: str, url: str, soup: BeautifulSoup, should_ignore_pound: bool = True
 ) -> set[str]:
->>>>>>> v2.3.0
     internal_links = set()
     for link in cast(list[dict[str, Any]], soup.find_all("a")):
         href = cast(str | None, link.get("href"))

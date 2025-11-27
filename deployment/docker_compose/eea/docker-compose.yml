@@ -1,7 +1,7 @@
 services:
   api_server:
     build:
-      context: ./backend
+      context: ../../../backend
       dockerfile: Dockerfile
     command: >
       /bin/sh -c "alembic upgrade head &&
@@ -85,7 +85,7 @@ services:
         max-file: "6"
   background:
     build:
-      context: ./backend
+      context: ../../../backend
       dockerfile: Dockerfile
     command: >
       /bin/sh -c "
@@ -169,11 +169,11 @@ services:
       - S3_FILE_STORE_BUCKET_NAME=${S3_FILE_STORE_BUCKET_NAME:-}
 
     volumes:
-      - ./data/local_dynamic_storage:/home/storage
-      - ./data/file_connector_tmp_storage:/home/file_connector_storage
-      - ./data/model_cache_torch:/root/.cache/torch/
-      - ./data/model_cache_nltk:/root/nltk_data/
-      - ./data/model_cache_huggingface:/root/.cache/huggingface/
+      - ../../../data/local_dynamic_storage:/home/storage
+      - ../../../data/file_connector_tmp_storage:/home/file_connector_storage
+      - ../../../data/model_cache_torch:/root/.cache/torch/
+      - ../../../data/model_cache_nltk:/root/nltk_data/
+      - ../../../data/model_cache_huggingface:/root/.cache/huggingface/
     extra_hosts:
       - "host.docker.internal:host-gateway"
     logging:
@@ -184,7 +184,7 @@ services:
 
   web_server:
     build:
-      context: ./web
+      context: ../../../web
       dockerfile: Dockerfile
       args:
         - NEXT_PUBLIC_DISABLE_STREAMING=${NEXT_PUBLIC_DISABLE_STREAMING:-false}
@@ -222,7 +222,7 @@ services:
   inference_model_server:
     image: danswer/danswer-model-server:latest
     build:
-      context: ./backend
+      context: ../../../backend
       dockerfile: Dockerfile.model_server
 
     command: >
@@ -251,7 +251,7 @@ services:
   indexing_model_server:
     image: danswer/danswer-model-server:latest
     build:
-      context: ./backend
+      context: ../../../backend
       dockerfile: Dockerfile.model_server
     command: >
       /bin/sh -c "if [ \"${DISABLE_MODEL_SERVER:-false}\" = \"True\" ]; then
@@ -299,7 +299,7 @@ services:
       - "80:80"
       - "13000:80"  # allow for localhost:3000 usage, since that is the norm
     volumes:
-      - ./deployment/data/nginx:/etc/nginx/conf.d
+      - ../../../deployment/data/nginx:/etc/nginx/conf.d
     logging:
       driver: json-file
       options:
