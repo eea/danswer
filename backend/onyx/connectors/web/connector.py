@@ -609,7 +609,7 @@ class WebConnector(LoadConnector):
         self.recursive = False
         self.scroll_before_scraping = scroll_before_scraping
         self.remove_by_selector = remove_by_selector or []
-        self.timeout = timeout
+        self.timeout = timeout or 30000
         self.web_connector_type = web_connector_type
         self.skip_unchanged_documents = skip_unchanged_documents
         self.original_url_count = 0
