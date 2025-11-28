@@ -45,7 +45,8 @@ class RerankingDetails(BaseModel):
     disable_rerank_for_streaming: bool = False
 
     @classmethod
-    def from_db_model(cls, search_settings: SearchSettings) -> "RerankingDetails":
+    def from_db_model(
+            cls, search_settings: SearchSettings) -> "RerankingDetails":
         return cls(
             rerank_model_name=search_settings.rerank_model_name,
             rerank_provider_type=search_settings.rerank_provider_type,
@@ -68,12 +69,14 @@ class SearchSettingsCreationRequest(InferenceSettings, IndexingSetting):
         inference_settings = InferenceSettings.from_db_model(search_settings)
         indexing_setting = IndexingSetting.from_db_model(search_settings)
 
-        return cls(**inference_settings.model_dump(), **indexing_setting.model_dump())
+        return cls(**inference_settings.model_dump(),
+                   **indexing_setting.model_dump())
 
 
 class SavedSearchSettings(InferenceSettings, IndexingSetting):
     @classmethod
-    def from_db_model(cls, search_settings: SearchSettings) -> "SavedSearchSettings":
+    def from_db_model(
+            cls, search_settings: SearchSettings) -> "SavedSearchSettings":
         return cls(
             # Indexing Setting
             model_name=search_settings.model_name,
@@ -316,7 +319,8 @@ class InferenceChunkUncleaned(InferenceChunk):
             k: v
             for k, v in self.model_dump().items()
             if k
-            not in ["metadata_suffix"]  # May be other fields to throw out in the future
+            # May be other fields to throw out in the future
+            not in ["metadata_suffix"]
         }
         return InferenceChunk(**inference_chunk_data)
 
@@ -336,6 +340,7 @@ class SearchDoc(BaseModel):
     semantic_identifier: str
     link: str | None = None
     blurb: str
+    content: str | None = None  # needed for halloumi, ref #286143
     source_type: DocumentSource
     boost: int
     # Whether the document is hidden when doing a standard search
@@ -378,6 +383,11 @@ class SearchDoc(BaseModel):
                 semantic_identifier=chunk.semantic_identifier or "Unknown",
                 link=chunk.source_links[0] if chunk.source_links else None,
                 blurb=chunk.blurb,
+                content=(
+                    # needed for halloumi, ref #286143
+                    item.combined_content if isinstance(
+                        item, InferenceSection) else None
+                ),
                 source_type=chunk.source_type,
                 boost=chunk.boost,
                 hidden=chunk.hidden,
@@ -394,7 +404,8 @@ class SearchDoc(BaseModel):
 
         return search_docs
 
-    def model_dump(self, *args: list, **kwargs: dict[str, Any]) -> dict[str, Any]:  # type: ignore
+    # type: ignore
+    def model_dump(self, *args: list, **kwargs: dict[str, Any]) -> dict[str, Any]:
         initial_dict = super().model_dump(*args, **kwargs)  # type: ignore
         initial_dict["updated_at"] = (
             self.updated_at.isoformat() if self.updated_at else None
@@ -474,7 +485,8 @@ class SearchResponse(RetrievalDocs):
 
 class RetrievalMetricsContainer(BaseModel):
     search_type: SearchType
-    metrics: list[ChunkMetric]  # This contains the scores for retrieval as well
+    # This contains the scores for retrieval as well
+    metrics: list[ChunkMetric]
 
 
 class RerankMetricsContainer(BaseModel):

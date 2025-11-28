@@ -68,7 +68,7 @@ class CitationProcessor:
 
         # '[', '[[', '[1', '[[1', '[1,', '[1, ', '[1,2', '[1, 2,', etc.
         # Also matches unicode bracket variants: 【, ［
-        self.possible_citation_pattern = re.compile(r"([\[【［]+(?:\d+,? ?)*$)")
+        self.possible_citation_pattern = re.compile(r"([\[【［]+(?:\d+(?:,\s*\d+)*(?:,\s*)?)?$)")
 
         # group 1: '[[1]]', [[2]], etc. (also matches 【【1】】, ［［1］］, 【1】, ［1］)
         # group 2: '[1]', '[1, 2]', '[1,2,16]', etc. (also matches unicode variants)
@@ -107,8 +107,11 @@ class CitationProcessor:
                     self.curr_segment = self.curr_segment.replace("```", "```plaintext")
 
         citation_matches = list(self.citation_pattern.finditer(self.curr_segment))
-        last_lb = self.curr_segment.rfind("[")
-        suffix = self.curr_segment[last_lb:] if last_lb != -1 else "" # avoid scanning the entire accumulated buffer
+        last_lb = -1
+        for i, char in enumerate(self.curr_segment):
+            if char in '[【［':
+                last_lb = i
+        suffix = self.curr_segment[last_lb:] if last_lb != -1 else ""  # avoid scanning the entire accumulated buffer
         possible_citation_found = bool(self.possible_citation_pattern.search(suffix))
 
         result = ""
