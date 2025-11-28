@@ -42,6 +42,7 @@ from onyx.chat.turn.models import ChatTurnDependencies
 from onyx.chat.turn.prompts.custom_instruction import build_custom_instructions
 from onyx.chat.turn.save_turn import extract_final_answer_from_packets
 from onyx.chat.turn.save_turn import save_turn
+from onyx.file_store.models import InMemoryChatFile
 from onyx.server.query_and_chat.streaming_models import CitationDelta
 from onyx.server.query_and_chat.streaming_models import CitationInfo
 from onyx.server.query_and_chat.streaming_models import CitationStart
@@ -55,6 +56,7 @@ from onyx.server.query_and_chat.streaming_models import ReasoningStart
 from onyx.server.query_and_chat.streaming_models import SectionEnd
 from onyx.tools.adapter_v1_to_v2 import force_use_tool_to_function_tool_names
 from onyx.tools.adapter_v1_to_v2 import tools_to_function_tools
+from onyx.tools.force import filter_tools_for_force_tool_use
 from onyx.tools.force import ForceUseTool
 from onyx.tools.tool import Tool
 
@@ -62,6 +64,26 @@ if TYPE_CHECKING:
     from litellm import ResponseFunctionToolCall
 
 MAX_ITERATIONS = 10
+
+
+# TODO: We should be able to do this a bit more cleanly since we know the schema
+# ahead of time. I'll make sure to do that for when we replace AgentSDKMessage.
+def _extract_tokens_from_messages(messages: list[AgentSDKMessage]) -> int:
+    from onyx.llm.utils import check_number_of_tokens
+
+    total_input_text_parts: list[str] = []
+    for msg in messages:
+        if isinstance(msg, dict):
+            content = msg.get("content") or msg.get("output")
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict):
+                        text = item.get("text")
+                        if text:
+                            total_input_text_parts.append(text)
+            elif isinstance(content, str):
+                total_input_text_parts.append(content)
+    return check_number_of_tokens("\n".join(total_input_text_parts))
 
 
 # TODO -- this can be refactored out and played with in evals + normal demo
@@ -89,6 +111,10 @@ def _run_agent_loop(
         available_tools: Sequence[Tool] = (
             dependencies.tools if iteration_count < MAX_ITERATIONS else []
         )
+        if force_use_tool and force_use_tool.force_use:
+            available_tools = filter_tools_for_force_tool_use(
+                list(available_tools), force_use_tool
+            )
         memories = get_memories(dependencies.user_or_none, dependencies.db_session)
         # TODO: The system is rather prompt-cache efficient except for rebuilding the system prompt.
         # The biggest offender is when we hit max iterations and then all the tool calls cannot
@@ -116,6 +142,7 @@ def _run_agent_loop(
             + [current_user_message]
         )
         current_messages = previous_messages + agent_turn_messages
+        ctx.current_input_tokens = _extract_tokens_from_messages(current_messages)
 
         if not available_tools:
             tool_choice = None
@@ -167,6 +194,9 @@ def _run_agent_loop(
         )
 
         # 3. Assign citation numbers to tool call outputs
+        # Instead of doing this complex parsing from the tool call response,
+        # I could have just used the ToolCallOutput event from the Agents SDK.
+        # TODO: When agent framework is gone, I can just use our ToolCallOutput event.
         citation_result = assign_citation_numbers_recent_tool_calls(
             agent_turn_messages, ctx
         )
@@ -197,6 +227,7 @@ def _fast_chat_turn_core(
     force_use_tool: ForceUseTool | None = None,
     # Dependency injectable argument for testing
     starter_context: ChatTurnContext | None = None,
+    latest_query_files: list[InMemoryChatFile] | None = None,
 ) -> None:
     """Core fast chat turn logic that allows overriding global_iteration_responses for testing.
 
@@ -213,11 +244,12 @@ def _fast_chat_turn_core(
         chat_session_id,
         dependencies.redis_client,
     )
+
     ctx = starter_context or ChatTurnContext(
         run_dependencies=dependencies,
         chat_session_id=chat_session_id,
         message_id=message_id,
-        research_type=research_type,
+        chat_files=latest_query_files or [],
     )
     with trace("fast_chat_turn"):
         _run_agent_loop(
@@ -274,6 +306,7 @@ def fast_chat_turn(
     research_type: ResearchType,
     prompt_config: PromptConfig,
     force_use_tool: ForceUseTool | None = None,
+    latest_query_files: list[InMemoryChatFile] | None = None,
 ) -> None:
     """Main fast chat turn function that calls the core logic with default parameters."""
     _fast_chat_turn_core(
@@ -284,6 +317,7 @@ def fast_chat_turn(
         research_type,
         prompt_config,
         force_use_tool=force_use_tool,
+        latest_query_files=latest_query_files,
     )
 
 
@@ -405,9 +439,9 @@ def _default_packet_translation(
             # (e.g. if we've already sent the MessageStart / MessageDelta packets, then we
             # shouldn't do anything)
             if ctx.current_output_index == output_index:
+                packets.append(Packet(ind=ctx.current_run_step, obj=SectionEnd()))
                 ctx.current_run_step += 1
                 ctx.current_output_index = None
-                packets.append(Packet(ind=ctx.current_run_step, obj=SectionEnd()))
 
         # ------------------------------------------------------------
         # Message packets

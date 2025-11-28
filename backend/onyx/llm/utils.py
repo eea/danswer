@@ -1,6 +1,7 @@
 import copy
 import io
 import json
+import re
 from collections.abc import Callable
 from collections.abc import Iterator
 from functools import lru_cache
@@ -52,6 +53,23 @@ logger = setup_logger()
 MAX_CONTEXT_TOKENS = 100
 ONE_MILLION = 1_000_000
 CHUNKS_PER_DOC_ESTIMATE = 5
+_TWELVE_LABS_PEGASUS_MODEL_NAMES = [
+    "us.twelvelabs.pegasus-1-2-v1:0",
+    "us.twelvelabs.pegasus-1-2-v1",
+    "twelvelabs/us.twelvelabs.pegasus-1-2-v1:0",
+    "twelvelabs/us.twelvelabs.pegasus-1-2-v1",
+]
+_TWELVE_LABS_PEGASUS_OUTPUT_TOKENS = max(512, GEN_AI_MODEL_FALLBACK_MAX_TOKENS // 4)
+CUSTOM_LITELLM_MODEL_OVERRIDES: dict[str, dict[str, Any]] = {
+    model_name: {
+        "max_input_tokens": GEN_AI_MODEL_FALLBACK_MAX_TOKENS,
+        "max_output_tokens": _TWELVE_LABS_PEGASUS_OUTPUT_TOKENS,
+        "max_tokens": GEN_AI_MODEL_FALLBACK_MAX_TOKENS,
+        "supports_reasoning": False,
+        "supports_vision": False,
+    }
+    for model_name in _TWELVE_LABS_PEGASUS_MODEL_NAMES
+}
 
 
 def _unwrap_nested_exception(error: Exception) -> Exception:
@@ -98,6 +116,7 @@ def litellm_exception_to_error_msg(
     from litellm.exceptions import Timeout
     from litellm.exceptions import ContentPolicyViolationError
     from litellm.exceptions import BudgetExceededError
+    from litellm.exceptions import ServiceUnavailableError
 
     core_exception = _unwrap_nested_exception(e)
     error_msg = str(core_exception)
@@ -150,6 +169,23 @@ def litellm_exception_to_error_msg(
             if upstream_detail
             else f"{provider_name} rate limit exceeded: Please slow down your requests and try again later."
         )
+    elif isinstance(core_exception, ServiceUnavailableError):
+        provider_name = (
+            llm.config.model_provider
+            if llm is not None and llm.config.model_provider
+            else "The LLM provider"
+        )
+        # Check if this is specifically the Bedrock "Too many connections" error
+        if "Too many connections" in error_msg or "BedrockException" in error_msg:
+            error_msg = (
+                f"{provider_name} is experiencing high connection volume and cannot process your request right now. "
+                "This typically happens when there are too many simultaneous requests to the AI model. "
+                "Please wait a moment and try again. If this persists, contact your system administrator "
+                "to review connection limits and retry configurations."
+            )
+        else:
+            # Generic 503 Service Unavailable
+            error_msg = f"{provider_name} service error: {str(core_exception)}"
     elif isinstance(core_exception, ContextWindowExceededError):
         error_msg = (
             "Context window exceeded: Your input is too long for the model to process."
@@ -486,7 +522,7 @@ def test_llm(llm: LLM) -> str | None:
     error_msg = None
     for _ in range(2):
         try:
-            llm.invoke("Do not respond")
+            llm.invoke_langchain("Do not respond")
             return None
         except Exception as e:
             error_msg = str(e)
@@ -520,12 +556,17 @@ def get_model_map() -> dict:
             ):
                 starting_map[truncated_key] = potential_truncated_value
 
-    # NOTE: we could add additional models here in the future,
-    # but for now there is no point. Ollama allows the user to
-    # to specify their desired max context window, and it's
+    for model_name, model_metadata in CUSTOM_LITELLM_MODEL_OVERRIDES.items():
+        if model_name in starting_map:
+            continue
+        starting_map[model_name] = copy.deepcopy(model_metadata)
+
+    # NOTE: outside of the explicit CUSTOM_LITELLM_MODEL_OVERRIDES,
+    # we avoid hard-coding additional models here. Ollama, for example,
+    # allows the user to specify their desired max context window, and it's
     # unlikely to be standard across users even for the same model
-    # (it heavily depends on their hardware). For now, we'll just
-    # rely on GEN_AI_MODEL_FALLBACK_MAX_TOKENS to cover this.
+    # (it heavily depends on their hardware). For those cases, we rely on
+    # GEN_AI_MODEL_FALLBACK_MAX_TOKENS to cover this.
     # for model_name in [
     #     "llama3.2",
     #     "llama3.2:1b",
@@ -905,3 +946,24 @@ def is_true_openai_model(model_provider: str, model_name: str) -> bool:
             f"Failed to determine if {model_provider}/{model_name} is a true OpenAI model"
         )
         return False
+
+
+def model_needs_formatting_reenabled(model_name: str) -> bool:
+    # See https://simonwillison.net/tags/markdown/ for context on why this is needed
+    # for OpenAI reasoning models to have correct markdown generation
+
+    # Models that need formatting re-enabled
+    model_names = ["gpt-5.1", "gpt-5", "o3", "o1"]
+
+    # Pattern matches if any of these model names appear with word boundaries
+    # Word boundaries include: start/end of string, space, hyphen, or forward slash
+    pattern = (
+        r"(?:^|[\s\-/])("
+        + "|".join(re.escape(name) for name in model_names)
+        + r")(?:$|[\s\-/])"
+    )
+
+    if re.search(pattern, model_name):
+        return True
+
+    return False

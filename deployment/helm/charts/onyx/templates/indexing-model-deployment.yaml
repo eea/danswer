@@ -5,6 +5,9 @@ metadata:
   name: {{ include "onyx.fullname" . }}-indexing-model
   labels:
     {{- include "onyx.labels" . | nindent 4 }}
+    {{- with .Values.indexCapability.deploymentLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 spec:
   replicas: {{ .Values.indexCapability.replicaCount }}
   selector:
@@ -22,6 +25,9 @@ spec:
       {{- end }}
       labels:
         {{- include "onyx.labels" . | nindent 8 }}
+        {{- with .Values.indexCapability.deploymentLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
         {{- with .Values.indexCapability.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -34,6 +40,7 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+<<<<<<< HEAD
       {{- $modelRepo := .Values.global.image.repository }}
       {{- if and .Values.indexCapability.image .Values.indexCapability.image.repository }}
         {{- $modelRepo = .Values.indexCapability.image.repository }}
@@ -41,6 +48,15 @@ spec:
       {{- $modelTag := default .Values.global.image.tags.modelServer (printf "model_server-%s" .Values.global.version) }}
       {{- if and .Values.indexCapability.image .Values.indexCapability.image.tag }}
         {{- $modelTag = .Values.indexCapability.image.tag }}
+=======
+      {{- with .Values.indexCapability.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.indexCapability.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+>>>>>>> v2.5.3
       {{- end }}
       containers:
       - name: {{ .Values.indexCapability.name }}

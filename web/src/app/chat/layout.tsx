@@ -4,14 +4,12 @@ import { fetchChatData } from "@/lib/chat/fetchChatData";
 import { ChatProvider } from "@/refresh-components/contexts/ChatContext";
 import { ProjectsProvider } from "./projects/ProjectsContext";
 import AppSidebar from "@/sections/sidebar/AppSidebar";
-import { ChatModalProvider } from "@/refresh-components/contexts/ChatModalContext";
-import AppLayout from "@/refresh-components/layouts/AppLayout";
 
-export default async function Layout({
-  children,
-}: {
+export interface LayoutProps {
   children: React.ReactNode;
-}) {
+}
+
+export default async function Layout({ children }: LayoutProps) {
   noStore();
 
   // Ensure searchParams is an object, even if it's empty
@@ -22,14 +20,12 @@ export default async function Layout({
   );
 
   if ("redirect" in data) {
-    console.log("redirect", data.redirect);
     redirect(data.redirect);
   }
 
   const {
     chatSessions,
     availableSources,
-    user,
     documentSets,
     tags,
     llmProviders,
@@ -60,14 +56,12 @@ export default async function Layout({
       shouldShowWelcomeModal={shouldShowWelcomeModal}
       defaultAssistantId={defaultAssistantId}
     >
-      <ChatModalProvider>
-        <ProjectsProvider initialProjects={projects}>
-          <div className="flex flex-row w-full h-full">
-            <AppSidebar />
-            <AppLayout>{children}</AppLayout>
-          </div>
-        </ProjectsProvider>
-      </ChatModalProvider>
+      <ProjectsProvider initialProjects={projects}>
+        <div className="flex flex-row w-full h-full">
+          <AppSidebar />
+          {children}
+        </div>
+      </ProjectsProvider>
     </ChatProvider>
   );
 }

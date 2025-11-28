@@ -10,7 +10,7 @@ import {
   UserGroup,
   UserRole,
 } from "@/lib/types";
-import { Separator } from "@/components/ui/separator";
+import Separator from "@/refresh-components/Separator";
 import Button from "@/refresh-components/buttons/Button";
 import {
   ArrayHelpers,
@@ -21,14 +21,13 @@ import {
   FastField,
 } from "formik";
 import { BooleanFormField, Label, TextFormField } from "@/components/Field";
-import { MemoizedToolList } from "@/components/admin/assistants/MemoizedToolCheckboxes";
 import {
   NameField,
   DescriptionField,
   SystemPromptField,
   TaskPromptField,
-  MCPServerSection,
 } from "@/components/admin/assistants/FormSections";
+import { ToolSelector } from "@/components/admin/assistants/ToolSelector";
 import { usePopup } from "@/components/admin/connectors/Popup";
 import { getDisplayNameForModel, useLabels } from "@/lib/hooks";
 import { DocumentSetSelectable } from "@/components/documentSet/DocumentSetSelectable";
@@ -42,14 +41,7 @@ import { ToolSnapshot, MCPServer } from "@/lib/tools/interfaces";
 import { checkUserIsNoAuthUser } from "@/lib/user";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import {
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useContext, useEffect, useMemo, useState } from "react";
 import * as Yup from "yup";
 import { SettingsContext } from "@/components/settings/SettingsProvider";
 import {
@@ -73,7 +65,7 @@ import { buildImgUrl } from "@/app/chat/components/files/images/utils";
 import { debounce } from "lodash";
 import { LLMProviderView } from "@/app/admin/configuration/llm/interfaces";
 import StarterMessagesList from "@/app/admin/assistants/StarterMessageList";
-import { SwitchField } from "@/components/ui/switch";
+import UnlabeledSwitchField from "@/refresh-components/formik-fields/UnlabeledSwitchField";
 import { generateIdenticon } from "@/refresh-components/AgentIcon";
 import { BackButton } from "@/components/BackButton";
 import { AdvancedOptionsToggle } from "@/components/AdvancedOptionsToggle";
@@ -86,11 +78,11 @@ import {
 import { SourceChip } from "@/app/chat/components/input/ChatInputBar";
 import { FileCard } from "@/app/chat/components/input/FileCard";
 import { hasNonImageFiles } from "@/lib/utils";
-import CoreModal from "@/refresh-components/modals/CoreModal";
-import UserFilesModalContent from "@/components/modals/UserFilesModalContent";
+import UserFilesModal from "@/components/modals/UserFilesModal";
 import { TagIcon, UserIcon, FileIcon, InfoIcon, BookIcon } from "lucide-react";
-import { LLMSelector } from "@/components/llm/LLMSelector";
-import useSWR from "swr";
+import { useCreateModal } from "@/refresh-components/contexts/ModalContext";
+import LLMSelector from "@/components/llm/LLMSelector";
+import useSWR, { mutate } from "swr";
 import { errorHandlingFetcher } from "@/lib/fetcher";
 import { ConfirmEntityModal } from "@/components/modals/ConfirmEntityModal";
 import {
@@ -141,16 +133,7 @@ function SubLabel({ children }: { children: string | JSX.Element }) {
   );
 }
 
-export function AssistantEditor({
-  existingPersona,
-  ccPairs,
-  documentSets,
-  user,
-  defaultPublic,
-  llmProviders,
-  tools,
-  shouldAddAssistantToUserPreferences,
-}: {
+export interface AssistantEditorProps {
   existingPersona?: FullPersona | null;
   ccPairs: CCPairBasicInfo[];
   documentSets: DocumentSetSummary[];
@@ -159,7 +142,18 @@ export function AssistantEditor({
   llmProviders: LLMProviderView[];
   tools: ToolSnapshot[];
   shouldAddAssistantToUserPreferences?: boolean;
-}) {
+}
+
+export default function AssistantEditor({
+  existingPersona,
+  ccPairs,
+  documentSets,
+  user,
+  defaultPublic,
+  llmProviders,
+  tools,
+  shouldAddAssistantToUserPreferences,
+}: AssistantEditorProps) {
   // NOTE: assistants = agents
   // TODO: rename everything to agents
   const { refreshAgents } = useAgentsContext();
@@ -185,7 +179,7 @@ export function AssistantEditor({
   const [presentingDocument, setPresentingDocument] =
     useState<MinimalOnyxDocument | null>(null);
   const [showAdvancedOptions, setShowAdvancedOptions] = useState(false);
-  const [showAllUserFiles, setShowAllUserFiles] = useState(false);
+  const userFilesModal = useCreateModal();
 
   // both `defautIconColor` and `defaultIconShape` are state so that they
   // persist across formik reformatting
@@ -207,6 +201,7 @@ export function AssistantEditor({
     [llmProviders.length]
   );
   const isUpdate = existingPersona !== undefined && existingPersona !== null;
+
   const defaultProvider = llmProviders.find(
     (llmProvider) => llmProvider.is_default_provider
   );
@@ -237,97 +232,8 @@ export function AssistantEditor({
   const imageGenerationTool = findImageGenerationTool(tools);
   const webSearchTool = findWebSearchTool(tools);
 
-  // Separate MCP tools from regular custom tools - memoize to prevent re-renders
-  const { mcpTools, customTools, mcpToolsByServer } = useMemo(() => {
-    const allCustom = tools.filter(
-      (tool) =>
-        tool.in_code_tool_id !== searchTool?.in_code_tool_id &&
-        tool.in_code_tool_id !== imageGenerationTool?.in_code_tool_id &&
-        tool.in_code_tool_id !== webSearchTool?.in_code_tool_id
-    );
-
-    const mcp = allCustom.filter((tool) => tool.mcp_server_id);
-    const custom = allCustom.filter((tool) => !tool.mcp_server_id);
-
-    // Group MCP tools by server
-    const groups: { [serverId: number]: ToolSnapshot[] } = {};
-    mcp.forEach((tool) => {
-      if (tool.mcp_server_id) {
-        if (!groups[tool.mcp_server_id]) {
-          groups[tool.mcp_server_id] = [];
-        }
-        groups[tool.mcp_server_id]!.push(tool);
-      }
-    });
-
-    return {
-      mcpTools: mcp,
-      customTools: custom,
-      mcpToolsByServer: groups,
-    };
-  }, [
-    tools,
-    searchTool?.in_code_tool_id,
-    imageGenerationTool?.in_code_tool_id,
-    webSearchTool?.in_code_tool_id,
-  ]);
-
-  // Helper functions for MCP server checkbox state - memoize to prevent re-renders
-  const getMCPServerCheckboxState = useCallback(
-    (serverId: number, enabledToolsMap: { [key: number]: boolean }) => {
-      const serverTools = mcpToolsByServer[serverId] || [];
-      const enabledCount = serverTools.filter(
-        (tool) => enabledToolsMap[tool.id]
-      ).length;
-
-      if (enabledCount === 0) return false; // unchecked
-      if (enabledCount === serverTools.length) return true; // checked
-      return "indeterminate"; // partially checked
-    },
-    [mcpToolsByServer]
-  );
-
-  const toggleMCPServerTools = useCallback(
-    (
-      serverId: number,
-      enabledToolsMap: { [key: number]: boolean },
-      setFieldValue: any
-    ) => {
-      const serverTools = mcpToolsByServer[serverId] || [];
-      const currentState = getMCPServerCheckboxState(serverId, enabledToolsMap);
-      const shouldEnable = currentState !== true; // enable if not fully checked
-
-      const updatedMap = { ...enabledToolsMap };
-      serverTools.forEach((tool) => {
-        updatedMap[tool.id] = shouldEnable;
-      });
-
-      setFieldValue("enabled_tools_map", updatedMap);
-    },
-    [mcpToolsByServer, getMCPServerCheckboxState]
-  );
-
-  const toggleServerCollapse = useCallback((serverId: number) => {
-    setCollapsedServers((prev) => {
-      const newCollapsed = new Set(prev);
-      if (newCollapsed.has(serverId)) {
-        newCollapsed.delete(serverId);
-      } else {
-        newCollapsed.add(serverId);
-      }
-      return newCollapsed;
-    });
-  }, []);
-
-  const availableTools = [
-    ...customTools,
-    ...mcpTools, // Include MCP tools for form logic
-    ...(searchTool ? [searchTool] : []),
-    ...(imageGenerationTool ? [imageGenerationTool] : []),
-    ...(webSearchTool ? [webSearchTool] : []),
-  ];
   const enabledToolsMap: { [key: number]: boolean } = {};
-  availableTools.forEach((tool) => {
+  tools.forEach((tool) => {
     enabledToolsMap[tool.id] = personaCurrentToolIds.includes(tool.id);
   });
 
@@ -444,36 +350,6 @@ export function AssistantEditor({
   const [labelToDelete, setLabelToDelete] = useState<PersonaLabel | null>(null);
   const [isRequestSuccessful, setIsRequestSuccessful] = useState(false);
   const [mcpServers, setMcpServers] = useState<MCPServer[]>([]);
-  const [collapsedServers, setCollapsedServers] = useState<Set<number>>(
-    () => new Set(Object.keys(mcpToolsByServer).map((id) => parseInt(id, 10)))
-  );
-  const seenServerIdsRef = useRef<Set<number>>(
-    new Set(Object.keys(mcpToolsByServer).map((id) => parseInt(id, 10)))
-  );
-
-  useEffect(() => {
-    const serverIds = Object.keys(mcpToolsByServer).map((id) =>
-      parseInt(id, 10)
-    );
-
-    const unseenIds = serverIds.filter(
-      (id) => !seenServerIdsRef.current.has(id)
-    );
-
-    if (unseenIds.length === 0) {
-      return;
-    }
-
-    const updatedSeen = new Set(seenServerIdsRef.current);
-    unseenIds.forEach((id) => updatedSeen.add(id));
-    seenServerIdsRef.current = updatedSeen;
-
-    setCollapsedServers((prev) => {
-      const next = new Set(prev);
-      unseenIds.forEach((id) => next.add(id));
-      return next;
-    });
-  }, [mcpToolsByServer]);
 
   const { data: userGroups } = useUserGroups();
 
@@ -784,6 +660,14 @@ export function AssistantEditor({
 
             await refreshAgents();
 
+            // Force refetch LLM provider cache for this agent
+            // This ensures the chat page shows the updated provider list
+            await mutate(
+              `/api/llm/persona/${assistantId}/providers`,
+              undefined,
+              { revalidate: true }
+            );
+
             router.push(
               isAdminPage
                 ? `/admin/assistants?u=${Date.now()}`
@@ -835,6 +719,36 @@ export function AssistantEditor({
 
           return (
             <>
+              <userFilesModal.Provider>
+                <UserFilesModal
+                  title="User Files"
+                  description="All files selected for this assistant"
+                  icon={SvgFiles}
+                  recentFiles={values.user_file_ids.map(
+                    (userFileId: string) => {
+                      const rf = allRecentFiles.find(
+                        (f) => f.id === userFileId
+                      );
+                      return (
+                        rf || {
+                          id: userFileId,
+                          name: `File ${userFileId.slice(0, 8)}`,
+                          status: "completed" as const,
+                        }
+                      );
+                    }
+                  )}
+                  onDelete={(file) => {
+                    setFieldValue(
+                      "user_file_ids",
+                      values.user_file_ids.filter(
+                        (id: string) => id !== file.id
+                      )
+                    );
+                  }}
+                />
+              </userFilesModal.Provider>
+
               <Form className="w-full text-text-950 assistant-editor">
                 <FormErrorFocus />
                 {/* Refresh starter messages when name or description changes */}
@@ -870,7 +784,6 @@ export function AssistantEditor({
                     <div className="flex flex-col gap-2">
                       <Button
                         secondary
-                        type="button"
                         onClick={() => {
                           const fileInput = document.createElement("input");
                           fileInput.type = "file";
@@ -894,7 +807,6 @@ export function AssistantEditor({
                       {values.uploaded_image && (
                         <Button
                           secondary
-                          type="button"
                           onClick={() => {
                             setUploadedImagePreview(null);
                             setFieldValue("uploaded_image", null);
@@ -915,7 +827,6 @@ export function AssistantEditor({
                           removePersonaImage) && (
                           <Button
                             secondary
-                            type="button"
                             onClick={(e) => {
                               e.stopPropagation();
                               const newShape = generateRandomIconShape();
@@ -939,7 +850,6 @@ export function AssistantEditor({
                         !values.uploaded_image && (
                           <Button
                             secondary
-                            type="button"
                             onClick={(e) => {
                               e.stopPropagation();
                               setRemovePersonaImage(false);
@@ -957,7 +867,6 @@ export function AssistantEditor({
                         !values.uploaded_image && (
                           <Button
                             secondary
-                            type="button"
                             onClick={(e) => {
                               e.stopPropagation();
                               setRemovePersonaImage(true);
@@ -1003,34 +912,15 @@ export function AssistantEditor({
                                       : ""
                                   }`}
                                 >
-                                  <FastField
+                                  <UnlabeledSwitchField
+                                    onCheckedChange={() =>
+                                      toggleToolInValues(searchTool?.id || -1)
+                                    }
                                     name={`enabled_tools_map.${
-                                      // -1 is a placeholder -- this section
-                                      // should be disabled anyways if no search tool
                                       searchTool?.id || -1
                                     }`}
-                                  >
-                                    {({ form }: any) => (
-                                      <SwitchField
-                                        size="sm"
-                                        onCheckedChange={(checked: boolean) => {
-                                          form.setFieldValue(
-                                            "num_chunks",
-                                            null
-                                          );
-                                          toggleToolInValues(
-                                            searchTool?.id || -1
-                                          );
-                                        }}
-                                        name={`enabled_tools_map.${
-                                          searchTool?.id || -1
-                                        }`}
-                                        disabled={
-                                          !connectorsExist || !searchTool
-                                        }
-                                      />
-                                    )}
-                                  </FastField>
+                                    disabled={!connectorsExist || !searchTool}
+                                  />
                                 </div>
                               </SimpleTooltip>
                             </div>
@@ -1128,7 +1018,7 @@ export function AssistantEditor({
 
                                     return displayedFiles.map((fileData) => {
                                       return (
-                                        <div key={fileData.id} className="w-40">
+                                        <div key={fileData.id}>
                                           <FileCard
                                             file={fileData as ProjectFile}
                                             hideProcessingState
@@ -1151,7 +1041,9 @@ export function AssistantEditor({
                                     <button
                                       type="button"
                                       className="rounded-xl px-3 py-1 text-left transition-colors hover:bg-background-tint-02"
-                                      onClick={() => setShowAllUserFiles(true)}
+                                      onClick={() =>
+                                        userFilesModal.toggle(true)
+                                      }
                                     >
                                       <div className="flex flex-col overflow-hidden h-12 p-1">
                                         <div className="flex items-center justify-between gap-2 w-full">
@@ -1355,98 +1247,19 @@ export function AssistantEditor({
                     <Separator />
                     <div className="py-2">
                       <p className="block font-medium text-sm mb-2">Actions</p>
-
-                      {imageGenerationTool && (
-                        <>
-                          <div className="flex items-center content-start mb-2">
-                            <FastField
-                              name={`enabled_tools_map.${imageGenerationTool.id}`}
-                            >
-                              {() => (
-                                <BooleanFormField
-                                  name={`enabled_tools_map.${imageGenerationTool.id}`}
-                                  label={imageGenerationTool.display_name}
-                                  subtext="Generate and manipulate images using AI-powered tools"
-                                  disabled={!currentLLMSupportsImageOutput}
-                                  disabledTooltip={
-                                    !currentLLMSupportsImageOutput
-                                      ? "To use Image Generation, select GPT-4 or another image compatible model as the default model for this Agent."
-                                      : "Image Generation requires an OpenAI or Azure Dall-E configuration."
-                                  }
-                                />
-                              )}
-                            </FastField>
-                          </div>
-                        </>
-                      )}
-
-                      {webSearchTool && (
-                        <>
-                          <FastField
-                            name={`enabled_tools_map.${webSearchTool.id}`}
-                          >
-                            {() => (
-                              <BooleanFormField
-                                name={`enabled_tools_map.${webSearchTool.id}`}
-                                label={webSearchTool.display_name}
-                                subtext="Access real-time information and search the web for up-to-date results"
-                              />
-                            )}
-                          </FastField>
-                        </>
-                      )}
-
-                      {/* Regular Custom Tools */}
-                      {customTools.length > 0 && (
-                        <MemoizedToolList tools={customTools} />
-                      )}
-
-                      {/* MCP Server Tools - Hierarchical Structure */}
-                      {Object.keys(mcpToolsByServer).length > 0 &&
-                        Object.entries(mcpToolsByServer).map(
-                          ([serverId, serverTools]) => {
-                            const serverIdNum = parseInt(serverId);
-                            const serverInfo =
-                              mcpServers.find(
-                                (server) => server.id === serverIdNum
-                              ) || null;
-                            const isCollapsed =
-                              collapsedServers.has(serverIdNum) ||
-                              !seenServerIdsRef.current.has(serverIdNum);
-
-                            // Extract server name from tool name (format: "server_name_tool_name")
-                            const firstTool = serverTools[0];
-                            const serverName =
-                              serverInfo?.name ||
-                              firstTool?.name
-                                ?.split("_")
-                                .slice(0, -1)
-                                .join("_") ||
-                              `MCP Server ${serverId}`;
-
-                            const serverUrl =
-                              serverInfo?.server_url || "Unknown URL";
-
-                            return (
-                              <MCPServerSection
-                                key={`mcp-server-${serverId}`}
-                                serverId={serverIdNum}
-                                serverTools={serverTools}
-                                serverName={serverName}
-                                serverUrl={serverUrl}
-                                isCollapsed={isCollapsed}
-                                onToggleCollapse={toggleServerCollapse}
-                                onToggleServerTools={() => {
-                                  toggleMCPServerTools(
-                                    serverIdNum,
-                                    values.enabled_tools_map,
-                                    setFieldValue
-                                  );
-                                }}
-                              />
-                            );
-                          }
-                        )}
+                      <ToolSelector
+                        tools={tools}
+                        mcpServers={mcpServers}
+                        enabledToolsMap={values.enabled_tools_map}
+                        setFieldValue={setFieldValue}
+                        imageGenerationDisabled={!currentLLMSupportsImageOutput}
+                        imageGenerationDisabledTooltip={
+                          !currentLLMSupportsImageOutput
+                            ? "To use Image Generation, select GPT-4 or another image compatible model as the default model for this Agent."
+                            : "Image Generation requires an OpenAI or Azure Dall-E configuration."
+                        }
+                        hideSearchTool={true}
+                      />
                     </div>
                   </div>
                 </div>
@@ -1461,12 +1274,19 @@ export function AssistantEditor({
                   <LLMSelector
                     llmProviders={llmProviders}
                     currentLlm={
-                      values.llm_model_version_override
-                        ? structureValue(
-                            values.llm_model_provider_override,
-                            "",
-                            values.llm_model_version_override
-                          )
+                      values.llm_model_version_override &&
+                      values.llm_model_provider_override
+                        ? (() => {
+                            const provider = llmProviders.find(
+                              (p) =>
+                                p.name === values.llm_model_provider_override
+                            );
+                            return structureValue(
+                              values.llm_model_provider_override,
+                              provider?.provider || "",
+                              values.llm_model_version_override
+                            );
+                          })()
                         : null
                     }
                     requiresImageGeneration={
@@ -1479,7 +1299,7 @@ export function AssistantEditor({
                         setFieldValue("llm_model_version_override", null);
                         setFieldValue("llm_model_provider_override", null);
                       } else {
-                        const { modelName, provider, name } =
+                        const { modelName, name } =
                           parseLlmDescriptor(selected);
                         if (modelName && name) {
                           setFieldValue(
@@ -1532,9 +1352,8 @@ export function AssistantEditor({
                             side="top"
                           >
                             <div>
-                              <SwitchField
+                              <UnlabeledSwitchField
                                 name="is_public"
-                                size="md"
                                 onCheckedChange={(checked) => {
                                   if (values.is_default_persona && !checked) {
                                     setShowVisibilityWarning(true);
@@ -1909,41 +1728,6 @@ export function AssistantEditor({
                   </div>
                 </div>
               </Form>
-              {showAllUserFiles && (
-                <CoreModal
-                  className="w-full max-w-lg"
-                  onClickOutside={() => setShowAllUserFiles(false)}
-                >
-                  <UserFilesModalContent
-                    title="User Files"
-                    description="All files selected for this assistant"
-                    icon={SvgFiles}
-                    recentFiles={values.user_file_ids.map(
-                      (userFileId: string) => {
-                        const rf = allRecentFiles.find(
-                          (f) => f.id === userFileId
-                        );
-                        return (
-                          rf || {
-                            id: userFileId,
-                            name: `File ${userFileId.slice(0, 8)}`,
-                            status: "completed" as const,
-                          }
-                        );
-                      }
-                    )}
-                    onDelete={(file) => {
-                      setFieldValue(
-                        "user_file_ids",
-                        values.user_file_ids.filter(
-                          (id: string) => id !== file.id
-                        )
-                      );
-                    }}
-                    onClose={() => setShowAllUserFiles(false)}
-                  />
-                </CoreModal>
-              )}
             </>
           );
         }}

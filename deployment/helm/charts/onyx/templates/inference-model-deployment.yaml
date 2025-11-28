@@ -31,6 +31,7 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+<<<<<<< HEAD
       {{- $modelRepo := .Values.global.image.repository }}
       {{- if and .Values.inferenceCapability.image .Values.inferenceCapability.image.repository }}
         {{- $modelRepo = .Values.inferenceCapability.image.repository }}
@@ -38,6 +39,15 @@ spec:
       {{- $modelTag := default .Values.global.image.tags.modelServer (printf "model_server-%s" .Values.global.version) }}
       {{- if and .Values.inferenceCapability.image .Values.inferenceCapability.image.tag }}
         {{- $modelTag = .Values.inferenceCapability.image.tag }}
+=======
+      {{- with .Values.inferenceCapability.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.inferenceCapability.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+>>>>>>> v2.5.3
       {{- end }}
       containers:
       - name: model-server-inference

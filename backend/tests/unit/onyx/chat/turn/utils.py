@@ -29,7 +29,6 @@ from openai.types.responses.response_usage import InputTokensDetails
 from openai.types.responses.response_usage import OutputTokensDetails
 from openai.types.responses.response_usage import ResponseUsage
 
-from onyx.agents.agent_search.dr.enums import ResearchType
 from onyx.chat.turn.infra.emitter import get_default_emitter
 from onyx.chat.turn.models import ChatTurnContext
 from onyx.chat.turn.models import ChatTurnDependencies
@@ -62,7 +61,7 @@ class FakeLLM(LLM):
     def log_model_configs(self) -> None:
         """Fake log_model_configs method."""
 
-    def _invoke_implementation(
+    def _invoke_implementation_langchain(
         self,
         prompt: Any,
         tools: Any = None,
@@ -75,6 +74,42 @@ class FakeLLM(LLM):
         from langchain_core.messages import AIMessage
 
         return AIMessage(content="fake response")
+
+    def _invoke_implementation(
+        self,
+        prompt: Any,
+        tools: Any = None,
+        tool_choice: Any = None,
+        structured_response_format: Any = None,
+        timeout_override: Any = None,
+        max_tokens: Any = None,
+    ) -> Any:
+        """Fake _invoke_implementation method."""
+        from onyx.llm.model_response import Choice
+        from onyx.llm.model_response import Message
+        from onyx.llm.model_response import ModelResponse as OnyxModelResponse
+
+        return OnyxModelResponse(
+            id="fake-id",
+            created="0",
+            choice=Choice(
+                finish_reason="stop",
+                index=0,
+                message=Message(content="fake response", role="assistant"),
+            ),
+        )
+
+    def _stream_implementation_langchain(
+        self,
+        prompt: Any,
+        tools: Any = None,
+        tool_choice: Any = None,
+        structured_response_format: Any = None,
+        timeout_override: Any = None,
+        max_tokens: Any = None,
+    ) -> Any:
+        """Fake _stream_implementation method that yields no messages."""
+        return iter([])
 
     def _stream_implementation(
         self,
@@ -775,7 +810,6 @@ def chat_turn_context(
     chat_turn_dependencies: ChatTurnDependencies,
     chat_session_id: UUID,
     message_id: int,
-    research_type: ResearchType,
 ) -> ChatTurnContext:
     """Fixture providing a ChatTurnContext with filler arguments for testing."""
     from onyx.chat.turn.models import ChatTurnContext
@@ -783,6 +817,5 @@ def chat_turn_context(
     return ChatTurnContext(
         chat_session_id=chat_session_id,
         message_id=message_id,
-        research_type=research_type,
         run_dependencies=chat_turn_dependencies,
     )
