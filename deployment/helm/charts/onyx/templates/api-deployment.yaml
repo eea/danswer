@@ -45,7 +45,6 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-<<<<<<< HEAD
       {{- $backendRepo := .Values.global.image.repository }}
       {{- if and .Values.api.image .Values.api.image.repository }}
         {{- $backendRepo = .Values.api.image.repository }}
@@ -53,7 +52,7 @@ spec:
       {{- $backendTag := default .Values.global.image.tags.backend (printf "backend-%s" .Values.global.version) }}
       {{- if and .Values.api.image .Values.api.image.tag }}
         {{- $backendTag = .Values.api.image.tag }}
-=======
+      {{- end }}
       {{- with .Values.api.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
@@ -61,7 +60,6 @@ spec:
       {{- with .Values.api.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
->>>>>>> v2.5.3
       {{- end }}
       containers:
         - name: api-server

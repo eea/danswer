@@ -9,12 +9,12 @@ metadata:
     {{- toYaml .Values.api.deploymentLabels | nindent 4 }}
     {{- end }}
 spec:
-  type: {{ .Values.api.service.type }}
+  type: {{ default "ClusterIP" .Values.api.service.type }}
   ports:
-    - port: {{ .Values.api.service.servicePort }}
-      targetPort: {{ .Values.api.service.targetPort }}
+    - port: {{ default 8080 .Values.api.service.servicePort }}
+      targetPort: {{ default "api-server-port" .Values.api.service.targetPort }}
       protocol: TCP
-      name: {{ .Values.api.service.portName }}
+      name: {{ default "api-server-port" .Values.api.service.portName }}
   selector:
     {{- include "onyx.selectorLabels" . | nindent 4 }}
     {{- if .Values.api.deploymentLabels }}

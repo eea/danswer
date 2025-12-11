@@ -40,7 +40,6 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-<<<<<<< HEAD
       {{- $modelRepo := .Values.global.image.repository }}
       {{- if and .Values.indexCapability.image .Values.indexCapability.image.repository }}
         {{- $modelRepo = .Values.indexCapability.image.repository }}
@@ -48,7 +47,7 @@ spec:
       {{- $modelTag := default .Values.global.image.tags.modelServer (printf "model_server-%s" .Values.global.version) }}
       {{- if and .Values.indexCapability.image .Values.indexCapability.image.tag }}
         {{- $modelTag = .Values.indexCapability.image.tag }}
-=======
+      {{- end }}
       {{- with .Values.indexCapability.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
@@ -56,7 +55,6 @@ spec:
       {{- with .Values.indexCapability.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
->>>>>>> v2.5.3
       {{- end }}
       containers:
       - name: {{ .Values.indexCapability.name }}

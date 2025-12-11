@@ -11,8 +11,8 @@ spec:
     {{- toYaml .Values.indexCapability.deploymentLabels | nindent 4 }}
     {{- end }}
   ports:
-    - name: {{ .Values.indexCapability.service.portName }}
+    - name: {{ default "modelserver" .Values.indexCapability.service.portName }}
       protocol: TCP
-      port: {{ .Values.indexCapability.service.servicePort  }}
-      targetPort: {{ .Values.indexCapability.service.targetPort }}
-  type: {{ .Values.indexCapability.service.type }}
+      port: {{ default 9000 .Values.indexCapability.service.servicePort }}
+      targetPort: {{ default 9000 .Values.indexCapability.service.targetPort }}
+  type: {{ default "ClusterIP" .Values.indexCapability.service.type }}

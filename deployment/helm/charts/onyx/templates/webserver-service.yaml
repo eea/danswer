@@ -8,10 +8,10 @@ metadata:
     {{- toYaml .Values.webserver.deploymentLabels | nindent 4 }}
     {{- end }}
 spec:
-  type: {{ .Values.webserver.service.type }}
+  type: {{ default "ClusterIP" .Values.webserver.service.type }}
   ports:
-    - port: {{ .Values.webserver.service.servicePort }}
-      targetPort: {{ .Values.webserver.service.targetPort }}
+    - port: {{ default 3000 .Values.webserver.service.servicePort }}
+      targetPort: {{ default "http" .Values.webserver.service.targetPort }}
       protocol: TCP
       name: http
   selector:

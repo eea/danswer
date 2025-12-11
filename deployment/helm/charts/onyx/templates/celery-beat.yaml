@@ -43,7 +43,6 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-<<<<<<< HEAD
       {{- $backendRepo := .Values.global.image.repository }}
       {{- if and .Values.celery_shared.image .Values.celery_shared.image.repository }}
         {{- $backendRepo = .Values.celery_shared.image.repository }}
@@ -51,7 +50,7 @@ spec:
       {{- $backendTag := default .Values.global.image.tags.backend (printf "backend-%s" .Values.global.version) }}
       {{- if and .Values.celery_shared.image .Values.celery_shared.image.tag }}
         {{- $backendTag = .Values.celery_shared.image.tag }}
-=======
+      {{- end }}
       {{- with .Values.celery_beat.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
@@ -59,7 +58,6 @@ spec:
       {{- with .Values.celery_beat.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
->>>>>>> v2.5.3
       {{- end }}
       containers:
         - name: celery-beat

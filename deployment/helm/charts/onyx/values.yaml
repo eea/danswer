@@ -4,7 +4,7 @@
 
 global:
   # Global version for all Onyx components (overrides .Chart.AppVersion)
-  version: "v2.3.0-eea.0.0.83-dev"
+  version: "v2.3.0-eea.0.0.88-dev"
   # Optional global image settings. If repository is set, all core components default to this repo.
   # Component-specific tags can be set under tags; fall back to per-component tags or global.version.
   image:
@@ -195,9 +195,9 @@ inferenceCapability:
       emptyDir: {}
   volumeMounts:
     - name: logs
-      mountPath: /var/log/onyx  
+      mountPath: /var/log/onyx
     - name: cache
-      mountPath: /.cache
+      mountPath: /app/.cache
     - name: tmp
       mountPath: /tmp
 =======
@@ -249,9 +249,9 @@ indexCapability:
       emptyDir: {}
   volumeMounts:
     - name: logs
-      mountPath: /var/log/onyx  
+      mountPath: /var/log/onyx
     - name: cache
-      mountPath: /.cache
+      mountPath: /app/.cache
     - name: tmp
       mountPath: /tmp
 =======
@@ -958,15 +958,15 @@ celery_worker_docfetching:
       emptyDir: {}
     - name: tmp
       emptyDir: {}
-    - name: cache
-      emptyDir: {}
+    # - name: cache
+    #   emptyDir: {}
   volumeMounts:
     - name: logs
       mountPath: /var/log/onyx
     - name: tmp
       mountPath: /tmp
-    - name: cache
-      mountPath: /.cache
+    # - name: cache
+    #   mountPath: /.cache
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -1058,10 +1058,12 @@ auth:
       # CloudNativePG requires `username` and `password` keys for the superuser secret.
       POSTGRES_USER: username
       POSTGRES_PASSWORD: password
+      POSTGRES_DB: database
     # -- Secrets values IF existingSecret is empty. Key here must match the value in secretKeys to be used. Values will be base64 encoded in the k8s cluster.
     values:
       username: "postgres"
       password: "postgres"
+      database: "onyx"
   redis:
     # -- Enable or disable this secret entirely. Will remove from env var configurations and remove any created secrets.
     enabled: true
@@ -1222,3 +1224,33 @@ configMap:
   SKIP_USERFILE_THRESHOLD: ""
   # For multi-tenant: comma-separated list of tenant IDs to skip threshold
   SKIP_USERFILE_THRESHOLD_TENANT_IDS: ""
+
+# Postfix mail relay configuration
+postfix:
+  enabled: false
+  dryrun: false
+  serverName: ""
+  mtpHost: ""
+  mtpPort: 587
+  mtpRelay: ""
+  mtpUser: ""
+  mtpPass: ""
+  resources:
+    limits:
+      memory: 128Mi
+    requests:
+      cpu: 100m
+      memory: 64Mi
+  affinity: {}
+  tolerations: []
+  mailtrap:
+    httpenabled: false
+    ingress:
+      enabled: false
+    mtPasswd: ""
+    mtUser: ""
+    serviceType: ClusterIP
+
+networkPolicy:
+  # Enable network policies to restrict traffic between pods
+  enabled: false

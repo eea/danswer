@@ -1,2 +1,6 @@
 .env*
 secrets.yaml
+custom-values*.yaml
+**/custom-values*.yaml
+helm/charts/*/custom-values*.yaml
+helm/charts/onyx/custom-values*.yaml

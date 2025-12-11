@@ -2,7 +2,7 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: {{ include "onyx.fullname" . }}-nginx
+  name: {{ default (printf "%s-nginx" (include "onyx.fullname" .)) .Values.nginx.ingress.name }}
   namespace: {{ .Release.Namespace }}
   labels:
     app: nginx
@@ -35,9 +35,9 @@ spec:
             pathType: {{ .pathType }}
             backend:
               service:
-                name: {{ include "onyx.fullname" $ }}-nginx
+                name: {{ default (printf "%s-nginx" (include "onyx.fullname" $)) .serviceName }}
                 port:
-                  number: 80
+                  number: {{ default 80 .servicePort }}
           {{- end }}
     {{- end }}
 {{- end }}
