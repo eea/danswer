@@ -185,7 +185,8 @@ inferenceCapability:
       drop:
       - ALL
   nodeSelector: {}
-<<<<<<< HEAD
+  tolerations: []
+  affinity: {}
   volumes:
     - name: cache
       emptyDir: {}
@@ -200,10 +201,6 @@ inferenceCapability:
       mountPath: /app/.cache
     - name: tmp
       mountPath: /tmp
-=======
-  tolerations: []
-  affinity: {}
->>>>>>> v2.5.3
 
 indexCapability:
   service:
@@ -239,7 +236,8 @@ indexCapability:
       drop:
       - ALL
   nodeSelector: {}
-<<<<<<< HEAD
+  tolerations: []
+  affinity: {}
   volumes:
     - name: cache
       emptyDir: {}
@@ -254,10 +252,6 @@ indexCapability:
       mountPath: /app/.cache
     - name: tmp
       mountPath: /tmp
-=======
-  tolerations: []
-  affinity: {}
->>>>>>> v2.5.3
 config:
   envConfigMapName: env-configmap
 

@@ -1,4 +1,4 @@
-FROM python:3.11.7-slim-bookworm
+FROM python:3.11-slim-bookworm
 
 # Instead of downloading ffmpeg-linux.zip when installing playwright, we put it in the tmp folder
 COPY ffmpeg-linux.zip /tmp/ffmpeg-linux.zip
@@ -16,7 +16,10 @@ founders@onyx.app for more information. Please visit https://github.com/onyx-dot
 # DO_NOT_TRACK is used to disable telemetry for Unstructured
 ENV DANSWER_RUNNING_IN_DOCKER="true" \
     DO_NOT_TRACK="true" \
-    PLAYWRIGHT_BROWSERS_PATH="/app/.cache/ms-playwright"
+    PLAYWRIGHT_BROWSERS_PATH="/app/.cache/ms-playwright" \
+    NLTK_DATA="/usr/share/nltk_data" \
+    HF_HOME="/usr/share/huggingface" \
+    TIKTOKEN_CACHE_DIR="/usr/share/tiktoken_cache"
 
 # Create non-root user for security best practices
 RUN groupadd -g 1001 onyx && \
@@ -31,13 +34,14 @@ COPY --from=ghcr.io/astral-sh/uv:0.9.9 /uv /uvx /bin/
 # cmake needed for psycopg (postgres)
 # libpq-dev needed for psycopg (postgres)
 # curl included just for users' convenience
-# zip for Vespa step futher down
+# zip/unzip for Vespa and playwright cache setup
 # ca-certificates for HTTPS
 RUN apt-get update && \
-    apt-get install -y \
+    apt-get install -y --no-install-recommends \
         cmake \
         curl \
         zip \
+        unzip \
         ca-certificates \
         libgnutls30 \
         libblkid1 \
@@ -46,20 +50,19 @@ RUN apt-get update && \
         libuuid1 \
         libxmlsec1-dev \
         pkg-config \
-        gcc \
-        nano \
-        vim && \
+        gcc && \
     rm -rf /var/lib/apt/lists/* && \
     apt-get clean
 
 
+# Extract playwright browsers and cleanup archives in same layer
 RUN mkdir -p ~/.cache/ms-playwright/ffmpeg-1009 \
  && unzip /tmp/ffmpeg-linux.zip -d ~/.cache/ms-playwright/ffmpeg-1009 \
- && touch ~/.cache/ms-playwright/ffmpeg-1009/INSTALLATION_COMPLETE
-
-RUN mkdir -p ~/.cache/ms-playwright/chromium-1097
-RUN unzip /tmp/chromium-linux.zip -d ~/.cache/ms-playwright/chromium-1097
-RUN touch ~/.cache/ms-playwright/chromium-1097/INSTALLATION_COMPLETE
+ && touch ~/.cache/ms-playwright/ffmpeg-1009/INSTALLATION_COMPLETE \
+ && mkdir -p ~/.cache/ms-playwright/chromium-1097 \
+ && unzip /tmp/chromium-linux.zip -d ~/.cache/ms-playwright/chromium-1097 \
+ && touch ~/.cache/ms-playwright/chromium-1097/INSTALLATION_COMPLETE \
+ && rm -f /tmp/ffmpeg-linux.zip /tmp/chromium-linux.zip /tmp/chromium-linux.zip.part.*
 
 # Install Python dependencies
 # Remove py which is pulled in by retry, py is not needed and is a CVE
@@ -79,7 +82,7 @@ RUN uv pip install --system --no-cache-dir --upgrade \
     # perl-base is part of the base Python Debian image but not needed for Onyx functionality
     # perl-base could only be removed with --allow-remove-essential
     apt-get update && \
-    apt-get remove -y --allow-remove-essential \
+    apt-get remove -y --allow-remove-essential --no-install-recommends \
         perl-base \
         xserver-common \
         xvfb \
@@ -89,7 +92,7 @@ RUN uv pip install --system --no-cache-dir --upgrade \
         pkg-config \
         gcc && \
     # Install here to avoid some packages being cleaned up above
-    apt-get install -y \
+    apt-get install -y --no-install-recommends \
         libxmlsec1-openssl \
         # Install postgresql-client for easy manual tests
         postgresql-client && \
@@ -98,19 +101,22 @@ RUN uv pip install --system --no-cache-dir --upgrade \
     rm -rf ~/.cache/uv /tmp/*.txt && \
     rm -f /usr/local/lib/python3.11/site-packages/tornado/test/test.key
 
-# Pre-downloading models for setups with limited egress
-RUN python -c "from tokenizers import Tokenizer; \
-Tokenizer.from_pretrained('nomic-ai/nomic-embed-text-v1')"
-
-# Pre-downloading NLTK for setups with limited egress
+# Pre-download all models/data in single layer and cleanup Python cache
+# NLTK data for read-only filesystems, tokenizers, and tiktoken encodings
 RUN python -c "import nltk; \
-nltk.download('stopwords', quiet=True); \
-nltk.download('punkt_tab', quiet=True);"
+nltk.download('stopwords', download_dir='/usr/share/nltk_data', quiet=True); \
+nltk.download('punkt_tab', download_dir='/usr/share/nltk_data', quiet=True);" && \
+python -c "from tokenizers import Tokenizer; \
+Tokenizer.from_pretrained('nomic-ai/nomic-embed-text-v1')" && \
+python -c "import tiktoken; \
+tiktoken.get_encoding('cl100k_base')" && \
+chown -R onyx:onyx /usr/share/nltk_data /usr/share/huggingface /usr/share/tiktoken_cache && \
+find /usr/local/lib/python3.11 -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true && \
+find /usr/local/lib/python3.11 -type f -name '*.pyc' -delete 2>/dev/null || true && \
+find /usr/local/lib/python3.11 -type f -name '*.pyo' -delete 2>/dev/null || true
 # nltk.download('wordnet', quiet=True); introduce this back if lemmatization is needed
 
-# Pre-downloading tiktoken for setups with limited egress
-RUN python -c "import tiktoken; \
-tiktoken.get_encoding('cl100k_base')"
+USER onyx
 
 # Set up application files
 WORKDIR /app

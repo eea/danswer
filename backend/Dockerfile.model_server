@@ -1,5 +1,5 @@
 # Base stage with dependencies
-FROM python:3.11.7-slim-bookworm AS base
+FROM python:3.11-slim-bookworm AS base
 
 ENV DANSWER_RUNNING_IN_DOCKER="true" \
     HF_HOME=/app/.cache/huggingface
@@ -54,9 +54,14 @@ RUN groupadd -g 1001 onyx && \
 # In case the user has volumes mounted to /app/.cache/huggingface that they've downloaded while
 # running Onyx, move the current contents of the cache folder to a temporary location to ensure
 # it's preserved in order to combine with the user's cache contents
-COPY --chown=onyx:onyx --from=tokenizers /app/.cache/huggingface /app/.cache/temp_huggingface
-COPY --chown=onyx:onyx --from=onyx-models /app/.cache/huggingface /app/.cache/temp_huggingface
-COPY --chown=onyx:onyx --from=embedding-models /app/.cache/huggingface /app/.cache/temp_huggingface
+# Copy all downloaded models from each stage into the final image
+COPY --chown=onyx:onyx --from=tokenizers /app/.cache/huggingface /app/.cache/huggingface
+COPY --chown=onyx:onyx --from=onyx-models /app/.cache/huggingface /app/.cache/huggingface
+COPY --chown=onyx:onyx --from=embedding-models /app/.cache/huggingface /app/.cache/huggingface
+
+# Verify all model caches are present
+RUN ls -la /app/.cache/huggingface/ && \
+    find /app/.cache/huggingface -type d | head -20
 
 WORKDIR /app
 
