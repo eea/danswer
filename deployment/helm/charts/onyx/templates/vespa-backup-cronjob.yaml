@@ -18,7 +18,7 @@ spec:
           restartPolicy: OnFailure
           containers:
             - name: vespa-backup
-              image: vespa/vespa:{{ .Values.vespa.image.tag | default "8.609.39" }}
+              image: vespaengine/vespa:{{ .Values.vespa.image.tag | default "8.609.39" }}
               args:
                 - /bin/bash
                 - -c
