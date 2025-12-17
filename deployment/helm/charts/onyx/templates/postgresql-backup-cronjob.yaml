@@ -41,10 +41,18 @@ spec:
                   TS=$(date +%Y%m%d_%H%M%S)
                   for DB in $DATABASES; do
                     echo "Backing up database: $DB"
+                    BACKUP_FILE_UNCOMPRESSED="/backups/${DB}_${TS}.sql"
                     BACKUP_FILE="/backups/${DB}_${TS}.sql.gz"
+
+                    echo "Step 1: Creating backup (uncompressed)..."
                     PGPASSWORD="$POSTGRES_PASSWORD" pg_dump -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -d "$DB" \
-                      --format=custom --blobs --encoding=UTF8 --no-owner --no-privileges | gzip > "$BACKUP_FILE"
+                      --format=custom --blobs --encoding=UTF8 --no-owner --no-privileges -f "$BACKUP_FILE_UNCOMPRESSED"
+
+                    echo "Step 2: Compressing backup..."
+                    gzip "$BACKUP_FILE_UNCOMPRESSED"
+
                     echo "Backup for $DB completed: $BACKUP_FILE"
+                    ls -lh "$BACKUP_FILE"
                   done
                   {{- if .Values.postgresql.backup.retention.enabled }}
                   echo "Cleaning up backups older than $RETENTION_DAYS days..."

@@ -138,6 +138,25 @@ vespa:
     limits:
       cpu: 8000m
       memory: 32000Mi
+  # Backup configuration
+  backup:
+    enabled: false
+    schedule: "0 3 * * *"  # Daily at 3 AM (cron format)
+    storage: "50Gi"  # Storage for backups (should be larger than vespa data)
+    storageClass: ""
+    retainPvc: true
+    successfulJobsHistoryLimit: 3
+    failedJobsHistoryLimit: 3
+    retention:
+      enabled: true
+      days: 7  # Keep backups for 7 days
+    resources:
+      requests:
+        cpu: 1000m
+        memory: 2Gi
+      limits:
+        cpu: 2000m
+        memory: 4Gi
 
 persistent:
   storageClassName: ""

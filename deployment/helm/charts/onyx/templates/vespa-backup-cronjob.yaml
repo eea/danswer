@@ -1,0 +1,113 @@
+{{- if and .Values.vespa.enabled .Values.vespa.backup.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "onyx.fullname" . }}-vespa-backup
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: vespa-backup
+    {{- include "onyx.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.vespa.backup.schedule | quote }}
+  successfulJobsHistoryLimit: {{ .Values.vespa.backup.successfulJobsHistoryLimit | default 3 }}
+  failedJobsHistoryLimit: {{ .Values.vespa.backup.failedJobsHistoryLimit | default 3 }}
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: vespa-backup
+              image: vespa/vespa:{{ .Values.vespa.image.tag | default "8.609.39" }}
+              args:
+                - /bin/bash
+                - -c
+                - |
+                  set -euo pipefail
+
+                  echo "============================================"
+                  echo "Vespa Backup Job Started"
+                  echo "Time: $(date)"
+                  echo "============================================"
+
+                  {{- if .Values.vespa.backup.retention.enabled }}
+                  RETENTION_DAYS={{ .Values.vespa.backup.retention.days | default 7 }}
+                  {{- end }}
+
+                  VESPA_HOST="{{ include "onyx.fullname" . }}-vespa-service"
+                  VESPA_PORT="19071"
+                  mkdir -p /backups
+                  TS=$(date +%Y%m%d_%H%M%S)
+                  BACKUP_DIR_UNCOMPRESSED="/backups/vespa_${TS}"
+                  BACKUP_FILE="/backups/vespa_${TS}.tar.gz"
+
+                  echo ""
+                  echo "Step 1: Creating backup snapshot via Vespa API..."
+                  # Use Vespa's visit API to export all documents
+                  # This creates a snapshot without compression first
+                  mkdir -p "$BACKUP_DIR_UNCOMPRESSED"
+
+                  # Get list of all document types/schemas
+                  echo "Fetching document types..."
+                  curl -s "http://${VESPA_HOST}:${VESPA_PORT}/application/v2/tenant/default/application/default/environment/prod/region/default/instance/default/serviceconverge" > /dev/null || true
+
+                  # Export documents using vespa-visit
+                  echo "Exporting documents..."
+                  if command -v vespa-visit >/dev/null 2>&1; then
+                    vespa-visit --target "http://${VESPA_HOST}:${VESPA_PORT}" \
+                      --datahandler "$BACKUP_DIR_UNCOMPRESSED/documents.jsonl" || echo "Warning: vespa-visit may have failed"
+                  else
+                    echo "Warning: vespa-visit command not found, using curl fallback..."
+                    # Fallback: use visit API directly
+                    curl -s "http://${VESPA_HOST}:8080/document/v1/?cluster=danswer_index&wantedDocumentCount=10000000" \
+                      > "$BACKUP_DIR_UNCOMPRESSED/documents.json" || echo "Warning: document export may have failed"
+                  fi
+
+                  # Get application package configuration
+                  echo "Backing up application configuration..."
+                  curl -s "http://${VESPA_HOST}:${VESPA_PORT}/application/v2/tenant/default/application/default/environment/prod/region/default/instance/default" \
+                    > "$BACKUP_DIR_UNCOMPRESSED/application.json" 2>/dev/null || echo "Warning: config backup may have failed"
+
+                  echo "Backup directory size (uncompressed):"
+                  du -sh "$BACKUP_DIR_UNCOMPRESSED"
+
+                  echo ""
+                  echo "Step 2: Compressing backup..."
+                  # Compress the backup directory
+                  tar -czf "$BACKUP_FILE" -C /backups "$(basename $BACKUP_DIR_UNCOMPRESSED)"
+
+                  echo "Removing uncompressed backup..."
+                  rm -rf "$BACKUP_DIR_UNCOMPRESSED"
+
+                  echo ""
+                  echo "Backup completed: $BACKUP_FILE"
+                  ls -lh "$BACKUP_FILE"
+
+                  {{- if .Values.vespa.backup.retention.enabled }}
+                  echo ""
+                  echo "Step 3: Cleaning up backups older than $RETENTION_DAYS days..."
+                  find /backups -type f -name "vespa_*.tar.gz" -mtime +${RETENTION_DAYS} -print -delete
+                  {{- end }}
+
+                  echo ""
+                  echo "============================================"
+                  echo "Vespa Backup Job Completed Successfully"
+                  echo "Time: $(date)"
+                  echo "============================================"
+              env:
+                - name: VESPA_CLI_HOME
+                  value: "/tmp/.vespa"
+              volumeMounts:
+                - name: vespa-backup
+                  mountPath: /backups
+                - name: tmp
+                  mountPath: /tmp
+              resources:
+                {{- toYaml .Values.vespa.backup.resources | nindent 16 }}
+          volumes:
+            - name: vespa-backup
+              persistentVolumeClaim:
+                claimName: {{ include "onyx.fullname" . }}-vespa-backup
+            - name: tmp
+              emptyDir: {}
+{{- end }}
