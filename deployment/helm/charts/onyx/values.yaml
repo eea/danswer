@@ -4,7 +4,7 @@
 
 global:
   # Global version for all Onyx components (overrides .Chart.AppVersion)
-  version: "v2.3.0-eea.0.0.88-dev"
+  version: "v2.3.0-eea.0.0.90-dev"
   # Optional global image settings. If repository is set, all core components default to this repo.
   # Component-specific tags can be set under tags; fall back to per-component tags or global.version.
   image:
@@ -1177,6 +1177,11 @@ configMap:
   DISABLE_RERANK_FOR_STREAMING: ""
   MODEL_SERVER_PORT: ""
   MIN_THREADS_ML_MODELS: ""
+  # Cache Directories - Pre-downloaded models and data
+  # These should match the Dockerfile settings to use pre-downloaded content
+  NLTK_DATA: "/usr/share/nltk_data"
+  HF_HOME: "/usr/share/huggingface"
+  TIKTOKEN_CACHE_DIR: "/usr/share/tiktoken_cache"
   # Indexing Configs
   VESPA_SEARCHER_THREADS: ""
   NUM_INDEXING_WORKERS: ""
@@ -1248,3 +1253,17 @@ postfix:
 networkPolicy:
   # Enable network policies to restrict traffic between pods
   enabled: false
+  # Default egress policy for all pods (when no specific egress rules defined)
+  # Options: "deny" (block all egress), "allow" (allow all egress)
+  defaultEgress: "deny"
+  # Administrative access policy for kubectl exec, port-forward, SSH console
+  # Enable this temporarily for debugging/maintenance, then disable for production
+  adminAccess:
+    enabled: false
+    # Allow access from specific source IP ranges (CIDR notation)
+    # If empty, allows from any source (less secure but more flexible)
+    allowFrom: []
+    # Example:
+    # allowFrom:
+    #   - 10.0.0.0/8      # Internal network
+    #   - 192.168.1.0/24  # Office network

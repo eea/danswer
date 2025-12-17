@@ -1,5 +1,6 @@
 {{- if .Values.networkPolicy.enabled }}
 ---
+{{- if eq .Values.networkPolicy.defaultEgress "deny" }}
 # Default deny all ingress traffic
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -14,6 +15,35 @@ spec:
   podSelector: {}
   policyTypes:
     - Ingress
+---
+{{- end }}
+{{- if .Values.networkPolicy.adminAccess.enabled }}
+# Administrative access policy for kubectl exec, port-forward, SSH console
+# WARNING: This policy allows administrative access to all pods
+# Enable only during debugging/maintenance, then disable for production
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "onyx.fullname" . }}-admin-access
+  labels:
+    {{- include "onyx.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - {{- if .Values.networkPolicy.adminAccess.allowFrom }}
+      from:
+      {{- range .Values.networkPolicy.adminAccess.allowFrom }}
+        - ipBlock:
+            cidr: {{ . }}
+      {{- end }}
+      {{- end }}
+      ports:
+        # Allow all ports for administrative access
+        # This enables kubectl exec, port-forward, and SSH console
+---
+{{- end }}
 ---
 # Allow Nginx to receive external traffic and communicate with API/Webserver
 apiVersion: networking.k8s.io/v1
@@ -229,10 +259,20 @@ spec:
       ports:
         - protocol: UDP
           port: 53
-    # Allow HTTPS egress for external APIs
+    # Allow HTTPS/HTTP egress for external services (LLM providers)
+    # Required for:
+    # - LLM API providers (OpenAI, Azure OpenAI, etc.)
+    # - NLTK data downloads from github.com/nltk/nltk_data
+    # - Sentry error tracking at sentry.eea.europa.eu
+    # - HuggingFace model downloads (nomic-ai/nomic-embed-text-v1) from huggingface.co
+    # Note: NetworkPolicies do not support domain-based filtering.
+    # This rule allows HTTPS/HTTP to any external IP. For domain-specific restrictions,
+    # consider using a service mesh (Istio), egress gateway, or DNS-aware CNI (Cilium).
     - ports:
         - protocol: TCP
           port: 443
+        - protocol: TCP
+          port: 80
 ---
 # PostgreSQL network policy
 apiVersion: networking.k8s.io/v1
@@ -266,6 +306,26 @@ spec:
         - protocol: TCP
           port: 5432
   egress:
+    # Allow Vespa intra-cluster traffic (config, file distribution, messaging)
+    - to:
+        - podSelector:
+            matchLabels:
+              app: vespa
+      ports:
+        - protocol: TCP
+          port: 19070  # config server RPC
+        - protocol: TCP
+          port: 19071  # admin/REST
+        - protocol: TCP
+          port: 19100  # file distribution
+        - protocol: TCP
+          port: 19101
+        - protocol: TCP
+          port: 19102
+        - protocol: TCP
+          port: 19103
+        - protocol: TCP
+          port: 19104
     # DNS
     - to:
         - namespaceSelector: {}
@@ -506,12 +566,15 @@ spec:
       ports:
         - protocol: UDP
           port: 53
-    # Allow HTTPS egress for external APIs and connectors
-    - ports:
-        - protocol: TCP
-          port: 443
-        - protocol: TCP
-          port: 80
+    # Allow HTTPS/HTTP egress for external APIs and connectors (COMMENTED OUT - TOO PERMISSIVE)
+    # Required for accessing external data sources and APIs
+    # Note: NetworkPolicies do not support domain-based filtering.
+    # Uncomment if external HTTPS access is required:
+    # - ports:
+    #     - protocol: TCP
+    #       port: 443
+    #     - protocol: TCP
+    #       port: 80
 ---
 # Model Servers network policy
 apiVersion: networking.k8s.io/v1
@@ -549,6 +612,58 @@ spec:
         - protocol: TCP
           port: 9000
   egress:
+    # Allow egress to PostgreSQL
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgresql
+      ports:
+        - protocol: TCP
+          port: 5432
+    # Allow egress to Redis
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    # Allow egress to Vespa
+    - to:
+        - podSelector:
+            matchLabels:
+              app: vespa
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 8081
+        - protocol: TCP
+          port: 19071
+    # Allow egress to MinIO
+    - to:
+        - podSelector:
+            matchLabels:
+              app: minio
+      ports:
+        - protocol: TCP
+          port: 9000
+    # Allow egress to API server
+    - to:
+        - podSelector:
+            matchLabels:
+              app: api-server
+      ports:
+        - protocol: TCP
+          port: 8080
+    # Allow egress to Postfix
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postfix
+      ports:
+        - protocol: TCP
+          port: 25
     # DNS
     - to:
         - namespaceSelector: {}
@@ -558,10 +673,14 @@ spec:
       ports:
         - protocol: UDP
           port: 53
-    # Allow HTTPS egress for model downloads
-    - ports:
-        - protocol: TCP
-          port: 443
+    # Allow HTTPS egress for model downloads (COMMENTED OUT - TOO PERMISSIVE)
+    # Required for:
+    # - HuggingFace model downloads (nomic-ai/nomic-embed-text-v1) from huggingface.co
+    # Note: NetworkPolicies do not support domain-based filtering.
+    # Uncomment if external HTTPS access is required:
+    # - ports:
+    #     - protocol: TCP
+    #       port: 443
 ---
 # Postfix network policy
 apiVersion: networking.k8s.io/v1
@@ -606,14 +725,6 @@ spec:
       ports:
         - protocol: UDP
           port: 53
-    # Allow SMTP egress to external mail servers
-    - ports:
-        - protocol: TCP
-          port: 25
-        - protocol: TCP
-          port: 587
-        - protocol: TCP
-          port: 465
 ---
 # Slackbot network policy
 {{- if .Values.slackbot.enabled }}
@@ -649,9 +760,5 @@ spec:
       ports:
         - protocol: UDP
           port: 53
-    # Allow HTTPS egress to Slack API
-    - ports:
-        - protocol: TCP
-          port: 443
 {{- end }}
 {{- end }}
