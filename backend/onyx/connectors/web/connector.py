@@ -732,14 +732,15 @@ class WebConnector(LoadConnector):
                 timeout=self.timeout,  # 30 seconds
                 wait_until="commit",
             )
-            page.wait_for_function("document.readyState === 'interactive'")
+            # Wait for interactive or later state (handles race condition where page is already complete)
+            page.wait_for_function("document.readyState === 'interactive' || document.readyState === 'complete'", timeout=self.timeout)
             page.evaluate("""
                 () => {
                     const images = document.querySelectorAll('img');
                     images.forEach(img => img.remove());
                 }
             """)
-            page.wait_for_function("document.readyState === 'complete'") # wait for domcontentloaded
+            page.wait_for_function("document.readyState === 'complete'", timeout=self.timeout) # wait for domcontentloaded
 
             last_modified = (page_response.header_value(
                 "Last-Modified") if page_response else None) or lastmod

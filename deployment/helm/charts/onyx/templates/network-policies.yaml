@@ -393,6 +393,7 @@ spec:
     - Ingress
     - Egress
   ingress:
+    # Allow ingress from backend services (API queries and document operations)
     - from:
         - namespaceSelector:
             matchLabels:
@@ -408,12 +409,107 @@ spec:
               scope: onyx-backend-celery
       ports:
         - protocol: TCP
+          port: 8080  # Document API / query API
+        - protocol: TCP
+          port: 8081  # Metrics/status
+        - protocol: TCP
+          port: 19071 # Admin/REST API
+    # Allow ingress from backup jobs
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              app: vespa-backup
+      ports:
+        - protocol: TCP
+          port: 8080  # Document API (for vespa visit)
+        - protocol: TCP
+          port: 8081  # Metrics/status API
+        - protocol: TCP
+          port: 19071 # Admin/REST API
+    # Allow Vespa-to-Vespa communication (intra-cluster traffic)
+    # Required for: config propagation, file distribution, RPC messaging, and cluster coordination
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              app: vespa
+      ports:
+        - protocol: TCP
+          port: 8080  # Document API
+        - protocol: TCP
+          port: 8081  # Metrics/status
+        - protocol: TCP
+          port: 19070 # Config server RPC
+        - protocol: TCP
+          port: 19071 # Slobrok (service location broker)
+        - protocol: TCP
+          port: 19099 # Config server
+        - protocol: TCP
+          port: 19100 # File distribution
+        - protocol: TCP
+          port: 19101 # RTC port
+        - protocol: TCP
+          port: 19102 # Status server
+        - protocol: TCP
+          port: 19103 # Internal RPC
+        - protocol: TCP
+          port: 19104 # Internal RPC
+        - protocol: TCP
+          port: 19105 # Internal RPC
+        - protocol: TCP
+          port: 19106 # Internal RPC
+        - protocol: TCP
+          port: 19107 # Internal RPC
+        - protocol: TCP
+          port: 19108 # Internal RPC (node connection)
+        - protocol: TCP
+          port: 19109 # Internal RPC
+        - protocol: TCP
+          port: 19110 # Internal RPC
+  egress:
+    # Allow Vespa-to-Vespa egress (for cluster communication)
+    - to:
+        - podSelector:
+            matchLabels:
+              app: vespa
+      ports:
+        - protocol: TCP
           port: 8080
         - protocol: TCP
           port: 8081
         - protocol: TCP
+          port: 19070
+        - protocol: TCP
           port: 19071
-  egress:
+        - protocol: TCP
+          port: 19099
+        - protocol: TCP
+          port: 19100
+        - protocol: TCP
+          port: 19101
+        - protocol: TCP
+          port: 19102
+        - protocol: TCP
+          port: 19103
+        - protocol: TCP
+          port: 19104
+        - protocol: TCP
+          port: 19105
+        - protocol: TCP
+          port: 19106
+        - protocol: TCP
+          port: 19107
+        - protocol: TCP
+          port: 19108
+        - protocol: TCP
+          port: 19109
+        - protocol: TCP
+          port: 19110
     # DNS
     - to:
         - namespaceSelector: {}
@@ -673,7 +769,7 @@ spec:
       ports:
         - protocol: UDP
           port: 53
-    # Allow HTTPS egress for model downloads (COMMENTED OUT - TOO PERMISSIVE)
+    # Allow HTTPS egress for model downloads, and page fetching (COMMENTED OUT - TOO PERMISSIVE)
     # Required for:
     # - HuggingFace model downloads (nomic-ai/nomic-embed-text-v1) from huggingface.co
     # Note: NetworkPolicies do not support domain-based filtering.
@@ -681,6 +777,72 @@ spec:
     # - ports:
     #     - protocol: TCP
     #       port: 443
+---
+# Document Fetching Worker HTTPS egress policy
+# Allows HTTPS egress specifically for the docfetching worker to fetch external documents
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "onyx.fullname" . }}-celery-docfetching-https
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "onyx.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: celery-worker-docfetching
+  policyTypes:
+    - Egress
+  egress:
+    # Allow HTTPS egress for document fetching
+    # Required for fetching external documents from sources like eur-lex.europa.eu
+    - ports:
+        - protocol: TCP
+          port: 443
+---
+# Vespa Backup HTTPS egress policy
+# Allows HTTPS egress specifically for the vespa backup job to download Vespa CLI from GitHub
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "onyx.fullname" . }}-vespa-backup-https
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "onyx.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: vespa-backup
+  policyTypes:
+    - Egress
+  egress:
+    # Allow egress to Vespa service
+    # Required for exporting documents via Vespa API
+    - to:
+        - podSelector:
+            matchLabels:
+              app: vespa
+      ports:
+        - protocol: TCP
+          port: 8080  # Document API
+        - protocol: TCP
+          port: 8081  # Metrics/status API (used by vespa visit)
+        - protocol: TCP
+          port: 19071 # Admin/REST API
+    # DNS - required to resolve github.com and vespa-service
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+    # Allow HTTPS egress for downloading Vespa CLI
+    # Required for downloading Vespa CLI from github.com during backup job initialization
+    - ports:
+        - protocol: TCP
+          port: 443
 ---
 # Postfix network policy
 apiVersion: networking.k8s.io/v1

@@ -35,7 +35,9 @@ spec:
     metadata:
       labels:
         app: postgresql
-        {{- include "onyx.labels" . | nindent 8 }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/managed-by: {{ .Release.Service }}
+        app.kubernetes.io/name: {{ include "onyx.name" . }}
     spec:
       {{- with .Values.postgresql.simple.securityContext }}
       securityContext:
@@ -107,7 +109,9 @@ spec:
         name: postgresql-data
         labels:
           app: postgresql
-          {{- include "onyx.labels" . | nindent 10 }}
+          app.kubernetes.io/instance: {{ .Release.Name }}
+          app.kubernetes.io/managed-by: {{ .Release.Service }}
+          app.kubernetes.io/name: {{ include "onyx.name" . }}
         {{- if .Values.postgresql.simple.retainPvc }}
         annotations:
           "helm.sh/resource-policy": keep

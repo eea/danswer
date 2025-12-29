@@ -13,6 +13,9 @@ spec:
   failedJobsHistoryLimit: {{ .Values.postgresql.backup.failedJobsHistoryLimit | default 3 }}
   jobTemplate:
     spec:
+      # Keep completed Job pods for 24 hours to allow log inspection
+      # After 24 hours, Kubernetes automatically deletes the Job and its pods
+      ttlSecondsAfterFinished: {{ .Values.postgresql.backup.ttlSecondsAfterFinished | default 86400 }}
       template:
         spec:
           restartPolicy: OnFailure
