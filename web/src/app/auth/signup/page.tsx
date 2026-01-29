@@ -82,9 +82,9 @@ const Page = async (props: {
         >
           <div className="w-full">
             <Text headingH2 text05>
-              {cloud ? "Complete your sign up" : "Sign Up for GPT Lab"}
+              {cloud ? "Complete your sign up" : "Sign Up for AI Hub"}
             </Text>
-            <Text text03>Get started with GPT Lab</Text>
+            <Text text03>Get started with AI Hub</Text>
           </div>
           {cloud && authUrl && (
             <div className="w-full justify-center mt-6">

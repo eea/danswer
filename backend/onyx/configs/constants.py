@@ -5,7 +5,7 @@ from enum import auto
 from enum import Enum
 
 
-ONYX_DEFAULT_APPLICATION_NAME = "EEA GPT Lab"
+ONYX_DEFAULT_APPLICATION_NAME = "EEA AI Hub"
 ONYX_DISCORD_URL = "https://discord.gg/4NA5SbzrWb"
 SLACK_USER_TOKEN_PREFIX = "xoxp-"
 SLACK_BOT_TOKEN_PREFIX = "xoxb-"

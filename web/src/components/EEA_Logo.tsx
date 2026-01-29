@@ -113,7 +113,7 @@ export const EEALogoTypeIcon = ({
       <Image src="/EEA_logo_compact_EN.svg" alt="Logo" width={width} height={height} />
       <div className="w-full">
         <HeaderTitle>
-          GPT Lab
+          AI Hub
         </HeaderTitle>
         <p className="text-xs text-left text-subtle whitespace-nowrap overflow-hidden text-ellipsis">
           Powered by Onyx

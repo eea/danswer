@@ -10,7 +10,7 @@ export default function LoginText() {
     <div className="w-full flex flex-col ">
       <Text headingH2 text05>
         Log In to{" "}
-        {(settings && settings?.enterpriseSettings?.application_name) || "GPT Lab"}
+        {(settings && settings?.enterpriseSettings?.application_name) || "AI Hub"}
       </Text>
     </div>
   );

@@ -10,7 +10,7 @@ export function OnyxInitializingLoader() {
     <div className="mx-auto my-auto animate-pulse">
       <Logo height={96} width={96} className="mx-auto mb-3" />
       <p className="text-lg text-text font-semibold">
-        Initializing {settings?.enterpriseSettings?.application_name ?? "GPT Lab"}
+        Initializing {settings?.enterpriseSettings?.application_name ?? "AI Hub"}
       </p>
     </div>
   );

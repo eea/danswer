@@ -451,7 +451,7 @@ function ChatInputBarInner({
             selectedAssistant.id === 0
               ? `How can ${
                   combinedSettings?.enterpriseSettings?.application_name ||
-                  "GPT Lab"
+                  "AI Hub"
                 } help you today`
               : `How can ${selectedAssistant.name} help you today`
           }
