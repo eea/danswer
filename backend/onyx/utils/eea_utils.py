@@ -19,9 +19,9 @@ from onyx.server.documents.models import IndexingStatusRequest
 from onyx.server.models import StatusResponse
 from onyx.utils.logger import setup_logger
 
-LANGFUSE_SECRET_KEY = os.environ.get("LANGFUSE_SECRET_KEY")
-LANGFUSE_PUBLIC_KEY = os.environ.get("LANGFUSE_PUBLIC_KEY")
-LANGFUSE_HOST = os.environ.get("LANGFUSE_HOST", None)
+LANGFUSE_SECRET_KEY = os.environ.get("EEA_LANGFUSE_SECRET_KEY")
+LANGFUSE_PUBLIC_KEY = os.environ.get("EEA_LANGFUSE_PUBLIC_KEY")
+LANGFUSE_HOST = os.environ.get("EEA_LANGFUSE_HOST", None)
 SOER_LOGIN = os.environ.get("SOER_LOGIN")
 SOER_PASSWORD = os.environ.get("SOER_PASSWORD")
 
@@ -216,7 +216,11 @@ def find_langfuse_trace(pg_logs):
     langfuse_traces = []
     page = 1
     while True:
-        traces = langfuse.fetch_traces(page=page, limit=50, session_id=session_id)
+        from langfuse.api.client import FernLangfuse
+        api = FernLangfuse(username = os.environ.get("LANGFUSE_PUBLIC_KEY"), password=os.environ.get("LANGFUSE_SECRET_KEY"),base_url=os.environ.get("LANGFUSE_HOST"))
+
+        traces = api.trace.list(page=page, limit=50, session_id=session_id)
+#        traces = langfuse.fetch_traces(page=page, limit=50, session_id=session_id)
         if len(traces.data) == 0:
             break
         langfuse_traces += traces.data
