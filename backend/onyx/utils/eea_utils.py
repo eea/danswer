@@ -19,9 +19,9 @@ from onyx.server.documents.models import IndexingStatusRequest
 from onyx.server.models import StatusResponse
 from onyx.utils.logger import setup_logger
 
-LANGFUSE_SECRET_KEY = os.environ.get("EEA_LANGFUSE_SECRET_KEY")
-LANGFUSE_PUBLIC_KEY = os.environ.get("EEA_LANGFUSE_PUBLIC_KEY")
-LANGFUSE_HOST = os.environ.get("EEA_LANGFUSE_HOST", None)
+LANGFUSE_SECRET_KEY = os.environ.get("LANGFUSE_SECRET_KEY")
+LANGFUSE_PUBLIC_KEY = os.environ.get("LANGFUSE_PUBLIC_KEY")
+LANGFUSE_HOST = os.environ.get("LANGFUSE_HOST", None)
 SOER_LOGIN = os.environ.get("SOER_LOGIN")
 SOER_PASSWORD = os.environ.get("SOER_PASSWORD")
 
@@ -148,20 +148,20 @@ def add_metadata_to_llm(llm, generation, user, user_message, chat_session):
     return llm
 
 def score(trace, feedback):
-    langfuse.score(
+    langfuse.create_score(
         trace_id = trace.id,
         name = "feedback_is_positive",
         value = feedback.is_positive,
         data_type="BOOLEAN")
 
     if feedback.feedback_text:
-        langfuse.score(
+        langfuse.create_score(
             trace_id = trace.id,
             name = "feedback_text",
             value = feedback.feedback_text)
 
     if feedback.predefined_feedback:
-        langfuse.score(
+        langfuse.create_score(
             trace_id = trace.id,
             name = "feedback_predefined",
             value = feedback.predefined_feedback)
@@ -196,7 +196,7 @@ def identify_trace(logs, langfuse_traces):
                 break
             trace = langfuse_traces[trace_cnt]
             trace_cnt += 1
-            if trace.id.__str__() == log_id.__str__():
+            if trace.session_id.split(":")[-1].__str__() == log_id.__str__():
                 found_trace = trace
                 break
         if found_trace:
@@ -215,21 +215,35 @@ def find_langfuse_trace(pg_logs):
 
     langfuse_traces = []
     page = 1
+
+    from langfuse.api.client import FernLangfuse
+    api = FernLangfuse(username = LANGFUSE_PUBLIC_KEY, password=LANGFUSE_SECRET_KEY, base_url=LANGFUSE_HOST)
+
+    log_cnt = 0
+    trace = None
+
     while True:
-        from langfuse.api.client import FernLangfuse
-        api = FernLangfuse(username = os.environ.get("LANGFUSE_PUBLIC_KEY"), password=os.environ.get("LANGFUSE_SECRET_KEY"),base_url=os.environ.get("LANGFUSE_HOST"))
-
-        traces = api.trace.list(page=page, limit=50, session_id=session_id)
-#        traces = langfuse.fetch_traces(page=page, limit=50, session_id=session_id)
-        if len(traces.data) == 0:
+        log = logs[log_cnt]
+        traces = api.trace.list(page=page, limit=50, session_id=f"{session_id}:{log}")
+        if len(traces.data) == 1:
+            trace = traces.data[0]
             break
-        langfuse_traces += traces.data
-        page += 1
+        log_cnt += 1
+        if log_cnt == len(logs):
+            break
 
-    if len(langfuse_traces) == 0:
-        return
+        #    while True:
 
-    trace = identify_trace(logs, langfuse_traces)
+        #     traces = api.trace.list(page=page, limit=50, session_id=f"{session_id}:{log}")
+        #     if len(traces.data) == 0:
+        #         break
+        #     langfuse_traces += traces.data
+        #     page += 1
+
+#    if len(langfuse_traces) == 0:
+#        return
+
+#    trace = identify_trace(logs, langfuse_traces)
 
     return trace
 

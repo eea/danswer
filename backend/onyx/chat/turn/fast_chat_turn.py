@@ -60,6 +60,8 @@ from onyx.tools.force import filter_tools_for_force_tool_use
 from onyx.tools.force import ForceUseTool
 from onyx.tools.tool import Tool
 
+from openinference.instrumentation import using_attributes
+
 if TYPE_CHECKING:
     from litellm import ResponseFunctionToolCall
 
@@ -251,15 +253,37 @@ def _fast_chat_turn_core(
         message_id=message_id,
         chat_files=latest_query_files or [],
     )
-    with trace("fast_chat_turn"):
-        _run_agent_loop(
-            messages=messages,
-            dependencies=dependencies,
-            chat_session_id=chat_session_id,
-            ctx=ctx,
-            prompt_config=prompt_config,
-            force_use_tool=force_use_tool,
-        )
+
+    try:
+        trace_name = dependencies.llm._model_kwargs['metadata']['trace_name']
+    except:
+        trace_name = "fast_chat_turn"
+    try:
+        trace_session_is = dependencies.llm._model_kwargs['metadata']['session_id']
+    except:
+        trace_session_is = "missing"
+    try:
+        trace_user_id = dependencies.llm._model_kwargs['metadata']['user_id']
+    except:
+        trace_user_id = "missing"
+    try:
+        trace_trace_id = dependencies.llm._model_kwargs['metadata']['trace_id']
+    except:
+        trace_trace_id = "missing"
+
+    with trace(trace_name, metadata={"test":"test"}):
+        with using_attributes(
+            session_id=f"{trace_session_is}:{trace_trace_id}",
+            user_id=trace_user_id,
+        ):
+            _run_agent_loop(
+                messages=messages,
+                dependencies=dependencies,
+                chat_session_id=chat_session_id,
+                ctx=ctx,
+                prompt_config=prompt_config,
+                force_use_tool=force_use_tool,
+            )
     _emit_citations_for_final_answer(
         dependencies=dependencies,
         ctx=ctx,
