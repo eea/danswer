@@ -369,7 +369,7 @@ proto-plus==1.26.1
     #   google-api-core
     #   google-cloud-aiplatform
     #   google-cloud-resource-manager
-protobuf==6.33.1
+protobuf==6.33.5
     # via
     #   google-api-core
     #   google-cloud-aiplatform
@@ -386,7 +386,7 @@ pure-eval==0.2.3
     # via stack-data
 py==1.11.0
     # via retry
-pyasn1==0.6.1
+pyasn1==0.6.2
     # via
     #   pyasn1-modules
     #   rsa

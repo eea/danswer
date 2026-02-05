@@ -339,7 +339,7 @@ proto-plus==1.26.1
     #   google-api-core
     #   google-cloud-aiplatform
     #   google-cloud-resource-manager
-protobuf==6.33.1
+protobuf==6.33.5
     # via
     #   google-api-core
     #   google-cloud-aiplatform
@@ -354,7 +354,7 @@ py==1.11.0
     # via retry
 pyarrow==22.0.0
     # via datasets
-pyasn1==0.6.1
+pyasn1==0.6.2
     # via
     #   pyasn1-modules
     #   rsa
@@ -436,7 +436,7 @@ sentence-transformers==4.0.2
     # via
     #   onyx
     #   setfit
-sentencepiece==0.2.0
+sentencepiece==0.2.1
     # via onyx
 sentry-sdk==2.14.0
     # via onyx
