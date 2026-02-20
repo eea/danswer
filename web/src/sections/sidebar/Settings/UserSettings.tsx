@@ -683,7 +683,7 @@ export default function UserSettings() {
                     />
                   </div>
                   <div className="flex justify-end w-full">
-                    <Button disabled={isLoading}>
+                    <Button disabled={isLoading} type="submit">
                       {isLoading ? "Changing..." : "Change Password"}
                     </Button>
                   </div>
