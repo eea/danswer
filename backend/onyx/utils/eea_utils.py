@@ -15,6 +15,7 @@ from onyx.db.engine.sql_engine import get_session
 from onyx.db.enums import ConnectorCredentialPairStatus
 from onyx.db.models import ChatMessage, User
 from onyx.configs.constants import DANSWER_API_KEY_PREFIX, DocumentSource
+from onyx.server.documents.models import IndexingStatusRequest
 from onyx.server.models import StatusResponse
 from onyx.utils.logger import setup_logger
 
@@ -55,10 +56,12 @@ def list_pages_for_site_eea(site):
         rp = init_robots_txt(site)
     except:
         logger.warning("Failed to load robots.txt")
+    urls_data = {}
     tree = sitemap_tree_for_homepage(site)
-    pages = [page.url for page in tree.all_pages() if test_url(rp, page)]
-    pages = list(dict.fromkeys(pages))
-    return(pages)
+    for page in tree.all_pages():
+        if test_url(rp, page):
+            urls_data[page.url] = page.last_modified
+    return urls_data
 
 def soer_login():
     login_url = "https://www.eea.europa.eu/++api++/@login"
@@ -92,6 +95,8 @@ def soer_login():
     return resp
 
 def read_protected_sitemap(sitemap, auth):
+    urls_data: dict[str, str | None] = {}
+
     cookies = {'auth_token': auth['auth_token'], "__ac__eea": auth['__ac__eea']}
 
     response = requests.get(sitemap, cookies=cookies)
@@ -100,9 +105,14 @@ def read_protected_sitemap(sitemap, auth):
 
     ns = {'ns': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
 
-    urls = [f"{loc.text}?protected=true" for loc in root.findall('.//ns:loc', ns)]
+    for url in root.findall('.//ns:url', ns):
+        loc = url.find('.//ns:loc', ns)
+        lastmod = url.find('.//ns:lastmod', ns)
+        if loc is not None and loc.text:
+            lastmod_value = lastmod.text if lastmod is not None else None
+            urls_data[loc.text] = lastmod_value
 
-    return urls
+    return urls_data
 
 def list_pages_for_protected_site_eea(site: str, auth) -> list[str]:
     """Get list of pages from a site's sitemaps"""
@@ -138,20 +148,20 @@ def add_metadata_to_llm(llm, generation, user, user_message, chat_session):
     return llm
 
 def score(trace, feedback):
-    langfuse.score(
+    langfuse.create_score(
         trace_id = trace.id,
         name = "feedback_is_positive",
         value = feedback.is_positive,
         data_type="BOOLEAN")
 
     if feedback.feedback_text:
-        langfuse.score(
+        langfuse.create_score(
             trace_id = trace.id,
             name = "feedback_text",
             value = feedback.feedback_text)
 
     if feedback.predefined_feedback:
-        langfuse.score(
+        langfuse.create_score(
             trace_id = trace.id,
             name = "feedback_predefined",
             value = feedback.predefined_feedback)
@@ -186,7 +196,7 @@ def identify_trace(logs, langfuse_traces):
                 break
             trace = langfuse_traces[trace_cnt]
             trace_cnt += 1
-            if trace.id.__str__() == log_id.__str__():
+            if trace.session_id.split(":")[-1].__str__() == log_id.__str__():
                 found_trace = trace
                 break
         if found_trace:
@@ -205,17 +215,35 @@ def find_langfuse_trace(pg_logs):
 
     langfuse_traces = []
     page = 1
+
+    from langfuse.api.client import FernLangfuse
+    api = FernLangfuse(username = LANGFUSE_PUBLIC_KEY, password=LANGFUSE_SECRET_KEY, base_url=LANGFUSE_HOST)
+
+    log_cnt = 0
+    trace = None
+
     while True:
-        traces = langfuse.fetch_traces(page=page, limit=50, session_id=session_id)
-        if len(traces.data) == 0:
+        log = logs[log_cnt]
+        traces = api.trace.list(page=page, limit=50, session_id=f"{session_id}:{log}")
+        if len(traces.data) == 1:
+            trace = traces.data[0]
             break
-        langfuse_traces += traces.data
-        page += 1
+        log_cnt += 1
+        if log_cnt == len(logs):
+            break
 
-    if len(langfuse_traces) == 0:
-        return
+        #    while True:
 
-    trace = identify_trace(logs, langfuse_traces)
+        #     traces = api.trace.list(page=page, limit=50, session_id=f"{session_id}:{log}")
+        #     if len(traces.data) == 0:
+        #         break
+        #     langfuse_traces += traces.data
+        #     page += 1
+
+#    if len(langfuse_traces) == 0:
+#        return
+
+#    trace = identify_trace(logs, langfuse_traces)
 
     return trace
 
@@ -253,7 +281,8 @@ def get_connectors_health(
     db_session: Session = Depends(get_session),
 ) -> StatusResponse:
     from onyx.server.documents.connector import get_connector_indexing_status
-    indexing_status = get_connector_indexing_status(user = user, db_session = db_session)
+    mock_request = IndexingStatusRequest()
+    indexing_status = get_connector_indexing_status(request = mock_request, user = user, db_session = db_session)
 
     success = True
     message = "ok"

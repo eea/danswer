@@ -1,8 +1,8 @@
 "use client";
 
 import React, { createContext, useContext, useState } from "react";
-import { NewTeamModal } from "../modals/NewTeamModal";
-import NewTenantModal from "../modals/NewTenantModal";
+import NewTeamModal from "@/components/modals/NewTeamModal";
+import NewTenantModal from "@/components/modals/NewTenantModal";
 import { User, NewTenantInfo } from "@/lib/types";
 import { NEXT_PUBLIC_CLOUD_ENABLED } from "@/lib/constants";
 
@@ -49,7 +49,7 @@ export const ModalProvider: React.FC<{
 
   // Render all application-wide modals
   const renderModals = () => {
-    if (!user || !NEXT_PUBLIC_CLOUD_ENABLED) return null;
+    if (!user || !NEXT_PUBLIC_CLOUD_ENABLED) return <></>;
 
     return (
       <>

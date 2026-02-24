@@ -36,6 +36,7 @@ from onyx.db.search_settings import get_current_search_settings
 from onyx.document_index.factory import get_default_document_index
 from onyx.document_index.interfaces import VespaChunkRequest
 from onyx.llm.interfaces import LLM
+from onyx.onyxbot.slack.models import SlackContext
 from onyx.secondary_llm_flows.agentic_evaluation import evaluate_inference_section
 from onyx.utils.logger import setup_logger
 from onyx.utils.threadpool_concurrency import FunctionCall
@@ -65,6 +66,7 @@ class SearchPipeline:
         rerank_metrics_callback: Callable[[RerankMetricsContainer], None] | None = None,
         prompt_config: PromptConfig | None = None,
         contextual_pruning_config: ContextualPruningConfig | None = None,
+        slack_context: SlackContext | None = None,
     ):
         # NOTE: The Search Request contains a lot of fields that are overrides, many of them can be None
         # and typically are None. The preprocessing will fetch default values to replace these empty overrides.
@@ -84,6 +86,7 @@ class SearchPipeline:
         self.contextual_pruning_config: ContextualPruningConfig | None = (
             contextual_pruning_config
         )
+        self.slack_context: SlackContext | None = slack_context
 
         # Preprocessing steps generate this
         self._search_query: SearchQuery | None = None
@@ -162,6 +165,7 @@ class SearchPipeline:
             document_index=self.document_index,
             db_session=self.db_session,
             retrieval_metrics_callback=self.retrieval_metrics_callback,
+            slack_context=self.slack_context,  # Pass Slack context
         )
 
         return cast(list[InferenceChunk], self._retrieved_chunks)
@@ -391,13 +395,19 @@ class SearchPipeline:
             self.contextual_pruning_config is not None
             and self.prompt_config is not None
         ):
+            from onyx.llm.utils import check_number_of_tokens
+
+            # For backwards compatibility with non-v2 flows, use query token count
+            # and pass prompt_config for proper token calculation
+            query_token_count = check_number_of_tokens(self.search_query.query)
+
             self._final_context_sections = prune_and_merge_sections(
                 sections=self.reranked_sections,
                 section_relevance_list=None,
-                prompt_config=self.prompt_config,
                 llm_config=self.llm.config,
-                question=self.search_query.query,
+                existing_input_tokens=query_token_count,
                 contextual_pruning_config=self.contextual_pruning_config,
+                prompt_config=self.prompt_config,
             )
 
         else:

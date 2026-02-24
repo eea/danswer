@@ -7,8 +7,8 @@ import { createUserGroup } from "./lib";
 import { UserEditor } from "./UserEditor";
 import { ConnectorEditor } from "./ConnectorEditor";
 import { Modal } from "@/components/Modal";
-import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
+import Button from "@/refresh-components/buttons/Button";
+import Separator from "@/refresh-components/Separator";
 
 interface UserGroupCreationFormProps {
   onClose: () => void;
@@ -128,8 +128,6 @@ export const UserGroupCreationForm = ({
                 <div className="flex">
                   <Button
                     type="submit"
-                    size="sm"
-                    variant="submit"
                     disabled={isSubmitting}
                     className="mx-auto w-64"
                   >

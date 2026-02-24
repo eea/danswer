@@ -1,10 +1,12 @@
+from typing import Any
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 from pydantic import Field
+from pydantic import field_validator
 
 from onyx.llm.utils import get_max_input_tokens
-from onyx.llm.utils import model_supports_image_input
+from onyx.llm.utils import litellm_thinks_model_supports_image_input
 
 
 if TYPE_CHECKING:
@@ -32,6 +34,12 @@ class TestLLMRequest(BaseModel):
 
     # if try and use the existing API key
     api_key_changed: bool
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def normalize_provider(cls, value: str) -> str:
+        """Normalize provider name by stripping whitespace and lowercasing."""
+        return value.strip().lower()
 
 
 class LLMProviderDescriptor(BaseModel):
@@ -80,6 +88,7 @@ class LLMProvider(BaseModel):
     fast_default_model_name: str | None = None
     is_public: bool = True
     groups: list[int] = Field(default_factory=list)
+    personas: list[int] = Field(default_factory=list)
     deployment_name: str | None = None
     default_vision_model: str | None = None
 
@@ -89,6 +98,12 @@ class LLMProviderUpsertRequest(LLMProvider):
     # for default providers, the built-in model names are used
     api_key_changed: bool = False
     model_configurations: list["ModelConfigurationUpsertRequest"] = []
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def normalize_provider(cls, value: str) -> str:
+        """Normalize provider name by stripping whitespace and lowercasing."""
+        return value.strip().lower()
 
 
 class LLMProviderView(LLMProvider):
@@ -110,6 +125,11 @@ class LLMProviderView(LLMProvider):
         except Exception:
             # If groups relationship can't be loaded (detached instance), use empty list
             groups = []
+        # Safely get personas - similar handling as groups
+        try:
+            personas = [persona.id for persona in llm_provider_model.personas]
+        except Exception:
+            personas = []
 
         return cls(
             id=llm_provider_model.id,
@@ -126,6 +146,7 @@ class LLMProviderView(LLMProvider):
             default_vision_model=llm_provider_model.default_vision_model,
             is_public=llm_provider_model.is_public,
             groups=groups,
+            personas=personas,
             deployment_name=llm_provider_model.deployment_name,
             model_configurations=list(
                 ModelConfigurationView.from_model(
@@ -138,8 +159,9 @@ class LLMProviderView(LLMProvider):
 
 class ModelConfigurationUpsertRequest(BaseModel):
     name: str
-    is_visible: bool | None = False
+    is_visible: bool
     max_input_tokens: int | None = None
+    supports_image_input: bool | None = None
 
     @classmethod
     def from_model(
@@ -149,12 +171,13 @@ class ModelConfigurationUpsertRequest(BaseModel):
             name=model_configuration_model.name,
             is_visible=model_configuration_model.is_visible,
             max_input_tokens=model_configuration_model.max_input_tokens,
+            supports_image_input=model_configuration_model.supports_image_input,
         )
 
 
 class ModelConfigurationView(BaseModel):
     name: str
-    is_visible: bool | None = False
+    is_visible: bool
     max_input_tokens: int | None = None
     supports_image_input: bool
 
@@ -167,13 +190,19 @@ class ModelConfigurationView(BaseModel):
         return cls(
             name=model_configuration_model.name,
             is_visible=model_configuration_model.is_visible,
-            max_input_tokens=model_configuration_model.max_input_tokens
-            or get_max_input_tokens(
-                model_name=model_configuration_model.name, model_provider=provider_name
+            max_input_tokens=(
+                model_configuration_model.max_input_tokens
+                or get_max_input_tokens(
+                    model_name=model_configuration_model.name,
+                    model_provider=provider_name,
+                )
             ),
-            supports_image_input=model_supports_image_input(
-                model_name=model_configuration_model.name,
-                model_provider=provider_name,
+            supports_image_input=(
+                val
+                if (val := model_configuration_model.supports_image_input) is not None
+                else litellm_thinks_model_supports_image_input(
+                    model_configuration_model.name, provider_name
+                )
             ),
         )
 
@@ -188,3 +217,69 @@ class LLMCost(BaseModel):
     provider: str
     model_name: str
     cost: float
+
+
+class BedrockModelsRequest(BaseModel):
+    aws_region_name: str
+    aws_access_key_id: str | None = None
+    aws_secret_access_key: str | None = None
+    aws_bearer_token_bedrock: str | None = None
+    provider_name: str | None = None  # Optional: to save models to existing provider
+
+
+class OllamaModelsRequest(BaseModel):
+    api_base: str
+
+
+class OllamaFinalModelResponse(BaseModel):
+    name: str
+    max_input_tokens: int
+    supports_image_input: bool
+
+
+class OllamaModelDetails(BaseModel):
+    """Response model for Ollama /api/show endpoint"""
+
+    model_info: dict[str, Any]
+    capabilities: list[str] = []
+
+    def supports_completion(self) -> bool:
+        """Check if this model supports completion/chat"""
+        return "completion" in self.capabilities
+
+    def supports_image_input(self) -> bool:
+        """Check if this model supports image input"""
+        return "vision" in self.capabilities
+
+
+# OpenRouter dynamic models fetch
+class OpenRouterModelsRequest(BaseModel):
+    api_base: str
+    api_key: str
+
+
+class OpenRouterModelDetails(BaseModel):
+    """Response model for OpenRouter /api/v1/models endpoint"""
+
+    # This is used to ignore any extra fields that are returned from the API
+    model_config = {"extra": "ignore"}
+
+    id: str
+    context_length: int
+    architecture: dict[str, Any]  # Contains 'input_modalities' key
+
+    @property
+    def supports_image_input(self) -> bool:
+        input_modalities = self.architecture.get("input_modalities", [])
+        return isinstance(input_modalities, list) and "image" in input_modalities
+
+    @property
+    def is_embedding_model(self) -> bool:
+        output_modalities = self.architecture.get("output_modalities", [])
+        return isinstance(output_modalities, list) and "embeddings" in output_modalities
+
+
+class OpenRouterFinalModelResponse(BaseModel):
+    name: str
+    max_input_tokens: int
+    supports_image_input: bool

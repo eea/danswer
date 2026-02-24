@@ -1,3 +1,21 @@
+import { PopupSpec } from "@/components/admin/connectors/Popup";
+
+export enum LLMProviderName {
+  OPENAI = "openai",
+  ANTHROPIC = "anthropic",
+  OLLAMA_CHAT = "ollama_chat",
+  AZURE = "azure",
+  OPENROUTER = "openrouter",
+  VERTEX_AI = "vertex_ai",
+  BEDROCK = "bedrock",
+}
+
+export interface CustomConfigOption {
+  label: string;
+  value: string;
+  description?: string | null;
+}
+
 export interface CustomConfigKey {
   name: string;
   display_name: string;
@@ -6,23 +24,22 @@ export interface CustomConfigKey {
   is_secret: boolean;
   key_type: CustomConfigKeyType;
   default_value?: string;
+  options?: CustomConfigOption[] | null;
 }
 
-export type CustomConfigKeyType = "text_input" | "file_input";
+export type CustomConfigKeyType = "text_input" | "file_input" | "select";
 
-export interface ModelConfigurationUpsertRequest {
+export interface ModelConfiguration {
   name: string;
   is_visible: boolean;
   max_input_tokens: number | null;
-}
-
-export interface ModelConfiguration extends ModelConfigurationUpsertRequest {
-  supports_image_input: boolean;
+  supports_image_input: boolean | null;
 }
 
 export interface WellKnownLLMProviderDescriptor {
   name: string;
   display_name: string;
+  title: string;
 
   deployment_name_required: boolean;
   api_key_required: boolean;
@@ -34,6 +51,7 @@ export interface WellKnownLLMProviderDescriptor {
   model_configurations: ModelConfiguration[];
   default_model: string | null;
   default_fast_model: string | null;
+  default_api_base: string | null;
   is_public: boolean;
   groups: number[];
 }
@@ -55,6 +73,7 @@ export interface LLMProvider {
   fast_default_model_name: string | null;
   is_public: boolean;
   groups: number[];
+  personas: number[];
   deployment_name: string | null;
   default_vision_model: string | null;
   is_default_vision_provider: boolean | null;
@@ -79,5 +98,31 @@ export interface LLMProviderDescriptor {
   is_default_provider: boolean | null;
   is_public: boolean;
   groups: number[];
+  personas: number[];
   model_configurations: ModelConfiguration[];
+}
+
+export interface OllamaModelResponse {
+  name: string;
+  max_input_tokens: number;
+  supports_image_input: boolean;
+}
+
+export interface DynamicProviderConfig<
+  TApiResponse = any,
+  TProcessedResponse = ModelConfiguration,
+> {
+  endpoint: string;
+  isDisabled: (values: any) => boolean;
+  disabledReason: string;
+  buildRequestBody: (args: {
+    values: any;
+    existingLlmProvider?: LLMProviderView;
+  }) => Record<string, any>;
+  processResponse: (
+    data: TApiResponse,
+    llmProviderDescriptor: WellKnownLLMProviderDescriptor
+  ) => TProcessedResponse[];
+  getModelNames: (data: TApiResponse) => string[];
+  successMessage: (count: number) => string;
 }

@@ -1,0 +1,72 @@
+{{- if and .Values.redis.enabled .Values.redis.useSimpleDeployment }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "onyx.fullname" . }}-redis
+  labels:
+    app: redis
+    {{- include "onyx.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "onyx.fullname" . }}-redis
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+        {{- include "onyx.labels" . | nindent 8 }}
+    spec:
+      securityContext:
+        {{- toYaml .Values.redis.podSecurityContext | nindent 8 }}
+      containers:
+        - name: redis
+          image: {{ printf "\"redis:%s\"" (default "7.0-alpine" .Values.redis.simple.tag) }}
+          imagePullPolicy: {{ .Values.global.pullPolicy }}
+          command:
+            - redis-server
+            {{- if .Values.auth.redis.enabled }}
+            - --requirepass
+            - $(REDIS_PASSWORD)
+            {{- end }}
+            - --appendonly
+            - "no"
+            - --save
+            - ""
+          ports:
+            - name: redis
+              containerPort: 6379
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.redis.simple.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.redis.simple.securityContext | nindent 12 }}
+          {{- if .Values.auth.redis.enabled }}
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.redis.secretName }}
+                  key: {{ .Values.auth.redis.secretKeys.REDIS_PASSWORD }}
+          {{- end }}
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: redis-data
+        {{- if .Values.global.pvcRetain }}
+        annotations:
+          "helm.sh/resource-policy": keep
+        {{- end }}
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        {{- $sc := default .Values.global.storageClass .Values.redis.simple.storageClass }}
+        {{- if $sc }}
+        storageClassName: {{ $sc }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.redis.simple.storage | default "1Gi" }}
+{{- end }}

@@ -1,0 +1,24 @@
+{{- if and .Values.vespa.enabled .Values.vespa.backup.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "onyx.fullname" . }}-vespa-backup
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: vespa-backup
+    {{- include "onyx.labels" . | nindent 4 }}
+  {{- if .Values.vespa.backup.retainPvc }}
+  annotations:
+    "helm.sh/resource-policy": keep
+  {{- end }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- $sc := default .Values.global.storageClass .Values.vespa.backup.storageClass }}
+  {{- if $sc }}
+  storageClassName: {{ $sc }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.vespa.backup.storage | default "50Gi" }}
+{{- end }}

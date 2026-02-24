@@ -6,6 +6,10 @@ from urllib.parse import urlparse
 # Used for logging
 SLACK_CHANNEL_ID = "channel_id"
 
+# Skip model warmup at startup
+# Default to True (skip warmup) if not set, otherwise respect the value
+SKIP_WARM_UP = os.environ.get("SKIP_WARM_UP", "true").lower() == "true"
+
 MODEL_SERVER_HOST = os.environ.get("MODEL_SERVER_HOST") or "localhost"
 MODEL_SERVER_ALLOWED_HOST = os.environ.get("MODEL_SERVER_HOST") or "0.0.0.0"
 MODEL_SERVER_PORT = int(os.environ.get("MODEL_SERVER_PORT") or "9000")
@@ -158,15 +162,42 @@ TENANT_ID_PREFIX = "tenant_"
 
 DISALLOWED_SLACK_BOT_TENANT_IDS = os.environ.get("DISALLOWED_SLACK_BOT_TENANT_IDS")
 DISALLOWED_SLACK_BOT_TENANT_LIST = (
-    [tenant.strip() for tenant in DISALLOWED_SLACK_BOT_TENANT_IDS.split(",")]
+    [
+        tenant.strip()
+        for tenant in DISALLOWED_SLACK_BOT_TENANT_IDS.split(",")
+        if tenant.strip()
+    ]
     if DISALLOWED_SLACK_BOT_TENANT_IDS
     else None
 )
 
 IGNORED_SYNCING_TENANT_IDS = os.environ.get("IGNORED_SYNCING_TENANT_IDS")
 IGNORED_SYNCING_TENANT_LIST = (
-    [tenant.strip() for tenant in IGNORED_SYNCING_TENANT_IDS.split(",")]
+    [
+        tenant.strip()
+        for tenant in IGNORED_SYNCING_TENANT_IDS.split(",")
+        if tenant.strip()
+    ]
     if IGNORED_SYNCING_TENANT_IDS
+    else None
+)
+
+# Global flag to skip userfile threshold for all users/tenants
+SKIP_USERFILE_THRESHOLD = (
+    os.environ.get("SKIP_USERFILE_THRESHOLD", "").lower() == "true"
+)
+
+# Comma-separated list of specific tenant IDs to skip threshold (multi-tenant only)
+SKIP_USERFILE_THRESHOLD_TENANT_IDS = os.environ.get(
+    "SKIP_USERFILE_THRESHOLD_TENANT_IDS"
+)
+SKIP_USERFILE_THRESHOLD_TENANT_LIST = (
+    [
+        tenant.strip()
+        for tenant in SKIP_USERFILE_THRESHOLD_TENANT_IDS.split(",")
+        if tenant.strip()
+    ]
+    if SKIP_USERFILE_THRESHOLD_TENANT_IDS
     else None
 )
 
@@ -187,3 +218,5 @@ INDEXING_INFORMATION_CONTENT_CLASSIFICATION_TEMPERATURE = float(
 INDEXING_INFORMATION_CONTENT_CLASSIFICATION_CUTOFF_LENGTH = int(
     os.environ.get("INDEXING_INFORMATION_CONTENT_CLASSIFICATION_CUTOFF_LENGTH") or 10
 )
+
+ENVIRONMENT = os.environ.get("ENVIRONMENT") or "not_explicitly_set"

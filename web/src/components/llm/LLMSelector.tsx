@@ -1,4 +1,4 @@
-import React from "react";
+import { useMemo } from "react";
 import { getDisplayNameForModel } from "@/lib/hooks";
 import {
   parseLlmDescriptor,
@@ -7,51 +7,95 @@ import {
 } from "@/lib/llm/utils";
 import { LLMProviderDescriptor } from "@/app/admin/configuration/llm/interfaces";
 import { getProviderIcon } from "@/app/admin/configuration/llm/utils";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import InputSelect from "@/refresh-components/inputs/InputSelect";
+import { createIcon } from "@/components/icons/icons";
 
-interface LLMSelectorProps {
+export interface LLMSelectorProps {
   userSettings?: boolean;
   llmProviders: LLMProviderDescriptor[];
   currentLlm: string | null;
   onSelect: (value: string | null) => void;
   requiresImageGeneration?: boolean;
+  excludePublicProviders?: boolean;
 }
 
-export const LLMSelector: React.FC<LLMSelectorProps> = ({
+export default function LLMSelector({
   userSettings,
   llmProviders,
   currentLlm,
   onSelect,
   requiresImageGeneration,
-}) => {
-  const seenModelNames = new Set();
+  excludePublicProviders = false,
+}: LLMSelectorProps) {
+  const currentDescriptor = useMemo(
+    () => (currentLlm ? parseLlmDescriptor(currentLlm) : null),
+    [currentLlm]
+  );
 
-  const llmOptions = llmProviders.flatMap((provider) => {
-    return provider.model_configurations
-      .filter((modelConfiguration) => {
+  const llmOptions = useMemo(() => {
+    const seenDisplayNames = new Set<string>();
+    const options: {
+      name: string;
+      value: string;
+      icon: ReturnType<typeof getProviderIcon>;
+      modelName: string;
+      providerName: string;
+      supportsImageInput: boolean;
+    }[] = [];
+
+    llmProviders.forEach((provider) => {
+      provider.model_configurations.forEach((modelConfiguration) => {
         const displayName = getDisplayNameForModel(modelConfiguration.name);
-        if (seenModelNames.has(displayName)) {
-          return false;
+
+        const matchesCurrentSelection =
+          currentDescriptor?.modelName === modelConfiguration.name &&
+          (currentDescriptor?.provider === provider.provider ||
+            currentDescriptor?.name === provider.name);
+
+        if (!modelConfiguration.is_visible && !matchesCurrentSelection) {
+          return;
         }
-        seenModelNames.add(displayName);
-        return true;
-      })
-      .map((modelConfiguration) => ({
-        name: getDisplayNameForModel(modelConfiguration.name),
-        value: structureValue(
-          provider.name,
-          provider.provider,
-          modelConfiguration.name
-        ),
-        icon: getProviderIcon(provider.provider, modelConfiguration.name),
-      }));
-  });
+
+        if (seenDisplayNames.has(displayName)) {
+          return;
+        }
+
+        const supportsImageInput = modelSupportsImageInput(
+          llmProviders,
+          modelConfiguration.name,
+          provider.name
+        );
+
+        const option = {
+          name: displayName,
+          value: structureValue(
+            provider.name,
+            provider.provider,
+            modelConfiguration.name
+          ),
+          icon: getProviderIcon(provider.provider, modelConfiguration.name),
+          modelName: modelConfiguration.name,
+          providerName: provider.name,
+          supportsImageInput,
+        };
+
+        if (requiresImageGeneration && !supportsImageInput) {
+          return;
+        }
+
+        seenDisplayNames.add(displayName);
+        options.push(option);
+      });
+    });
+
+    return options;
+  }, [
+    llmProviders,
+    currentDescriptor?.modelName,
+    currentDescriptor?.provider,
+    currentDescriptor?.name,
+    requiresImageGeneration,
+  ]);
 
   const defaultProvider = llmProviders.find(
     (llmProvider) => llmProvider.is_default_provider
@@ -61,52 +105,38 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({
   const defaultModelDisplayName = defaultModelName
     ? getDisplayNameForModel(defaultModelName)
     : null;
-
-  const destructuredCurrentValue = currentLlm
-    ? parseLlmDescriptor(currentLlm)
-    : null;
-
-  const currentLlmName = destructuredCurrentValue?.modelName;
+  const defaultLabel = userSettings ? "System Default" : "User Default";
 
   return (
-    <Select
+    <InputSelect
       value={currentLlm ? currentLlm : "default"}
       onValueChange={(value) => onSelect(value === "default" ? null : value)}
     >
-      <SelectTrigger className="min-w-40">
-        <SelectValue>
-          {currentLlmName
-            ? getDisplayNameForModel(currentLlmName)
-            : userSettings
-              ? "System Default"
-              : "User Default"}
-        </SelectValue>
-      </SelectTrigger>
-      <SelectContent className="z-[99999]">
-        <SelectItem className="flex" hideCheck value="default">
-          <span>{userSettings ? "System Default" : "User Default"}</span>
-          {userSettings && (
-            <span className=" my-auto font-normal ml-1">
-              ({defaultModelDisplayName})
-            </span>
-          )}
-        </SelectItem>
-        {llmOptions.map((option) => {
-          if (
-            !requiresImageGeneration ||
-            modelSupportsImageInput(llmProviders, option.name)
-          ) {
-            return (
-              <SelectItem key={option.value} value={option.value}>
-                <div className="my-1 flex items-center">
-                  {option.icon && option.icon({ size: 16 })}
-                  <span className="ml-2">{option.name}</span>
-                </div>
-              </SelectItem>
-            );
-          }
-        })}
-      </SelectContent>
-    </Select>
+      <InputSelect.Trigger placeholder={defaultLabel} />
+
+      <InputSelect.Content>
+        {!excludePublicProviders && (
+          <InputSelect.Item
+            value="default"
+            description={
+              userSettings && defaultModelDisplayName
+                ? `(${defaultModelDisplayName})`
+                : undefined
+            }
+          >
+            {defaultLabel}
+          </InputSelect.Item>
+        )}
+        {llmOptions.map((option) => (
+          <InputSelect.Item
+            key={option.value}
+            value={option.value}
+            icon={createIcon(option.icon)}
+          >
+            {option.name}
+          </InputSelect.Item>
+        ))}
+      </InputSelect.Content>
+    </InputSelect>
   );
-};
+}

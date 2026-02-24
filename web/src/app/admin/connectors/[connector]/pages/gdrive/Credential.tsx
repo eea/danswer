@@ -10,7 +10,7 @@ import Cookies from "js-cookie";
 import { TextFormField, SectionHeader } from "@/components/Field";
 import { Form, Formik } from "formik";
 import { User } from "@/lib/types";
-import { Button } from "@/components/ui/button";
+import Button from "@/refresh-components/buttons/Button";
 import {
   Credential,
   GoogleDriveCredentialJson,
@@ -300,7 +300,7 @@ export const DriveJsonUploadSection = ({
         <a
           className="text-primary hover:text-primary/80 flex items-center gap-1 text-sm"
           target="_blank"
-          href="https://docs.onyx.app/connectors/google_drive#authorization"
+          href="https://docs.onyx.app/admin/connectors/official/google_drive/overview"
           rel="noreferrer"
         >
           <FiLink className="h-3 w-3" />
@@ -340,8 +340,7 @@ export const DriveJsonUploadSection = ({
           {isAdmin && !existingAuthCredential && (
             <div className="mt-2">
               <Button
-                variant="destructive"
-                type="button"
+                danger
                 onClick={async () => {
                   const endpoint =
                     localServiceAccountData?.service_account_email
@@ -507,8 +506,7 @@ export const DriveAuthSection = ({
             </div>
           </div>
           <Button
-            variant="destructive"
-            type="button"
+            danger
             onClick={async () => {
               handleRevokeAccess(
                 connectorAssociated,

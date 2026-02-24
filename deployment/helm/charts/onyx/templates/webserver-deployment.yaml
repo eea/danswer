@@ -1,27 +1,35 @@
+{{- if gt (int .Values.webserver.replicaCount) 0 }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "onyx-stack.fullname" . }}-web-server
+  name: {{ include "onyx.fullname" . }}-web-server
   labels:
-    {{- include "onyx-stack.labels" . | nindent 4 }}
+    {{- include "onyx.labels" . | nindent 4 }}
+    {{- with .Values.webserver.deploymentLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 spec:
   {{- if not .Values.webserver.autoscaling.enabled }}
   replicas: {{ .Values.webserver.replicaCount }}
   {{- end }}
   selector:
     matchLabels:
-      {{- include "onyx-stack.selectorLabels" . | nindent 6 }}
+      {{- include "onyx.selectorLabels" . | nindent 6 }}
       {{- if .Values.webserver.deploymentLabels }}
       {{- toYaml .Values.webserver.deploymentLabels | nindent 6 }}
       {{- end }}
   template:
     metadata:
-      {{- with .Values.webserver.podAnnotations }}
       annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+      {{- with .Values.webserver.podAnnotations }}
         {{- toYaml . | nindent 8 }}
       {{- end }}
       labels:
-        {{- include "onyx-stack.labels" . | nindent 8 }}
+        {{- include "onyx.labels" . | nindent 8 }}
+        {{- with .Values.webserver.deploymentLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
         {{- with .Values.webserver.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -30,14 +38,34 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      serviceAccountName: {{ include "onyx-stack.serviceAccountName" . }}
+      serviceAccountName: {{ include "onyx.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.webserver.podSecurityContext | nindent 8 }}
+      {{- with .Values.webserver.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- $webRepo := .Values.global.image.repository }}
+      {{- if and .Values.webserver.image .Values.webserver.image.repository }}
+        {{- $webRepo = .Values.webserver.image.repository }}
+      {{- end }}
+      {{- $webTag := default .Values.global.image.tags.web (printf "web-%s" .Values.global.version) }}
+      {{- if and .Values.webserver.image .Values.webserver.image.tag }}
+        {{- $webTag = .Values.webserver.image.tag }}
+      {{- end }}
+      {{- with .Values.webserver.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.webserver.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: web-server
           securityContext:
             {{- toYaml .Values.webserver.securityContext | nindent 12 }}
-          image: "{{ .Values.webserver.image.repository }}:{{ .Values.webserver.image.tag | default .Values.global.version }}"
+          image: "{{ $webRepo }}:{{ $webTag }}"
           imagePullPolicy: {{ .Values.global.pullPolicy }}
           ports:
             - name: http
@@ -49,7 +77,7 @@ spec:
             - configMapRef:
                 name: {{ .Values.config.envConfigMapName }}
           env:
-            {{- include "onyx-stack.envSecrets" . | nindent 12}}
+            {{- include "onyx.envSecrets" . | nindent 12}}
           {{- with .Values.webserver.volumeMounts }}
           volumeMounts:
             {{- toYaml . | nindent 12 }}
@@ -58,3 +86,4 @@ spec:
       volumes:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+{{- end }}

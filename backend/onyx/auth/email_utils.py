@@ -29,7 +29,7 @@ from onyx.configs.app_configs import SMTP_USER
 from onyx.configs.app_configs import WEB_DOMAIN
 from onyx.configs.constants import AuthType
 from onyx.configs.constants import ONYX_DEFAULT_APPLICATION_NAME
-from onyx.configs.constants import ONYX_SLACK_URL
+from onyx.configs.constants import ONYX_DISCORD_URL
 from onyx.db.models import User
 from onyx.server.runtime.onyx_runtime import OnyxRuntime
 from onyx.utils.logger import setup_logger
@@ -129,7 +129,7 @@ HTML_EMAIL_TEMPLATE = """\
         <img
           style="background-color: #ffffff; border-radius: 8px;"
           src="https://www.eea.europa.eu/en/newsroom/branding-materials/eea_logo_compact_en.png/@@download/image/eea_logo_compact_en.png"
-          alt="EEA GPT Lab Logo"
+          alt="EEA AI Hub Logo"
         >
       </td>
     </tr>
@@ -144,7 +144,7 @@ HTML_EMAIL_TEMPLATE = """\
     </tr>
     <tr>
       <td class="footer">
-        EEA GPT Lab is powered by open source LLMs, and software such as Onyx, Litellm, Langfuse, vLLM, Vespa.
+        EEA AI Hub is powered by open source LLMs, and software such as Onyx, Litellm, Langfuse, vLLM, Vespa.
       </td>
     </tr>
   </table>
@@ -160,9 +160,9 @@ def build_html_email(
     cta_text: str | None = None,
     cta_link: str | None = None,
 ) -> str:
-    slack_fragment = ""
-    # if application_name == ONYX_DEFAULT_APPLICATION_NAME:
-    #     slack_fragment = f'<br>Have questions? Join our Slack community <a href="{ONYX_SLACK_URL}">here</a>.'
+    community_link_fragment = ""
+    if application_name == ONYX_DEFAULT_APPLICATION_NAME:
+        community_link_fragment = f'<br>Have questions? Join our Discord community <a href="{ONYX_DISCORD_URL}">here</a>.'
 
     if cta_text and cta_link:
         cta_block = f'<a class="cta-button" href="{cta_link}">{cta_text}</a>'
@@ -174,7 +174,7 @@ def build_html_email(
         heading=heading,
         message=message,
         cta_block=cta_block,
-        slack_fragment=slack_fragment,
+        community_link_fragment=community_link_fragment,
         year=datetime.now().year,
     )
 
@@ -343,7 +343,7 @@ def send_subscription_cancellation_email(user_email: str) -> None:
 def build_user_email_invite(
     from_email: str, to_email: str, application_name: str, auth_type: AuthType
 ) -> tuple[str, str]:
-    heading = "You've been invited to EEA GPT Lab!"
+    heading = "You've been invited to EEA AI Hub!"
 
     # the exact action taken by the user, and thus the message, depends on the auth type
     message = f"<p>You have been invited by {from_email} to join an organization on {application_name}.</p>"
@@ -354,10 +354,10 @@ def build_user_email_invite(
         )
     elif auth_type == AuthType.BASIC:
         message += (
-            "<p>To join the EEA GPT Lab, please click the button below to set a password "
+            "<p>To join the EEA AI Hub, please click the button below to set a password "
             "and complete your registration.</p>"
         )
-        message += ("<p>The EEA GPT Lab is a restricted-access application designed as a safe environment to explore the potential benefits and risks of using EEA's public content with state-of-the-art Large Language Models (LLMs). The application is for experimental purposes only, with access limited to users with EEA email addresses and selected partners. GPT Lab is built with a robust privacy architecture to ensure that sensitive and personal information is not sent to third-party LLM AI providers.<br/>"
+        message += ("<p>The EEA AI Hub is a restricted-access application designed as a safe environment to explore the potential benefits and risks of using EEA's public content with state-of-the-art Large Language Models (LLMs). The application is for experimental purposes only, with access limited to users with EEA email addresses and selected partners. AI Hub is built with a robust privacy architecture to ensure that sensitive and personal information is not sent to third-party LLM AI providers.<br/>"
             "See <a href='https://gptlab.eea.europa.eu/pages/privacy'>Privacy Architecture</a>.<p>")
     elif auth_type == AuthType.GOOGLE_OAUTH:
         message += (
@@ -372,7 +372,7 @@ def build_user_email_invite(
     else:
         raise ValueError(f"Invalid auth type: {auth_type}")
 
-    cta_text = "Join EEA GPT Lab"
+    cta_text = "Join EEA AI Hub"
     cta_link = f"{WEB_DOMAIN}/auth/signup?email={to_email}"
 
     html_content = build_html_email(
@@ -386,9 +386,9 @@ def build_user_email_invite(
     # text content is the fallback for clients that don't support HTML
     # not as critical, so not having special cases for each auth type
     text_content = (
-        f"You have been invited by {from_email} (admin) to join the EEA GPT Lab..\n"
-        "The EEA GPT Lab is a restricted-access application designed as a safe environment to explore the potential benefits and risks of using EEA's public content with state-of-the-art Large Language Models (LLMs). The application is for experimental purposes only, with access limited to users with EEA email addresses and selected contractors. GPT Lab is built with a robust privacy architecture to ensure that sensitive and personal information is not sent to third-party LLM AI providers.\n"
-        "To join the EEA GPT Lab, please visit the following link:\n"
+        f"You have been invited by {from_email} (admin) to join the EEA AI Hub..\n"
+        "The EEA AI Hub is a restricted-access application designed as a safe environment to explore the potential benefits and risks of using EEA's public content with state-of-the-art Large Language Models (LLMs). The application is for experimental purposes only, with access limited to users with EEA email addresses and selected contractors. AI Hub is built with a robust privacy architecture to ensure that sensitive and personal information is not sent to third-party LLM AI providers.\n"
+        "To join the EEA AI Hub, please visit the following link:\n"
         f"{WEB_DOMAIN}/auth/signup?email={to_email}\n"
     )
     if auth_type == AuthType.CLOUD:

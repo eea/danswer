@@ -7,8 +7,9 @@ import { errorHandlingFetcher } from "@/lib/fetcher";
 
 import Text from "@/components/ui/text";
 import Title from "@/components/ui/title";
-import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
+import Button from "@/refresh-components/buttons/Button";
+import { Separator } from "@radix-ui/react-separator";
+
 import {
   Table,
   TableBody,
@@ -47,14 +48,14 @@ const EditRow = ({ pageTitle }: { pageTitle: string }) => {
           "text-emphasis font-medium my-auto p-1 hover:bg-hover-light flex cursor-pointer select-none cursor-pointer"
         }
         onClick={() => {
-            router.push(`/admin/eea_config/pages/${pageTitle}`);
+          router.push(`/admin/eea_config/pages/${pageTitle}`);
         }}
-        // onMouseEnter={() => {
-        //     //setIsSyncingTooltipOpen(true);
-        // }}
-        // onMouseLeave={() => {
-        //     //setIsSyncingTooltipOpen(false);
-        // }}
+      // onMouseEnter={() => {
+      //     //setIsSyncingTooltipOpen(true);
+      // }}
+      // onMouseLeave={() => {
+      //     //setIsSyncingTooltipOpen(false);
+      // }}
       >
         <FiEdit className="text-emphasis mr-1 my-auto" />
         {pageTitle}
@@ -64,8 +65,8 @@ const EditRow = ({ pageTitle }: { pageTitle: string }) => {
 };
 
 interface PagesTableProps {
-  pages: any [];
-  config_json: {"pages":{}};
+  pages: any[];
+  config_json: { "pages": {} };
   refresh: () => void;
 }
 const PagesTable = ({
@@ -122,7 +123,7 @@ const PagesTable = ({
                         let pages = (config_json as any)?.pages;
                         delete pages[pageTitle];
                         config_json.pages = pages;
-                        
+
                         const body = JSON.stringify({ config: JSON.stringify(config_json) });
                         const response = await fetch(SET_EEA_CONFIG_URL, {
                           method: "POST",
@@ -173,14 +174,14 @@ const Page = () => {
     refreshPagesList,
   } = usePagesList();
 
-  let config_json = {"pages":[]};
-  if (data){
+  let config_json = { "pages": [] };
+  if (data) {
     console.log(data)
     config_json = JSON.parse(data?.config);
   }
 
   const { popup, setPopup } = usePopup();
-  
+
   if (isLoading) {
     return <LoadingAnimation text="Loading" />;
   }
@@ -188,36 +189,36 @@ const Page = () => {
   const pages = Object.keys(config_json?.pages || {}) || [];
   return (
     <>
-    <div className="mb-8">
-      {popup}
-      <div className="mx-auto container">
-      <AdminPageTitle icon={<FiCpu size={32} />} title="Pages configuration" />
-      <Text className="mb-3">
-        <b>User defined pages</b> allow you to create pages.
-      </Text>
+      <div className="mb-8">
+        {popup}
+        <div className="mx-auto container">
+          <AdminPageTitle icon={<FiCpu size={32} />} title="Pages configuration" />
+          <Text className="mb-3">
+            <b>User defined pages</b> allow you to create pages.
+          </Text>
 
-      <div className="mb-3"></div>
+          <div className="mb-3"></div>
 
-      <div className="flex mb-6">
-        <Link href="/admin/eea_config/pages/new">
-          <Button color="green" className="ml-2 my-auto">
-            New Page
-          </Button>
-        </Link>
+          <div className="flex mb-6">
+            <Link href="/admin/eea_config/pages/new">
+              <Button color="green" className="ml-2 my-auto">
+                New Page
+              </Button>
+            </Link>
+          </div>
+
+          {pages.length > 0 && (
+            <>
+              <Separator />
+              <PagesTable
+                pages={pages}
+                config_json={config_json}
+                refresh={refreshPagesList}
+              />
+            </>
+          )}
+        </div>
       </div>
-
-      {pages.length > 0 && (
-        <>
-          <Separator />
-          <PagesTable
-            pages={pages}
-            config_json={config_json}
-            refresh={refreshPagesList}
-          />
-        </>
-      )}
-    </div>
-    </div>
     </>
   );
 };

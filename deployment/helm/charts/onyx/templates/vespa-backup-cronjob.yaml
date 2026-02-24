@@ -1,0 +1,143 @@
+{{- if and .Values.vespa.enabled .Values.vespa.backup.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "onyx.fullname" . }}-vespa-backup
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: vespa-backup
+    {{- include "onyx.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.vespa.backup.schedule | quote }}
+  successfulJobsHistoryLimit: {{ .Values.vespa.backup.successfulJobsHistoryLimit | default 3 }}
+  failedJobsHistoryLimit: {{ .Values.vespa.backup.failedJobsHistoryLimit | default 3 }}
+  jobTemplate:
+    spec:
+      # Keep completed Job pods for 24 hours to allow log inspection
+      # After 24 hours, Kubernetes automatically deletes the Job and its pods
+      ttlSecondsAfterFinished: {{ .Values.vespa.backup.ttlSecondsAfterFinished | default 86400 }}
+      template:
+        metadata:
+          labels:
+            app: vespa-backup
+            scope: onyx-backend-celery
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: vespa-backup
+              image: vespaengine/vespa:{{ .Values.vespa.image.tag | default "8.609.39" }}
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -euo pipefail
+
+                  echo "============================================"
+                  echo "Vespa Backup Job Started"
+                  echo "Time: $(date)"
+                  echo "============================================"
+
+                  {{- if .Values.vespa.backup.retention.enabled }}
+                  RETENTION_DAYS={{ .Values.vespa.backup.retention.days | default 7 }}
+                  {{- end }}
+
+                  VESPA_HOST="{{ .Values.vespa.service.name | default "vespa-service" }}"
+                  VESPA_ENDPOINT="http://${VESPA_HOST}:8081"
+                  BACKUP_FILE="/backups/vespa_$(date +%Y%m%d_%H%M%S).jsonl.gz"
+
+                  echo "Vespa endpoint: $VESPA_ENDPOINT"
+                  echo "Backup file: $BACKUP_FILE"
+                  echo ""
+
+                  # Install Vespa CLI
+                  echo "Installing Vespa CLI..."
+                  VESPA_VERSION="{{ .Values.vespa.image.tag | default "8.609.39" }}"
+                  CLI_URL="https://github.com/vespa-engine/vespa/releases/download/v${VESPA_VERSION}/vespa-cli_${VESPA_VERSION}_linux_amd64.tar.gz"
+
+                  curl -fsSL "$CLI_URL" -o /tmp/vespa-cli.tar.gz || {
+                    echo "Failed to download v${VESPA_VERSION}, trying fallback version 8.620.35..."
+                    FALLBACK_VERSION="8.620.35"
+                    curl -fsSL "https://github.com/vespa-engine/vespa/releases/download/v${FALLBACK_VERSION}/vespa-cli_${FALLBACK_VERSION}_linux_amd64.tar.gz" -o /tmp/vespa-cli.tar.gz
+                  }
+
+                  tar -xzf /tmp/vespa-cli.tar.gz -C /tmp
+                  # Install to /tmp/bin instead of /usr/local/bin (no root permissions)
+                  mkdir -p /tmp/bin
+                  mv /tmp/vespa-cli_*/bin/vespa /tmp/bin/vespa 2>/dev/null || mv /tmp/vespa /tmp/bin/vespa 2>/dev/null || true
+                  chmod +x /tmp/bin/vespa
+                  rm -rf /tmp/vespa-cli.tar.gz /tmp/vespa-cli_*
+                  export PATH="/tmp/bin:$PATH"
+
+                  echo "Vespa CLI installed: $(vespa version 2>/dev/null || echo 'installed')"
+                  echo ""
+
+                  # Run vespa visit with streaming compression
+                  echo "Exporting Vespa documents with streaming compression..."
+                  echo "This may take several minutes depending on index size..."
+                  echo ""
+
+                  vespa visit --target "$VESPA_ENDPOINT" 2>/tmp/vespa_visit.log | gzip -1 > "$BACKUP_FILE"
+                  VISIT_EXIT=$?
+
+                  echo ""
+                  echo "Vespa visit exit code: $VISIT_EXIT"
+
+                  # Show any errors from the log
+                  if [ -f /tmp/vespa_visit.log ]; then
+                    echo "Last 10 lines of vespa visit log:"
+                    tail -10 /tmp/vespa_visit.log
+                  fi
+                  echo ""
+
+                  # Verify backup
+                  BACKUP_SIZE=$(stat -c %s "$BACKUP_FILE" 2>/dev/null || echo "0")
+                  if [ "$BACKUP_SIZE" -gt 0 ]; then
+                    # Calculate size in MB using shell arithmetic (more portable than bc)
+                    BACKUP_SIZE_MB=$((BACKUP_SIZE / 1048576))
+                    echo "Verifying backup integrity..."
+                    if gunzip -t "$BACKUP_FILE" 2>&1 && [ "$VISIT_EXIT" = "0" ]; then
+                      echo "✓ Backup complete and verified!"
+                      echo "  File: $BACKUP_FILE"
+                      echo "  Size: ${BACKUP_SIZE_MB} MB (compressed)"
+                    else
+                      echo "⚠️  Backup created but may have issues"
+                      echo "  File: $BACKUP_FILE"
+                      echo "  Size: ${BACKUP_SIZE_MB} MB"
+                    fi
+                  else
+                    echo "✗ Backup FAILED - file is empty"
+                    exit 1
+                  fi
+
+                  echo ""
+                  echo "Backup details:"
+                  ls -lh "$BACKUP_FILE"
+
+                  {{- if .Values.vespa.backup.retention.enabled }}
+                  echo ""
+                  echo "Cleaning up backups older than $RETENTION_DAYS days..."
+                  find /backups -type f -name "vespa_*.jsonl.gz" -mtime +${RETENTION_DAYS} -print -delete
+                  {{- end }}
+
+                  echo ""
+                  echo "============================================"
+                  echo "Vespa Backup Job Completed Successfully"
+                  echo "Time: $(date)"
+                  echo "============================================"
+              env:
+                - name: VESPA_CLI_HOME
+                  value: "/tmp/.vespa"
+              volumeMounts:
+                - name: vespa-backup
+                  mountPath: /backups
+                - name: tmp
+                  mountPath: /tmp
+              resources:
+                {{- toYaml .Values.vespa.backup.resources | nindent 16 }}
+          volumes:
+            - name: vespa-backup
+              persistentVolumeClaim:
+                claimName: {{ include "onyx.fullname" . }}-vespa-backup
+            - name: tmp
+              emptyDir: {}
+{{- end }}

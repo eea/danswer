@@ -1,3 +1,7 @@
+import contextlib
+from collections.abc import Generator
+from typing import Optional
+from typing import Protocol
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
@@ -6,9 +10,14 @@ from pydantic import Field
 from onyx.access.models import DocumentAccess
 from onyx.connectors.models import Document
 from onyx.db.enums import EmbeddingPrecision
+from onyx.db.enums import SwitchoverType
 from onyx.utils.logger import setup_logger
 from shared_configs.enums import EmbeddingProvider
 from shared_configs.model_server_models import Embedding
+
+if TYPE_CHECKING:
+    from onyx.indexing.indexing_pipeline import DocumentBatchPrepareContext
+from sqlalchemy.engine.util import TransactionalContext
 
 if TYPE_CHECKING:
     from onyx.db.models import SearchSettings
@@ -100,8 +109,7 @@ class DocMetadataAwareIndexChunk(IndexChunk):
     tenant_id: str
     access: "DocumentAccess"
     document_sets: set[str]
-    user_file: int | None
-    user_folder: int | None
+    user_project: list[int]
     boost: int
     aggregated_chunk_boost_factor: float
 
@@ -111,8 +119,7 @@ class DocMetadataAwareIndexChunk(IndexChunk):
         index_chunk: IndexChunk,
         access: "DocumentAccess",
         document_sets: set[str],
-        user_file: int | None,
-        user_folder: int | None,
+        user_project: list[int],
         boost: int,
         aggregated_chunk_boost_factor: float,
         tenant_id: str,
@@ -122,8 +129,7 @@ class DocMetadataAwareIndexChunk(IndexChunk):
             **index_chunk_data,
             access=access,
             document_sets=document_sets,
-            user_file=user_file,
-            user_folder=user_folder,
+            user_project=user_project,
             boost=boost,
             aggregated_chunk_boost_factor=aggregated_chunk_boost_factor,
             tenant_id=tenant_id,
@@ -168,7 +174,7 @@ class IndexingSetting(EmbeddingModelDetail):
     embedding_precision: EmbeddingPrecision
     reduced_dimension: int | None = None
 
-    background_reindex_enabled: bool = True
+    switchover_type: SwitchoverType = SwitchoverType.REINDEX
     enable_contextual_rag: bool
     contextual_rag_llm_name: str | None = None
     contextual_rag_llm_provider: str | None = None
@@ -195,7 +201,7 @@ class IndexingSetting(EmbeddingModelDetail):
             multipass_indexing=search_settings.multipass_indexing,
             embedding_precision=search_settings.embedding_precision,
             reduced_dimension=search_settings.reduced_dimension,
-            background_reindex_enabled=search_settings.background_reindex_enabled,
+            switchover_type=search_settings.switchover_type,
             enable_contextual_rag=search_settings.enable_contextual_rag,
         )
 
@@ -209,3 +215,39 @@ class UpdatableChunkData(BaseModel):
     chunk_id: int
     document_id: str
     boost_score: float
+
+
+class BuildMetadataAwareChunksResult(BaseModel):
+    chunks: list[DocMetadataAwareIndexChunk]
+    doc_id_to_previous_chunk_cnt: dict[str, int]
+    doc_id_to_new_chunk_cnt: dict[str, int]
+    user_file_id_to_raw_text: dict[str, str]
+    user_file_id_to_token_count: dict[str, int | None]
+
+
+class IndexingBatchAdapter(Protocol):
+    def prepare(
+        self, documents: list[Document], ignore_time_skip: bool
+    ) -> Optional["DocumentBatchPrepareContext"]: ...
+
+    @contextlib.contextmanager
+    def lock_context(
+        self, documents: list[Document]
+    ) -> Generator[TransactionalContext, None, None]:
+        """Provide a transaction/row-lock context for critical updates."""
+
+    def build_metadata_aware_chunks(
+        self,
+        chunks_with_embeddings: list[IndexChunk],
+        chunk_content_scores: list[float],
+        tenant_id: str,
+        context: "DocumentBatchPrepareContext",
+    ) -> BuildMetadataAwareChunksResult: ...
+
+    def post_index(
+        self,
+        context: "DocumentBatchPrepareContext",
+        updatable_chunk_data: list[UpdatableChunkData],
+        filtered_documents: list[Document],
+        result: BuildMetadataAwareChunksResult,
+    ) -> None: ...

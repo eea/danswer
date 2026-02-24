@@ -1,3 +1,5 @@
+name: onyx
+
 services:
   indexing_model_server:
     image: onyxdotapp/onyx-model-server:${IMAGE_TAG:-latest}
@@ -5,7 +7,7 @@ services:
       context: ../../backend
       dockerfile: Dockerfile.model_server
     command: >
-      /bin/sh -c "if [ \"${DISABLE_MODEL_SERVER:-false}\" = \"True\" ]; then
+      /bin/sh -c "if [ \"${DISABLE_MODEL_SERVER}\" = \"True\" ] || [ \"${DISABLE_MODEL_SERVER}\" = \"true\" ]; then
         echo 'Skipping service...';
         exit 0;
       else
@@ -24,7 +26,7 @@ services:
       - SENTRY_DSN=${SENTRY_DSN:-}
     volumes:
       # Not necessary, this is just to reduce download time during startup
-      - indexing_huggingface_model_cache:/root/.cache/huggingface/
+      - indexing_huggingface_model_cache:/app/.cache/huggingface/
     logging:
       driver: json-file
       options:

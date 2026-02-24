@@ -4,24 +4,35 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from pydantic import BaseModel
+from pydantic import Field
 from pydantic import model_validator
 
+from onyx.agents.agent_search.dr.enums import ResearchType
 from onyx.chat.models import PersonaOverrideConfig
+from onyx.chat.models import QADocsResponse
 from onyx.chat.models import RetrievalDocs
+from onyx.chat.models import ThreadMessage
 from onyx.configs.constants import DocumentSource
 from onyx.configs.constants import MessageType
 from onyx.configs.constants import SearchFeedbackType
 from onyx.configs.constants import SessionType
+from onyx.context.search.enums import LLMEvaluationType
+from onyx.context.search.enums import SearchType
 from onyx.context.search.models import BaseFilters
 from onyx.context.search.models import ChunkContext
 from onyx.context.search.models import RerankingDetails
 from onyx.context.search.models import RetrievalDetails
+from onyx.context.search.models import SavedSearchDocWithContent
 from onyx.context.search.models import SearchDoc
 from onyx.context.search.models import Tag
 from onyx.db.enums import ChatSessionSharedStatus
+from onyx.db.models import ChatSession
 from onyx.file_store.models import FileDescriptor
 from onyx.llm.override_models import LLMOverride
 from onyx.llm.override_models import PromptOverride
+from onyx.onyxbot.slack.models import SlackContext
+from onyx.server.query_and_chat.streaming_models import CitationInfo
+from onyx.server.query_and_chat.streaming_models import Packet
 from onyx.tools.models import ToolCallFinalResult
 
 
@@ -52,6 +63,7 @@ class ChatSessionCreationRequest(BaseModel):
     # If not specified, use Onyx default persona
     persona_id: int = 0
     description: str | None = None
+    project_id: int | None = None
 
 
 class CreateChatSessionID(BaseModel):
@@ -91,14 +103,10 @@ class CreateChatMessageRequest(ChunkContext):
     # New message contents
     message: str
     # Files that we should attach to this message
-    file_descriptors: list[FileDescriptor]
-    user_file_ids: list[int] = []
-    user_folder_ids: list[int] = []
+    file_descriptors: list[FileDescriptor] = []
+    current_message_files: list[FileDescriptor] = []
 
-    # If no prompt provided, uses the largest prompt of the chat session
-    # but really this should be explicitly specified, only in the simplified APIs is this inferred
-    # Use prompt_id 0 to use the system default prompt which is Answer-Question
-    prompt_id: int | None
+    # Prompts are embedded in personas, so no separate prompt_id needed
     # If search_doc_ids provided, then retrieval options are unused
     search_doc_ids: list[int] | None
     retrieval_options: RetrievalDetails | None
@@ -139,9 +147,18 @@ class CreateChatMessageRequest(ChunkContext):
 
     # If true, ignores most of the search options and uses pro search instead.
     # TODO: decide how many of the above options we want to pass through to pro search
+    # TODO: Deprecate this in favor of research_type
     use_agentic_search: bool = False
 
     skip_gen_ai_answer_generation: bool = False
+    # Slack context for federated search
+    slack_context: SlackContext | None = None
+
+    # List of allowed tool IDs to restrict tool usage. If not provided, all tools available to the persona will be used.
+    allowed_tool_ids: list[int] | None = None
+
+    # List of tool IDs we MUST use.
+    forced_tool_ids: list[int] | None = None
 
     @model_validator(mode="after")
     def check_search_doc_ids_or_retrieval_options(self) -> "CreateChatMessageRequest":
@@ -185,9 +202,21 @@ class ChatSessionDetails(BaseModel):
     time_created: str
     time_updated: str
     shared_status: ChatSessionSharedStatus
-    folder_id: int | None = None
     current_alternate_model: str | None = None
     current_temperature_override: float | None = None
+
+    @classmethod
+    def from_model(cls, model: ChatSession) -> "ChatSessionDetails":
+        return cls(
+            id=model.id,
+            name=model.description,
+            persona_id=model.persona_id,
+            time_created=model.time_created.isoformat(),
+            time_updated=model.time_updated.isoformat(),
+            shared_status=model.shared_status,
+            current_alternate_model=model.current_alternate_model,
+            current_temperature_override=model.temperature_override,
+        )
 
 
 class ChatSessionsResponse(BaseModel):
@@ -234,18 +263,17 @@ class ChatMessageDetail(BaseModel):
     rephrased_query: str | None = None
     context_docs: RetrievalDocs | None = None
     message_type: MessageType
+    research_type: ResearchType | None = None
     time_sent: datetime
     overridden_model: str | None
     alternate_assistant_id: int | None = None
     chat_session_id: UUID | None = None
     # Dict mapping citation number to db_doc_id
     citations: dict[int, int] | None = None
-    sub_questions: list[SubQuestionDetail] | None = None
     files: list[FileDescriptor]
     tool_call: ToolCallFinalResult | None
-    refined_answer_improvement: bool | None = None
-    is_agentic: bool | None = None
     error: str | None = None
+    current_feedback: str | None = None  # "like" | "dislike" | null
 
     def model_dump(self, *args: list, **kwargs: dict[str, Any]) -> dict[str, Any]:  # type: ignore
         initial_dict = super().model_dump(mode="json", *args, **kwargs)  # type: ignore
@@ -274,6 +302,8 @@ class ChatSessionDetailResponse(BaseModel):
     current_temperature_override: float | None
     deleted: bool = False
 
+    packets: list[list[Packet]]
+
 
 # This one is not used anymore
 class QueryValidationResponse(BaseModel):
@@ -296,7 +326,6 @@ class ChatSessionSummary(BaseModel):
     persona_id: int | None = None
     time_created: datetime
     shared_status: ChatSessionSharedStatus
-    folder_id: int | None = None
     current_alternate_model: str | None = None
     current_temperature_override: float | None = None
 
@@ -320,3 +349,69 @@ class ChatSearchRequest(BaseModel):
 
 class CreateChatResponse(BaseModel):
     chat_session_id: str
+
+
+class DocumentSearchRequest(ChunkContext):
+    message: str
+    search_type: SearchType
+    retrieval_options: RetrievalDetails
+    recency_bias_multiplier: float = 1.0
+    evaluation_type: LLMEvaluationType
+    # None to use system defaults for reranking
+    rerank_settings: RerankingDetails | None = None
+
+
+class OneShotQARequest(ChunkContext):
+    # Supports simplier APIs that don't deal with chat histories or message edits
+    # Easier APIs to work with for developers
+    persona_override_config: PersonaOverrideConfig | None = None
+    persona_id: int | None = None
+
+    messages: list[ThreadMessage]
+    retrieval_options: RetrievalDetails = Field(default_factory=RetrievalDetails)
+    rerank_settings: RerankingDetails | None = None
+
+    # allows the caller to specify the exact search query they want to use
+    # can be used if the message sent to the LLM / query should not be the same
+    # will also disable Thread-based Rewording if specified
+    query_override: str | None = None
+
+    # If True, skips generating an AI response to the search query
+    skip_gen_ai_answer_generation: bool = False
+
+    # If True, uses agentic search instead of basic search
+    use_agentic_search: bool = False
+
+    @model_validator(mode="after")
+    def check_persona_fields(self) -> "OneShotQARequest":
+        if self.persona_override_config is None and self.persona_id is None:
+            raise ValueError("Exactly one of persona_config or persona_id must be set")
+        elif self.persona_override_config is not None and (self.persona_id is not None):
+            raise ValueError(
+                "If persona_override_config is set, persona_id cannot be set"
+            )
+        return self
+
+
+class OneShotQAResponse(BaseModel):
+    # This is built piece by piece, any of these can be None as the flow could break
+    answer: str | None = None
+    rephrase: str | None = None
+    citations: list[CitationInfo] | None = None
+    docs: QADocsResponse | None = None
+    error_msg: str | None = None
+    chat_message_id: int | None = None
+
+
+class DocumentSearchPagination(BaseModel):
+    offset: int
+    limit: int
+    returned_count: int
+    has_more: bool
+    next_offset: int | None = None
+
+
+class DocumentSearchResponse(BaseModel):
+    top_documents: list[SavedSearchDocWithContent]
+    llm_indices: list[int]
+    pagination: DocumentSearchPagination

@@ -6,6 +6,7 @@ from urllib.parse import urlencode
 
 import requests
 from pydantic import ValidationError
+from slack_sdk import WebClient
 from typing_extensions import override
 
 from onyx.context.search.federated.slack_search import slack_retrieval
@@ -18,17 +19,23 @@ from onyx.federated_connectors.models import EntityField
 from onyx.federated_connectors.models import OAuthResult
 from onyx.federated_connectors.slack.models import SlackCredentials
 from onyx.federated_connectors.slack.models import SlackEntities
+from onyx.onyxbot.slack.models import SlackContext
 from onyx.utils.logger import setup_logger
 
 logger = setup_logger()
 
 
 SCOPES = [
+    "channels:read",
+    "groups:read",
+    "im:read",
+    "mpim:read",
     "search:read",
     "channels:history",
     "groups:history",
     "im:history",
     "mpim:history",
+    "users:read",
     "users.profile:read",
 ]
 
@@ -57,29 +64,75 @@ class SlackFederatedConnector(FederatedConnector):
             return False
 
     @classmethod
-    @override
     def entities_schema(cls) -> dict[str, EntityField]:
-        """Return the specifications of what entities are available for this federated search type.
+        """Return the specifications of what entity configuration fields are available for Slack.
 
-        Returns a specification that tells the caller:
-        - channels is valid and should be a list[str]
-        - include_dm is valid and should be a boolean
+        This is the canonical schema definition for Slack entities.
         """
         return {
+            "exclude_channels": EntityField(
+                type="list[str]",
+                description="Exclude the following channels from search. Glob patterns are supported.",
+                required=False,
+                example=["secure-channel", "private-*", "customer*"],
+            ),
+            "search_all_channels": EntityField(
+                type="bool",
+                description="Search all accessible channels. If not set, must specify channels below.",
+                required=False,
+                default=False,
+                example=False,
+            ),
             "channels": EntityField(
                 type="list[str]",
-                description="List of Slack channel names or IDs to search in",
+                description="Search the following channels",
                 required=False,
-                example=["general", "random", "C1234567890"],
+                example=["general", "eng*", "product-*"],
             ),
             "include_dm": EntityField(
                 type="bool",
-                description="Whether to include direct messages in the search",
+                description="Include user direct messages in search results",
                 required=False,
                 default=False,
-                example=True,
+                example=False,
+            ),
+            "include_group_dm": EntityField(
+                type="bool",
+                description="Include group direct messages (multi-person DMs) in search results",
+                required=False,
+                default=False,
+                example=False,
+            ),
+            "include_private_channels": EntityField(
+                type="bool",
+                description="Include private channels in search results (user must have access)",
+                required=False,
+                default=False,
+                example=False,
+            ),
+            "default_search_days": EntityField(
+                type="int",
+                description="Maximum number of days to search back. Increasing this value degrades answer quality.",
+                required=False,
+                default=30,
+                example=30,
+            ),
+            "max_messages_per_query": EntityField(
+                type="int",
+                description=(
+                    "Maximum number of messages to retrieve per search query. "
+                    "Higher values provide more context but may be slower."
+                ),
+                required=False,
+                default=25,
+                example=25,
             ),
         }
+
+    @classmethod
+    def configuration_schema(cls) -> dict[str, EntityField]:
+        """Wrapper for backwards compatibility - delegates to entities_schema()."""
+        return cls.entities_schema()
 
     @classmethod
     @override
@@ -169,8 +222,8 @@ class SlackFederatedConnector(FederatedConnector):
             "token_type": authed_user.get("token_type"),
         }
 
-        # Extract OAuth tokens from authed_user
-        access_token = authed_user.get("access_token")
+        # Extract OAuth tokens - bot token from root, user token from authed_user
+        user_token = authed_user.get("access_token")  # User token
         refresh_token = authed_user.get("refresh_token")
         token_type = authed_user.get("token_type", "bearer")
         scope = authed_user.get("scope")
@@ -183,7 +236,7 @@ class SlackFederatedConnector(FederatedConnector):
             )
 
         return OAuthResult(
-            access_token=access_token,
+            access_token=user_token,  # Bot token for bot operations
             token_type=token_type,
             scope=scope,
             expires_at=expires_at,
@@ -221,17 +274,46 @@ class SlackFederatedConnector(FederatedConnector):
         entities: dict[str, Any],
         access_token: str,
         limit: int | None = None,
+        slack_event_context: SlackContext | None = None,
+        bot_token: str | None = None,
     ) -> list[InferenceChunk]:
         """Perform a federated search on Slack.
 
         Args:
             query: The search query
-            entities: The entities to search within (validated by validate())
+            entities: Connector-level config (entity filtering configuration)
             access_token: The OAuth access token
             limit: Maximum number of results to return
+            slack_event_context: Optional Slack context for slack bot
+            bot_token: Optional bot token for slack bot
 
         Returns:
             Search results in SlackSearchResponse format
         """
+        logger.info(f"Slack federated search called with entities: {entities}")
+
+        # Get team_id from Slack API for caching and filtering
+        team_id = None
+        try:
+            slack_client = WebClient(token=access_token)
+            auth_response = slack_client.auth_test()
+            auth_response.validate()
+
+            # Cast response.data to dict for type checking
+            auth_data: dict[str, Any] = auth_response.data  # type: ignore
+            team_id = auth_data.get("team_id")
+            logger.info(f"Slack team_id: {team_id}")
+        except Exception as e:
+            logger.warning(f"Could not fetch team_id from Slack API: {e}")
+
         with get_session_with_current_tenant() as db_session:
-            return slack_retrieval(query, access_token, db_session, limit)
+            return slack_retrieval(
+                query,
+                access_token,
+                db_session,
+                entities=entities,
+                limit=limit,
+                slack_event_context=slack_event_context,
+                bot_token=bot_token,
+                team_id=team_id,
+            )

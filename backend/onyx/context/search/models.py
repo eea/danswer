@@ -1,5 +1,7 @@
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
+from uuid import UUID
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
@@ -43,7 +45,8 @@ class RerankingDetails(BaseModel):
     disable_rerank_for_streaming: bool = False
 
     @classmethod
-    def from_db_model(cls, search_settings: SearchSettings) -> "RerankingDetails":
+    def from_db_model(
+            cls, search_settings: SearchSettings) -> "RerankingDetails":
         return cls(
             rerank_model_name=search_settings.rerank_model_name,
             rerank_provider_type=search_settings.rerank_provider_type,
@@ -66,12 +69,14 @@ class SearchSettingsCreationRequest(InferenceSettings, IndexingSetting):
         inference_settings = InferenceSettings.from_db_model(search_settings)
         indexing_setting = IndexingSetting.from_db_model(search_settings)
 
-        return cls(**inference_settings.model_dump(), **indexing_setting.model_dump())
+        return cls(**inference_settings.model_dump(),
+                   **indexing_setting.model_dump())
 
 
 class SavedSearchSettings(InferenceSettings, IndexingSetting):
     @classmethod
-    def from_db_model(cls, search_settings: SearchSettings) -> "SavedSearchSettings":
+    def from_db_model(
+            cls, search_settings: SearchSettings) -> "SavedSearchSettings":
         return cls(
             # Indexing Setting
             model_name=search_settings.model_name,
@@ -84,8 +89,7 @@ class SavedSearchSettings(InferenceSettings, IndexingSetting):
             multipass_indexing=search_settings.multipass_indexing,
             embedding_precision=search_settings.embedding_precision,
             reduced_dimension=search_settings.reduced_dimension,
-            # Whether switching to this model requires re-indexing
-            background_reindex_enabled=search_settings.background_reindex_enabled,
+            switchover_type=search_settings.switchover_type,
             enable_contextual_rag=search_settings.enable_contextual_rag,
             contextual_rag_llm_name=search_settings.contextual_rag_llm_name,
             contextual_rag_llm_provider=search_settings.contextual_rag_llm_provider,
@@ -119,8 +123,8 @@ class BaseFilters(BaseModel):
 
 
 class UserFileFilters(BaseModel):
-    user_file_ids: list[int] | None = None
-    user_folder_ids: list[int] | None = None
+    user_file_ids: list[UUID] | None = None
+    project_id: int | None = None
 
 
 class IndexFilters(BaseFilters, UserFileFilters):
@@ -315,7 +319,8 @@ class InferenceChunkUncleaned(InferenceChunk):
             k: v
             for k, v in self.model_dump().items()
             if k
-            not in ["metadata_suffix"]  # May be other fields to throw out in the future
+            # May be other fields to throw out in the future
+            not in ["metadata_suffix"]
         }
         return InferenceChunk(**inference_chunk_data)
 
@@ -335,6 +340,7 @@ class SearchDoc(BaseModel):
     semantic_identifier: str
     link: str | None = None
     blurb: str
+    content: str | None = None  # needed for halloumi, ref #286143
     source_type: DocumentSource
     boost: int
     # Whether the document is hidden when doing a standard search
@@ -355,7 +361,51 @@ class SearchDoc(BaseModel):
     secondary_owners: list[str] | None = None
     is_internet: bool = False
 
-    def model_dump(self, *args: list, **kwargs: dict[str, Any]) -> dict[str, Any]:  # type: ignore
+    @classmethod
+    def from_chunks_or_sections(
+        cls,
+        items: "Sequence[InferenceChunk | InferenceSection] | None",
+    ) -> list["SearchDoc"]:
+        """Convert a sequence of InferenceChunk or InferenceSection objects to SearchDoc objects."""
+        if not items:
+            return []
+
+        search_docs = [
+            cls(
+                document_id=(
+                    chunk := (
+                        item.center_chunk
+                        if isinstance(item, InferenceSection)
+                        else item
+                    )
+                ).document_id,
+                chunk_ind=chunk.chunk_id,
+                semantic_identifier=chunk.semantic_identifier or "Unknown",
+                link=chunk.source_links[0] if chunk.source_links else None,
+                blurb=chunk.blurb,
+                content=(
+                    # needed for halloumi, ref #286143
+                    item.combined_content if isinstance(
+                        item, InferenceSection) else None
+                ),
+                source_type=chunk.source_type,
+                boost=chunk.boost,
+                hidden=chunk.hidden,
+                metadata=chunk.metadata,
+                score=chunk.score,
+                match_highlights=chunk.match_highlights,
+                updated_at=chunk.updated_at,
+                primary_owners=chunk.primary_owners,
+                secondary_owners=chunk.secondary_owners,
+                is_internet=False,
+            )
+            for item in items
+        ]
+
+        return search_docs
+
+    # type: ignore
+    def model_dump(self, *args: list, **kwargs: dict[str, Any]) -> dict[str, Any]:
         initial_dict = super().model_dump(*args, **kwargs)  # type: ignore
         initial_dict["updated_at"] = (
             self.updated_at.isoformat() if self.updated_at else None
@@ -377,6 +427,40 @@ class SavedSearchDoc(SearchDoc):
         search_doc_data = search_doc.model_dump()
         search_doc_data["score"] = search_doc_data.get("score") or 0.0
         return cls(**search_doc_data, db_doc_id=db_doc_id)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SavedSearchDoc":
+        """Create SavedSearchDoc from serialized dictionary data (e.g., from database JSON)"""
+        return cls(**data)
+
+    @classmethod
+    def from_url(cls, url: str) -> "SavedSearchDoc":
+        """Create a SavedSearchDoc from a URL for internet search documents.
+
+        Uses the INTERNET_SEARCH_DOC_ prefix for document_id to match the format
+        used by inference sections created from internet content.
+        """
+        return cls(
+            # db_doc_id can be a filler value since these docs are not saved to the database.
+            db_doc_id=0,
+            document_id="INTERNET_SEARCH_DOC_" + url,
+            chunk_ind=0,
+            semantic_identifier=url,
+            link=url,
+            blurb="",
+            source_type=DocumentSource.WEB,
+            boost=1,
+            hidden=False,
+            metadata={},
+            score=0.0,
+            is_relevant=None,
+            relevance_explanation=None,
+            match_highlights=[],
+            updated_at=None,
+            primary_owners=None,
+            secondary_owners=None,
+            is_internet=True,
+        )
 
     def __lt__(self, other: Any) -> bool:
         if not isinstance(other, SavedSearchDoc):
@@ -401,7 +485,8 @@ class SearchResponse(RetrievalDocs):
 
 class RetrievalMetricsContainer(BaseModel):
     search_type: SearchType
-    metrics: list[ChunkMetric]  # This contains the scores for retrieval as well
+    # This contains the scores for retrieval as well
+    metrics: list[ChunkMetric]
 
 
 class RerankMetricsContainer(BaseModel):

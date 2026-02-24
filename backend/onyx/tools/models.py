@@ -4,6 +4,7 @@ from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel
+from pydantic import ConfigDict
 from pydantic import model_validator
 from sqlalchemy.orm import Session
 
@@ -74,8 +75,8 @@ class SearchToolOverrideKwargs(BaseModel):
     precomputed_query_embedding: Embedding | None = None
     precomputed_is_keyword: bool | None = None
     precomputed_keywords: list[str] | None = None
-    user_file_ids: list[int] | None = None
-    user_folder_ids: list[int] | None = None
+    user_file_ids: list[UUID] | None = None
+    project_id: int | None = None
     document_sources: list[DocumentSource] | None = None
     time_cutoff: datetime | None = None
     expanded_queries: QueryExpansions | None = None
@@ -85,8 +86,7 @@ class SearchToolOverrideKwargs(BaseModel):
     kg_sources: list[str] | None = None
     kg_chunk_id_zero_only: bool | None = False
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 CHAT_SESSION_ID_PLACEHOLDER = "CHAT_SESSION_ID"

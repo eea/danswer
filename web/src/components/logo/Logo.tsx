@@ -2,7 +2,8 @@
 
 import { useContext } from "react";
 import { SettingsContext } from "../settings/SettingsProvider";
-import { OnyxIcon, OnyxLogoTypeIcon } from "../icons/icons";
+import { OnyxIcon } from "../icons/icons";
+import { EEAIcon } from "../EEA_Logo";
 
 export function Logo({
   height,
@@ -13,7 +14,7 @@ export function Logo({
   height?: number;
   width?: number;
   className?: string;
-  size?: "small" | "default" | "large";
+  size?: "small" | "default" | "large" | "eea_large";
 }) {
   const settings = useContext(SettingsContext);
 
@@ -21,6 +22,7 @@ export function Logo({
     small: { height: 24, width: 22 },
     default: { height: 32, width: 30 },
     large: { height: 48, width: 45 },
+    eea_large: { height: 48, width: 90 },
   };
 
   const { height: defaultHeight, width: defaultWidth } = sizeMap[size];
@@ -34,7 +36,7 @@ export function Logo({
   ) {
     return (
       <div style={{ height, width }} className={className}>
-        <OnyxIcon
+        <EEAIcon
           size={height}
           className={`${className} dark:text-[#fff] text-[#000]`}
         />
@@ -54,18 +56,5 @@ export function Logo({
         style={{ objectFit: "contain", height, width }}
       />
     </div>
-  );
-}
-
-export function LogoType({
-  size = "default",
-}: {
-  size?: "small" | "default" | "large";
-}) {
-  return (
-    <OnyxLogoTypeIcon
-      size={115}
-      className={`items-center w-full dark:text-[#fff]`}
-    />
   );
 }

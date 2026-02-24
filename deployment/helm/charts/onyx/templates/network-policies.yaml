@@ -1,0 +1,926 @@
+{{- if .Values.networkPolicy.enabled }}
+---
+{{- if eq .Values.networkPolicy.defaultEgress "deny" }}
+# Default deny all ingress traffic
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "onyx.fullname" . }}-default-deny
+  labels:
+    {{- include "onyx.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+{{- end }}
+{{- if .Values.networkPolicy.adminAccess.enabled }}
+# Administrative access policy for kubectl exec, port-forward, SSH console
+# WARNING: This policy allows administrative access to all pods
+# Enable only during debugging/maintenance, then disable for production
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "onyx.fullname" . }}-admin-access
+  labels:
+    {{- include "onyx.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - {{- if .Values.networkPolicy.adminAccess.allowFrom }}
+      from:
+      {{- range .Values.networkPolicy.adminAccess.allowFrom }}
+        - ipBlock:
+            cidr: {{ . }}
+      {{- end }}
+      {{- end }}
+      ports:
+        # Allow all ports for administrative access
+        # This enables kubectl exec, port-forward, and SSH console
+---
+{{- end }}
+---
+# Allow Nginx to receive external traffic and communicate with API/Webserver
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "onyx.fullname" . }}-nginx
+  labels:
+    {{- include "onyx.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: nginx
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow ingress from anywhere (external traffic)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector: {}
+        {{- if .Values.networkPolicy.ingressFromNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.ingressFromNamespaces | nindent 14 }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+  egress:
+    # Allow egress to API server
+    - to:
+        - podSelector:
+            matchLabels:
+              app: api-server
+      ports:
+        - protocol: TCP
+          port: 8080
+    # Allow egress to Webserver
+    - to:
+        - podSelector:
+            matchLabels:
+              app: web-server
+      ports:
+        - protocol: TCP
+          port: 3000
+    # DNS
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+---
+# Allow Webserver to receive traffic from Nginx only
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "onyx.fullname" . }}-webserver
+  labels:
+    {{- include "onyx.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: web-server
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              app: nginx
+      ports:
+        - protocol: TCP
+          port: 3000
+  egress:
+    # Allow egress to API server
+    - to:
+        - podSelector:
+            matchLabels:
+              app: api-server
+      ports:
+        - protocol: TCP
+          port: 8080
+    # DNS
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+---
+# Allow API Server to receive traffic from Nginx and Webserver
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "onyx.fullname" . }}-api
+  labels:
+    {{- include "onyx.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: api-server
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              app: nginx
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              app: web-server
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              scope: onyx-backend-celery
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              app: slack-bot
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    # Allow egress to PostgreSQL
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgresql
+      ports:
+        - protocol: TCP
+          port: 5432
+    # Allow egress to Redis
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    # Allow egress to Vespa
+    - to:
+        - podSelector:
+            matchLabels:
+              app: vespa
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 8081
+        - protocol: TCP
+          port: 19071
+    # Allow egress to MinIO
+    - to:
+        - podSelector:
+            matchLabels:
+              app: minio
+      ports:
+        - protocol: TCP
+          port: 9000
+    # Allow egress to Model Servers
+    - to:
+        - podSelector:
+            matchLabels:
+              app: indexing-model-server
+      ports:
+        - protocol: TCP
+          port: 9000
+    - to:
+        - podSelector:
+            matchLabels:
+              app: inference-model-server
+      ports:
+        - protocol: TCP
+          port: 9000
+    # Allow egress to Postfix
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postfix
+      ports:
+        - protocol: TCP
+          port: 25
+    # DNS
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+    # Allow HTTPS/HTTP egress for external services (LLM providers)
+    # Required for:
+    # - LLM API providers (OpenAI, Azure OpenAI, etc.)
+    # - NLTK data downloads from github.com/nltk/nltk_data
+    # - Sentry error tracking at sentry.eea.europa.eu
+    # - HuggingFace model downloads (nomic-ai/nomic-embed-text-v1) from huggingface.co
+    # Note: NetworkPolicies do not support domain-based filtering.
+    # This rule allows HTTPS/HTTP to any external IP. For domain-specific restrictions,
+    # consider using a service mesh (Istio), egress gateway, or DNS-aware CNI (Cilium).
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 80
+---
+# PostgreSQL network policy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "onyx.fullname" . }}-postgresql
+  labels:
+    {{- include "onyx.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: postgresql
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              scope: onyx-backend
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              scope: onyx-backend-celery
+      ports:
+        - protocol: TCP
+          port: 5432
+  egress:
+    # Allow Vespa intra-cluster traffic (config, file distribution, messaging)
+    - to:
+        - podSelector:
+            matchLabels:
+              app: vespa
+      ports:
+        - protocol: TCP
+          port: 19070  # config server RPC
+        - protocol: TCP
+          port: 19071  # admin/REST
+        - protocol: TCP
+          port: 19100  # file distribution
+        - protocol: TCP
+          port: 19101
+        - protocol: TCP
+          port: 19102
+        - protocol: TCP
+          port: 19103
+        - protocol: TCP
+          port: 19104
+    # DNS
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+---
+# Redis network policy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "onyx.fullname" . }}-redis
+  labels:
+    {{- include "onyx.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              scope: onyx-backend
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              scope: onyx-backend-celery
+      ports:
+        - protocol: TCP
+          port: 6379
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+---
+# Vespa network policy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "onyx.fullname" . }}-vespa
+  labels:
+    {{- include "onyx.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: vespa
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow ingress from backend services (API queries and document operations)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              scope: onyx-backend
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              scope: onyx-backend-celery
+      ports:
+        - protocol: TCP
+          port: 8080  # Document API / query API
+        - protocol: TCP
+          port: 8081  # Metrics/status
+        - protocol: TCP
+          port: 19071 # Admin/REST API
+    # Allow ingress from backup jobs
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              app: vespa-backup
+      ports:
+        - protocol: TCP
+          port: 8080  # Document API (for vespa visit)
+        - protocol: TCP
+          port: 8081  # Metrics/status API
+        - protocol: TCP
+          port: 19071 # Admin/REST API
+    # Allow Vespa-to-Vespa communication (intra-cluster traffic)
+    # Required for: config propagation, file distribution, RPC messaging, and cluster coordination
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              app: vespa
+      ports:
+        - protocol: TCP
+          port: 8080  # Document API
+        - protocol: TCP
+          port: 8081  # Metrics/status
+        - protocol: TCP
+          port: 19070 # Config server RPC
+        - protocol: TCP
+          port: 19071 # Slobrok (service location broker)
+        - protocol: TCP
+          port: 19099 # Config server
+        - protocol: TCP
+          port: 19100 # File distribution
+        - protocol: TCP
+          port: 19101 # RTC port
+        - protocol: TCP
+          port: 19102 # Status server
+        - protocol: TCP
+          port: 19103 # Internal RPC
+        - protocol: TCP
+          port: 19104 # Internal RPC
+        - protocol: TCP
+          port: 19105 # Internal RPC
+        - protocol: TCP
+          port: 19106 # Internal RPC
+        - protocol: TCP
+          port: 19107 # Internal RPC
+        - protocol: TCP
+          port: 19108 # Internal RPC (node connection)
+        - protocol: TCP
+          port: 19109 # Internal RPC
+        - protocol: TCP
+          port: 19110 # Internal RPC
+  egress:
+    # Allow Vespa-to-Vespa egress (for cluster communication)
+    - to:
+        - podSelector:
+            matchLabels:
+              app: vespa
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 8081
+        - protocol: TCP
+          port: 19070
+        - protocol: TCP
+          port: 19071
+        - protocol: TCP
+          port: 19099
+        - protocol: TCP
+          port: 19100
+        - protocol: TCP
+          port: 19101
+        - protocol: TCP
+          port: 19102
+        - protocol: TCP
+          port: 19103
+        - protocol: TCP
+          port: 19104
+        - protocol: TCP
+          port: 19105
+        - protocol: TCP
+          port: 19106
+        - protocol: TCP
+          port: 19107
+        - protocol: TCP
+          port: 19108
+        - protocol: TCP
+          port: 19109
+        - protocol: TCP
+          port: 19110
+    # DNS
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+---
+# MinIO network policy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "onyx.fullname" . }}-minio
+  labels:
+    {{- include "onyx.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: minio
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              scope: onyx-backend
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              scope: onyx-backend-celery
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              app: minio-job
+      ports:
+        - protocol: TCP
+          port: 9000
+        - protocol: TCP
+          port: 9001
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+---
+# Celery Workers network policy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "onyx.fullname" . }}-celery-workers
+  labels:
+    {{- include "onyx.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      scope: onyx-backend-celery
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress:
+    # Allow egress to PostgreSQL
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgresql
+      ports:
+        - protocol: TCP
+          port: 5432
+    # Allow egress to Redis
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    # Allow egress to Vespa
+    - to:
+        - podSelector:
+            matchLabels:
+              app: vespa
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 8081
+        - protocol: TCP
+          port: 19071
+    # Allow egress to MinIO
+    - to:
+        - podSelector:
+            matchLabels:
+              app: minio
+      ports:
+        - protocol: TCP
+          port: 9000
+    # Allow egress to Model Servers
+    - to:
+        - podSelector:
+            matchLabels:
+              app: indexing-model-server
+      ports:
+        - protocol: TCP
+          port: 9000
+    - to:
+        - podSelector:
+            matchLabels:
+              app: inference-model-server
+      ports:
+        - protocol: TCP
+          port: 9000
+    # Allow egress to API server
+    - to:
+        - podSelector:
+            matchLabels:
+              app: api-server
+      ports:
+        - protocol: TCP
+          port: 8080
+    # Allow egress to Postfix
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postfix
+      ports:
+        - protocol: TCP
+          port: 25
+    # DNS
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+    # Allow HTTPS/HTTP egress for external APIs and connectors (COMMENTED OUT - TOO PERMISSIVE)
+    # Required for accessing external data sources and APIs
+    # Note: NetworkPolicies do not support domain-based filtering.
+    # Uncomment if external HTTPS access is required:
+    # - ports:
+    #     - protocol: TCP
+    #       port: 443
+    #     - protocol: TCP
+    #       port: 80
+---
+# Model Servers network policy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "onyx.fullname" . }}-model-servers
+  labels:
+    {{- include "onyx.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values:
+          - indexing-model-server
+          - inference-model-server
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              scope: onyx-backend
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              scope: onyx-backend-celery
+      ports:
+        - protocol: TCP
+          port: 9000
+  egress:
+    # Allow egress to PostgreSQL
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgresql
+      ports:
+        - protocol: TCP
+          port: 5432
+    # Allow egress to Redis
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    # Allow egress to Vespa
+    - to:
+        - podSelector:
+            matchLabels:
+              app: vespa
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 8081
+        - protocol: TCP
+          port: 19071
+    # Allow egress to MinIO
+    - to:
+        - podSelector:
+            matchLabels:
+              app: minio
+      ports:
+        - protocol: TCP
+          port: 9000
+    # Allow egress to API server
+    - to:
+        - podSelector:
+            matchLabels:
+              app: api-server
+      ports:
+        - protocol: TCP
+          port: 8080
+    # Allow egress to Postfix
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postfix
+      ports:
+        - protocol: TCP
+          port: 25
+    # DNS
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+    # Allow HTTPS egress for model downloads, and page fetching (COMMENTED OUT - TOO PERMISSIVE)
+    # Required for:
+    # - HuggingFace model downloads (nomic-ai/nomic-embed-text-v1) from huggingface.co
+    # Note: NetworkPolicies do not support domain-based filtering.
+    # Uncomment if external HTTPS access is required:
+    # - ports:
+    #     - protocol: TCP
+    #       port: 443
+---
+# Document Fetching Worker HTTPS egress policy
+# Allows HTTPS egress specifically for the docfetching worker to fetch external documents
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "onyx.fullname" . }}-celery-docfetching-https
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "onyx.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: celery-worker-docfetching
+  policyTypes:
+    - Egress
+  egress:
+    # Allow HTTPS egress for document fetching
+    # Required for fetching external documents from sources like eur-lex.europa.eu
+    - ports:
+        - protocol: TCP
+          port: 443
+---
+# Vespa Backup HTTPS egress policy
+# Allows HTTPS egress specifically for the vespa backup job to download Vespa CLI from GitHub
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "onyx.fullname" . }}-vespa-backup-https
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "onyx.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: vespa-backup
+  policyTypes:
+    - Egress
+  egress:
+    # Allow egress to Vespa service
+    # Required for exporting documents via Vespa API
+    - to:
+        - podSelector:
+            matchLabels:
+              app: vespa
+      ports:
+        - protocol: TCP
+          port: 8080  # Document API
+        - protocol: TCP
+          port: 8081  # Metrics/status API (used by vespa visit)
+        - protocol: TCP
+          port: 19071 # Admin/REST API
+    # DNS - required to resolve github.com and vespa-service
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+    # Allow HTTPS egress for downloading Vespa CLI
+    # Required for downloading Vespa CLI from github.com during backup job initialization
+    - ports:
+        - protocol: TCP
+          port: 443
+---
+# Postfix network policy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "onyx.fullname" . }}-postfix
+  labels:
+    {{- include "onyx.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: postfix
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              scope: onyx-backend
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              scope: onyx-backend-celery
+      ports:
+        - protocol: TCP
+          port: 25
+        - protocol: TCP
+          port: 80
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+---
+# Slackbot network policy
+{{- if .Values.slackbot.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "onyx.fullname" . }}-slackbot
+  labels:
+    {{- include "onyx.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: slack-bot
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress:
+    # Allow egress to API server
+    - to:
+        - podSelector:
+            matchLabels:
+              app: api-server
+      ports:
+        - protocol: TCP
+          port: 8080
+    # DNS
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+{{- end }}
+{{- end }}

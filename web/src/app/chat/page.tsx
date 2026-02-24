@@ -1,33 +1,18 @@
-import { fetchEEASettings } from "@/lib/eea/fetchEEASettings";
-import { DocumentsProvider } from "./my-documents/DocumentsContext";
-import { SEARCH_PARAMS } from "@/lib/extension/constants";
-import WrappedChat from "./WrappedChat";
-import { UserDisclaimerModal } from "@/components/search/UserDisclaimerModal";
+import ChatPage from "@/app/chat/components/ChatPage";
+import { fetchHeaderDataSS } from "@/lib/headers/fetchHeaderDataSS";
+import { SEARCH_PARAM_NAMES } from "./services/searchParams";
 
-export default async function Page(props: {
+export interface PageProps {
   searchParams: Promise<{ [key: string]: string }>;
-}) {
+}
+
+export default async function Page(props: PageProps) {
   const searchParams = await props.searchParams;
   const firstMessage = searchParams.firstMessage;
-  const defaultSidebarOff =
-    searchParams[SEARCH_PARAMS.DEFAULT_SIDEBAR_OFF] === "true";
+  const chatSessionId = searchParams[SEARCH_PARAM_NAMES.CHAT_ID];
+  const headerData = await fetchHeaderDataSS(chatSessionId);
 
-  const config = await fetchEEASettings();
-
-  const {
-    disclaimerTitle,
-    disclaimerText
-  } = config;
-  
-  return (
-    <>
-      <UserDisclaimerModal disclaimerText={disclaimerText} disclaimerTitle={disclaimerTitle}/>
-      <DocumentsProvider>
-        <WrappedChat
-          firstMessage={firstMessage}
-          defaultSidebarOff={defaultSidebarOff}
-        />
-      </DocumentsProvider>
-    </>
-  );
+  // Other pages in `web/src/app/chat` are wrapped with `<AppPageLayout>`.
+  // `chat/page.tsx` is not because it also needs to handle rendering of the document-sidebar (`web/src/app/chat/components/documentSidebar/DocumentResults.tsx`).
+  return <ChatPage firstMessage={firstMessage} headerData={headerData} />;
 }

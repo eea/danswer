@@ -1,18 +1,12 @@
 "use client";
+
 import { usePopup } from "@/components/admin/connectors/Popup";
 import { HealthCheckBanner } from "@/components/health/healthcheck";
-
 import { EmbeddingModelSelection } from "../EmbeddingModelSelectionForm";
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import Text from "@/components/ui/text";
-import { Button } from "@/components/ui/button";
-import {
-  ArrowLeft,
-  ArrowRight,
-  WarningCircle,
-  CaretDown,
-  Warning,
-} from "@phosphor-icons/react";
+import Button from "@/refresh-components/buttons/Button";
+import { WarningCircle, Warning, CaretDownIcon } from "@phosphor-icons/react";
 import {
   CloudEmbeddingModel,
   EmbeddingProvider,
@@ -28,6 +22,7 @@ import {
   EmbeddingPrecision,
   RerankingDetails,
   SavedSearchSettings,
+  SwitchoverType,
 } from "../interfaces";
 import RerankingDetailsForm from "../RerankingFormPage";
 import { useEmbeddingFormContext } from "@/components/context/EmbeddingContext";
@@ -43,17 +38,9 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
-
-enum ReindexType {
-  REINDEX = "reindex",
-  INSTANT = "instant",
-}
+import SimpleTooltip from "@/refresh-components/SimpleTooltip";
+import SvgArrowLeft from "@/icons/arrow-left";
+import SvgArrowRight from "@/icons/arrow-right";
 
 export default function EmbeddingForm() {
   const { formStep, nextFormStep, prevFormStep } = useEmbeddingFormContext();
@@ -82,8 +69,8 @@ export default function EmbeddingForm() {
     rerank_api_url: null,
   });
 
-  const [reindexType, setReindexType] = useState<ReindexType>(
-    ReindexType.REINDEX
+  const [switchoverType, setSwitchoverType] = useState<SwitchoverType>(
+    SwitchoverType.REINDEX
   );
 
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
@@ -216,7 +203,7 @@ export default function EmbeddingForm() {
       advancedEmbeddingDetails,
       rerankingDetails,
       selectedProvider.provider_type?.toLowerCase() as EmbeddingProvider | null,
-      reindexType === ReindexType.REINDEX
+      switchoverType
     );
 
     const response = await updateSearchSettings(searchSettings);
@@ -229,7 +216,13 @@ export default function EmbeddingForm() {
       });
       return false;
     }
-  }, [selectedProvider, advancedEmbeddingDetails, rerankingDetails, setPopup]);
+  }, [
+    selectedProvider,
+    advancedEmbeddingDetails,
+    rerankingDetails,
+    switchoverType,
+    setPopup,
+  ]);
 
   const handleValidationChange = useCallback(
     (isValid: boolean, errors: Record<string, string>) => {
@@ -261,10 +254,10 @@ export default function EmbeddingForm() {
     }) => {
       return needsReIndex ? (
         <div className="flex mx-auto gap-x-1 ml-auto items-center">
-          <div className="flex items-center">
-            <button
+          <div className="flex items-center h-fit">
+            <Button
               onClick={() => {
-                if (reindexType == ReindexType.INSTANT) {
+                if (switchoverType == SwitchoverType.INSTANT) {
                   setShowInstantSwitchConfirm(true);
                 } else {
                   handleReIndex();
@@ -272,97 +265,56 @@ export default function EmbeddingForm() {
                 }
               }}
               disabled={!isOverallFormValid}
-              className="
-                enabled:cursor-pointer 
-                disabled:bg-accent/50 
-                disabled:cursor-not-allowed 
-                bg-agent 
-                flex 
-                items-center 
-                justify-center
-                text-white 
-                text-sm 
-                font-regular 
-                rounded-l-sm
-                py-2.5 
-                px-3.5
-                transition-colors
-                hover:bg-white/10
-                text-center
-                w-32"
+              action
+              className="rounded-r-none w-32 h-full"
             >
-              {reindexType == ReindexType.REINDEX
+              {switchoverType == SwitchoverType.REINDEX
                 ? "Re-index"
-                : "Instant Switch"}
-            </button>
+                : switchoverType == SwitchoverType.ACTIVE_ONLY
+                  ? "Active Only"
+                  : "Instant Switch"}
+            </Button>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <button
+                <Button
                   disabled={!isOverallFormValid}
-                  className="
-                    enabled:cursor-pointer 
-                    disabled:bg-accent/50 
-                    disabled:cursor-not-allowed 
-                    bg-agent 
-                    flex 
-                    items-center 
-                    justify-center
-                    text-white 
-                    text-sm 
-                    font-regular 
-                    rounded-r-sm
-                    border-l
-                    border-white/20
-                    py-2.5 
-                    px-2
-                    h-[40px]
-                    w-[34px]
-                    transition-colors
-                    hover:bg-white/10"
+                  action
+                  className="rounded-l-none border-l border-white/20 px-1 h-[36px] w-[30px] min-w-[30px]"
                 >
-                  <CaretDown className="h-4 w-4" />
-                </button>
+                  <CaretDownIcon className="text-text-inverted-05" />
+                </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent>
                 <DropdownMenuItem
                   onClick={() => {
-                    setReindexType(ReindexType.REINDEX);
+                    setSwitchoverType(SwitchoverType.REINDEX);
                   }}
                 >
-                  <TooltipProvider>
-                    <Tooltip>
-                      <TooltipTrigger className="w-full text-left">
-                        (Recommended) Re-index
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        <p>
-                          Re-runs all connectors in the background before
-                          switching over. Takes longer but ensures no
-                          degredation of search during the switch.
-                        </p>
-                      </TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
+                  <SimpleTooltip tooltip="Re-runs all connectors in the background before switching over. Takes longer but ensures no degredation of search during the switch.">
+                    <span className="w-full text-left">
+                      (Recommended) Re-index
+                    </span>
+                  </SimpleTooltip>
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() => {
-                    setReindexType(ReindexType.INSTANT);
+                    setSwitchoverType(SwitchoverType.ACTIVE_ONLY);
                   }}
                 >
-                  <TooltipProvider>
-                    <Tooltip>
-                      <TooltipTrigger className="w-full text-left">
-                        Instant Switch
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        <p>
-                          Immediately switches to new settings without
-                          re-indexing. Searches will be degraded until the
-                          re-indexing is complete.
-                        </p>
-                      </TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
+                  <SimpleTooltip tooltip="Re-runs only active (non-paused) connectors in the background before switching over. Paused connectors won't block the switchover.">
+                    <span className="w-full text-left">
+                      Active Connectors Only
+                    </span>
+                  </SimpleTooltip>
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => {
+                    setSwitchoverType(SwitchoverType.INSTANT);
+                  }}
+                >
+                  <SimpleTooltip tooltip="Immediately switches to new settings without re-indexing. Searches will be degraded until the re-indexing is complete.">
+                    <span className="w-full text-left">Instant Switch</span>
+                  </SimpleTooltip>
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -429,8 +381,7 @@ export default function EmbeddingForm() {
         </div>
       ) : (
         <div className="flex mx-auto gap-x-1 ml-auto items-center">
-          <button
-            className="enabled:cursor-pointer ml-auto disabled:bg-accent/50 disabled:cursor-not-allowed bg-agent flex mx-auto gap-x-1 items-center text-white py-2.5 px-3.5 text-sm font-regular rounded-sm"
+          <Button
             onClick={() => {
               updateSearch();
               navigateToEmbeddingPage("search settings");
@@ -438,7 +389,7 @@ export default function EmbeddingForm() {
             disabled={!isOverallFormValid}
           >
             Update Search
-          </button>
+          </Button>
           {!isOverallFormValid &&
             Object.keys(combinedFormErrors).length > 0 && (
               <div className="relative group">
@@ -466,7 +417,7 @@ export default function EmbeddingForm() {
     };
     ReIndexingButtonComponent.displayName = "ReIndexingButton";
     return ReIndexingButtonComponent;
-  }, [needsReIndex, reindexType, isOverallFormValid, combinedFormErrors]);
+  }, [needsReIndex, switchoverType, isOverallFormValid, combinedFormErrors]);
 
   if (!selectedProvider) {
     return <ThreeDotsLoader />;
@@ -501,7 +452,7 @@ export default function EmbeddingForm() {
         selectedProvider.provider_type
           ?.toLowerCase()
           .split(" ")[0] as EmbeddingProvider | null,
-        reindexType === ReindexType.REINDEX
+        switchoverType
       );
     } else {
       // This is a locally hosted model
@@ -510,7 +461,7 @@ export default function EmbeddingForm() {
         advancedEmbeddingDetails,
         rerankingDetails,
         null,
-        reindexType === ReindexType.REINDEX
+        switchoverType
       );
     }
 
@@ -569,8 +520,7 @@ export default function EmbeddingForm() {
               />
             </CardSection>
             <div className="mt-4 flex w-full justify-end">
-              <button
-                className="enabled:cursor-pointer disabled:cursor-not-allowed disabled:bg-blue-200 bg-blue-400 flex gap-x-1 items-center text-white py-2.5 px-3.5 text-sm font-regular rounded-sm"
+              <Button
                 onClick={() => {
                   if (
                     selectedProvider.model_name.includes("e5") &&
@@ -582,10 +532,11 @@ export default function EmbeddingForm() {
                     nextFormStep();
                   }
                 }}
+                rightIcon={SvgArrowRight}
+                action
               >
                 Continue
-                <ArrowRight />
-              </button>
+              </Button>
             </div>
           </>
         )}
@@ -604,10 +555,7 @@ export default function EmbeddingForm() {
                 <li>Nomic nomic-embed-text-v1 for self-hosted</li>
               </div>
               <div className="flex mt-4 justify-between">
-                <Button
-                  variant="secondary"
-                  onClick={() => setShowPoorModel(false)}
-                >
+                <Button secondary onClick={() => setShowPoorModel(false)}>
                   Cancel update
                 </Button>
                 <Button
@@ -663,26 +611,26 @@ export default function EmbeddingForm() {
             </CardSection>
 
             <div className={`mt-4 w-full grid grid-cols-3`}>
-              <button
-                className="border-border-dark mr-auto border flex gap-x-1 items-center text-text p-2.5 text-sm font-regular rounded-sm "
+              <Button
+                leftIcon={SvgArrowLeft}
                 onClick={() => prevFormStep()}
+                secondary
               >
-                <ArrowLeft />
                 Previous
-              </button>
+              </Button>
 
               <ReIndexingButton needsReIndex={needsReIndex} />
 
               <div className="flex w-full justify-end">
-                <button
-                  className={`enabled:cursor-pointer enabled:hover:underline disabled:cursor-not-allowed mt-auto enabled:text-text-600 disabled:text-text-400 ml-auto flex gap-x-1 items-center py-2.5 px-3.5 text-sm font-regular rounded-sm`}
+                <Button
                   onClick={() => {
                     nextFormStep();
                   }}
+                  rightIcon={SvgArrowRight}
+                  secondary
                 >
                   Advanced
-                  <ArrowRight />
-                </button>
+                </Button>
               </div>
             </div>
           </>
@@ -708,14 +656,13 @@ export default function EmbeddingForm() {
             </CardSection>
 
             <div className={`mt-4 grid  grid-cols-3 w-full `}>
-              <button
-                className={`border-border-dark border mr-auto flex gap-x-1 
-                  items-center text-text py-2.5 px-3.5 text-sm font-regular rounded-sm`}
+              <Button
                 onClick={() => prevFormStep()}
+                leftIcon={SvgArrowLeft}
+                secondary
               >
-                <ArrowLeft />
                 Previous
-              </button>
+              </Button>
 
               <ReIndexingButton needsReIndex={needsReIndex} />
             </div>

@@ -33,16 +33,20 @@ from onyx.context.search.models import SearchRequest
 from onyx.context.search.models import UserFileFilters
 from onyx.context.search.pipeline import SearchPipeline
 from onyx.context.search.pipeline import section_relevance_list_impl
+from onyx.db.connector import check_connectors_exist
+from onyx.db.connector import check_federated_connectors_exist
 from onyx.db.models import Persona
 from onyx.db.models import User
 from onyx.llm.interfaces import LLM
 from onyx.llm.models import PreviousMessage
+from onyx.onyxbot.slack.models import SlackContext
 from onyx.secondary_llm_flows.choose_search import check_if_need_search
 from onyx.secondary_llm_flows.query_expansion import history_based_query_rephrase
 from onyx.tools.message import ToolCallSummary
 from onyx.tools.models import SearchQueryInfo
 from onyx.tools.models import SearchToolOverrideKwargs
 from onyx.tools.models import ToolResponse
+from onyx.tools.tool import RunContextWrapper
 from onyx.tools.tool import Tool
 from onyx.tools.tool_implementations.search.search_utils import llm_doc_to_dict
 from onyx.tools.tool_implementations.search_like_tool_utils import (
@@ -69,24 +73,26 @@ class SearchResponseSummary(SearchQueryInfo):
 
 
 SEARCH_TOOL_DESCRIPTION = """
-Runs a semantic search over the user's knowledge base. The default behavior is to use this tool. \
-The only scenario where you should not use this tool is if:
-
-- There is sufficient information in chat history to FULLY and ACCURATELY answer the query AND \
-additional information or details would provide little or no value.
-- The query is some form of request that does not require additional information to handle.
-
-HINT: if you are unfamiliar with the user input OR think the user input is a typo, use this tool.
+Use the `internal_search` tool to search connected applications for information. Use `internal_search` when:
+- Internal information: any time where there may be some information stored in internal applications that could help better \
+answer the query.
+- Niche/Specific information: information that is likely not found in public sources, things specific to a project or product, \
+team, process, etc.
+- Keyword Queries: queries that are heavily keyword based are often internal document search queries.
+- Ambiguity: questions about something that is not widely known or understood.
+Between internal and web search, think about if the user's query is likely better answered by team internal sources or online \
+web pages. If very ambiguious, prioritize internal search or call both tools.
 """
 
 
 class SearchTool(Tool[SearchToolOverrideKwargs]):
     _NAME = "run_search"
-    _DISPLAY_NAME = "Search Tool"
+    _DISPLAY_NAME = "Internal Search"
     _DESCRIPTION = SEARCH_TOOL_DESCRIPTION
 
     def __init__(
         self,
+        tool_id: int,
         db_session: Session,
         user: User | None,
         persona: Persona,
@@ -105,6 +111,7 @@ class SearchTool(Tool[SearchToolOverrideKwargs]):
         full_doc: bool = False,
         bypass_acl: bool = False,
         rerank_settings: RerankingDetails | None = None,
+        slack_context: SlackContext | None = None,
     ) -> None:
         self.user = user
         self.persona = persona
@@ -119,6 +126,13 @@ class SearchTool(Tool[SearchToolOverrideKwargs]):
         self.full_doc = full_doc
         self.bypass_acl = bypass_acl
         self.db_session = db_session
+        self.slack_context = slack_context
+
+        # Log Slack context in SearchTool constructor
+        if slack_context:
+            logger.info(f"SearchTool: Slack context captured: {slack_context}")
+        else:
+            logger.info("SearchTool: No Slack context provided")
 
         # Only used via API
         self.rerank_settings = rerank_settings
@@ -161,6 +175,19 @@ class SearchTool(Tool[SearchToolOverrideKwargs]):
                 doc_pruning_config=document_pruning_config,
             )
         )
+
+        self._id = tool_id
+
+    @classmethod
+    def is_available(cls, db_session: Session) -> bool:
+        """Check if search tool is available by verifying connectors exist."""
+        return check_connectors_exist(db_session) or check_federated_connectors_exist(
+            db_session
+        )
+
+    @property
+    def id(self) -> int:
+        return self._id
 
     @property
     def name(self) -> str:
@@ -233,6 +260,14 @@ class SearchTool(Tool[SearchToolOverrideKwargs]):
 
     """Actual tool execution"""
 
+    def run_v2(
+        self,
+        run_context: RunContextWrapper[Any],
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        raise NotImplementedError("SearchTool.run_v2 is not implemented.")
+
     def _build_response_for_specified_sections(
         self, query: str
     ) -> Generator[ToolResponse, None, None]:
@@ -266,13 +301,19 @@ class SearchTool(Tool[SearchToolOverrideKwargs]):
             response=selected_sections,
         )
 
+        from onyx.llm.utils import check_number_of_tokens
+
+        # For backwards compatibility with non-v2 flows, use query token count
+        # and pass prompt_config for proper token calculation
+        query_token_count = check_number_of_tokens(query)
+
         final_context_sections = prune_and_merge_sections(
             sections=self.selected_sections,
             section_relevance_list=None,
-            prompt_config=self.prompt_config,
             llm_config=self.llm.config,
-            question=query,
+            existing_input_tokens=query_token_count,
             contextual_pruning_config=self.contextual_pruning_config,
+            prompt_config=self.prompt_config,
         )
 
         llm_docs = [
@@ -286,7 +327,7 @@ class SearchTool(Tool[SearchToolOverrideKwargs]):
         self, override_kwargs: SearchToolOverrideKwargs | None = None, **llm_kwargs: Any
     ) -> Generator[ToolResponse, None, None]:
         query = cast(str, llm_kwargs[QUERY_FIELD])
-        original_query = None
+        original_query = query
         precomputed_query_embedding = None
         precomputed_is_keyword = None
         precomputed_keywords = None
@@ -295,7 +336,7 @@ class SearchTool(Tool[SearchToolOverrideKwargs]):
         retrieved_sections_callback = None
         skip_query_analysis = False
         user_file_ids = None
-        user_folder_ids = None
+        project_id = None
         document_sources = None
         time_cutoff = None
         expanded_queries = None
@@ -305,7 +346,7 @@ class SearchTool(Tool[SearchToolOverrideKwargs]):
         kg_sources = None
         kg_chunk_id_zero_only = False
         if override_kwargs:
-            original_query = override_kwargs.original_query
+            original_query = override_kwargs.original_query or query
             precomputed_is_keyword = override_kwargs.precomputed_is_keyword
             precomputed_keywords = override_kwargs.precomputed_keywords
             precomputed_query_embedding = override_kwargs.precomputed_query_embedding
@@ -316,7 +357,7 @@ class SearchTool(Tool[SearchToolOverrideKwargs]):
                 override_kwargs.skip_query_analysis, False
             )
             user_file_ids = override_kwargs.user_file_ids
-            user_folder_ids = override_kwargs.user_folder_ids
+            project_id = override_kwargs.project_id
             document_sources = override_kwargs.document_sources
             time_cutoff = override_kwargs.time_cutoff
             expanded_queries = override_kwargs.expanded_queries
@@ -371,7 +412,8 @@ class SearchTool(Tool[SearchToolOverrideKwargs]):
                     retrieval_options.filters if retrieval_options else None
                 ),
                 user_file_filters=UserFileFilters(
-                    user_file_ids=user_file_ids, user_folder_ids=user_folder_ids
+                    user_file_ids=user_file_ids,
+                    project_id=project_id,
                 ),
                 persona=self.persona,
                 offset=(retrieval_options.offset if retrieval_options else None),
@@ -412,6 +454,7 @@ class SearchTool(Tool[SearchToolOverrideKwargs]):
             prompt_config=self.prompt_config,
             retrieved_sections_callback=retrieved_sections_callback,
             contextual_pruning_config=self.contextual_pruning_config,
+            slack_context=self.slack_context,  # Pass Slack context
         )
 
         search_query_info = SearchQueryInfo(
@@ -494,14 +537,18 @@ def yield_search_responses(
     final_context_sections = get_final_context_sections()
 
     # Use the section_relevance we already computed above
+    # TODO: In the newer flows, we are not using prune_sections here
+    # but rather pruning after parallel fetches from the search tool
     pruned_sections = prune_sections(
         sections=final_context_sections,
         section_relevance_list=section_relevance_list_impl(
             section_relevance, final_context_sections
         ),
+        # prompt_config should not be none so this 0 shouldn't matter
+        # we'll clean this up later
+        existing_input_tokens=0,
         prompt_config=search_tool.prompt_config,
         llm_config=search_tool.llm.config,
-        question=query,
         contextual_pruning_config=search_tool.contextual_pruning_config,
     )
     llm_docs = [llm_doc_from_inference_section(section) for section in pruned_sections]

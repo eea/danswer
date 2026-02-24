@@ -1,27 +1,99 @@
-# Default values for onyx-stack.
+# Default values for onyx.
 # This is a YAML-formatted file.
 # Declare variables to be passed into your templates.
 
 global:
   # Global version for all Onyx components (overrides .Chart.AppVersion)
-  version: "latest"
+  version: "v2.3.0-eea.0.0.90-dev"
+  # Optional global image settings. If repository is set, all core components default to this repo.
+  # Component-specific tags can be set under tags; fall back to per-component tags or global.version.
+  image:
+    repository: "eeacms/danswer"
+    tags:
+      backend: ""
+      web: ""
+      modelServer: ""
   # Global pull policy for all Onyx component images
   pullPolicy: "IfNotPresent"
+  # Global storage class override applied where component-specific storageClass is unset
+  storageClass: "nfs-client"
+  # Add Helm keep annotation to PVCs managed by this chart
+  pvcRetain: true
 
 postgresql:
-  primary:
-    persistence:
-      storageClass: ""
-      size: 10Gi
-    shmVolume:
-      enabled: true
-      sizeLimit: 2Gi
   enabled: true
-  auth:
-    existingSecret: onyx-secrets
-    secretKeys:
-      # overwriting as postgres typically expects 'postgres-password'
-      adminPasswordKey: postgres_password
+  # Set to false to use an external Postgres instance instead of deploying one
+  external:
+    host: ""
+    port: 5432
+  # Simple StatefulSet configuration (default)
+  simple:
+    tag: "16"
+    database: "onyx"
+    storage: "10Gi"
+    storageClass: ""
+    # Add Helm keep policy to retain the PVC on uninstall
+    retainPvc: true
+    # Use an existing PVC instead of creating one (skips volumeClaimTemplates)
+    existingClaim: ""
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+    securityContext:
+      runAsNonRoot: false
+      runAsUser: 999
+  # Database initialization configuration
+  # Creates additional databases and users on PostgreSQL startup
+  initdb:
+    enabled: false
+    databases: []
+    # Example configuration:
+    # databases:
+    #   - name: myapp_db          # Database name
+    #     user: myapp_user        # Database user
+    #     password: changeme      # User password
+    #     createSecret: true      # Auto-create Kubernetes secret with connection details
+
+  # Backup configuration
+  backup:
+    enabled: false
+    schedule: "0 2 * * *"  # Daily at 2 AM (cron format)
+    storage: "10Gi"
+    storageClass: ""
+    retainPvc: true
+    successfulJobsHistoryLimit: 3
+    failedJobsHistoryLimit: 3
+    retention:
+      enabled: true
+      days: 7  # Keep backups for 7 days
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+  # Restore configuration
+  restore:
+    enabled: false
+    # Specify one of: backupFile, timestamp, or leave empty for latest
+    backupFile: ""  # Full path: /backups/onyx_20240101_120000.sql.gz
+    timestamp: ""   # Format: 20240101_120000
+    database: "onyx"  # Database to restore
+    dropDatabase: false  # Drop existing database before restore (DANGER!)
+    createDatabase: true  # Create database if it doesn't exist
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
 
 vespa:
   name: da-vespa-0
@@ -41,15 +113,20 @@ vespa:
   replicaCount: 1
   image:
     repository: vespa
-    tag: "8.526.15"
+    tag: "8.609.39"
   podAnnotations: {}
   podLabels:
     app: vespa
     app.kubernetes.io/instance: onyx
     app.kubernetes.io/name: vespa
   securityContext:
-    privileged: true
-    runAsUser: 0
+    privileged: false
+    runAsNonRoot: true
+    runAsUser: 1000
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+      - ALL
   resources:
     # The Vespa Helm chart specifies default resources, which are quite modest. We override
     # them here to increase chances of the chart running successfully. If you plan to index at
@@ -61,6 +138,25 @@ vespa:
     limits:
       cpu: 8000m
       memory: 32000Mi
+  # Backup configuration
+  backup:
+    enabled: false
+    schedule: "0 3 * * *"  # Daily at 3 AM (cron format)
+    storage: "50Gi"  # Storage for backups (should be larger than vespa data)
+    storageClass: ""
+    retainPvc: true
+    successfulJobsHistoryLimit: 3
+    failedJobsHistoryLimit: 3
+    retention:
+      enabled: true
+      days: 7  # Keep backups for 7 days
+    resources:
+      requests:
+        cpu: 1000m
+        memory: 2Gi
+      limits:
+        cpu: 2000m
+        memory: 4Gi
 
 persistent:
   storageClassName: ""
@@ -68,6 +164,12 @@ persistent:
 imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
+
+autoscaling:
+  # Valid options: 'hpa' (default) or 'keda'.
+  # Set to 'keda' to render KEDA ScaledObjects for components that have autoscaling enabled.
+  # When using KEDA you must install and manage the KEDA operator separately; it is not bundled with this chart.
+  engine: hpa
 
 inferenceCapability:
   service:
@@ -80,10 +182,6 @@ inferenceCapability:
   labels:
     - key: app
       value: inference-model-server
-  image:
-    repository: onyxdotapp/onyx-model-server
-    # Overrides the image tag whose default is the chart appVersion.
-    tag: ""
   containerPorts:
     server: 9000
   podLabels:
@@ -92,10 +190,36 @@ inferenceCapability:
   resources:
     requests:
       cpu: 2000m
-      memory: 6Gi
+      memory: 3Gi
     limits:
       cpu: 4000m
       memory: 10Gi
+  podSecurityContext: {}
+  securityContext:
+    privileged: false
+    runAsNonRoot: true
+    runAsUser: 1000
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+      - ALL
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  volumes:
+    - name: cache
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
+    - name: logs
+      emptyDir: {}
+  volumeMounts:
+    - name: logs
+      mountPath: /var/log/onyx
+    - name: cache
+      mountPath: /app/.cache
+    - name: tmp
+      mountPath: /tmp
 
 indexCapability:
   service:
@@ -113,18 +237,40 @@ indexCapability:
   podAnnotations: {}
   containerPorts:
     server: 9000
-  image:
-    repository: onyxdotapp/onyx-model-server
-    # Overrides the image tag whose default is the chart appVersion.
-    tag: ""
   limitConcurrency: 10
   resources:
     requests:
-      cpu: 2000m
-      memory: 6Gi
-    limits:
       cpu: 4000m
-      memory: 10Gi
+      memory: 3Gi
+    limits:
+      cpu: 6000m
+      memory: 6Gi
+  podSecurityContext: {}
+  securityContext:
+    privileged: false
+    runAsNonRoot: true
+    runAsUser: 1000
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+      - ALL
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  volumes:
+    - name: cache
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
+    - name: logs
+      emptyDir: {}
+  volumeMounts:
+    - name: logs
+      mountPath: /var/log/onyx
+    - name: cache
+      mountPath: /app/.cache
+    - name: tmp
+      mountPath: /tmp
 config:
   envConfigMapName: env-configmap
 
@@ -141,45 +287,65 @@ serviceAccount:
 
 nginx:
   enabled: true
-  containerPorts:
-    http: 1024
-  extraEnvVars:
-    - name: DOMAIN
-      value: localhost
-  service:
-    type: LoadBalancer
-    ports:
-      http: 80
-      onyx: 3000
-    targetPort:
-      http: http
-      onyx: http
-
-  existingServerBlockConfigmap: onyx-nginx-conf
+  # Namespace-scoped nginx deployed by this chart
+  useSimpleDeployment: true
+  # Nginx proxy timeout settings (in seconds)
+  timeouts:
+    connect: 300  # Time to establish connection with upstream server
+    send: 300     # Time to send request to upstream server
+    read: 300     # Time to read response from upstream server
+  # Simple Deployment configuration (when useSimpleDeployment: true)
+  simple:
+    tag: "alpine"
+    replicas: 1
+    serviceType: "ClusterIP"
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 101
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop:
+        - ALL
+  # Ingress configuration (when useSimpleDeployment: true)
+  ingress:
+    enabled: false
+    className: "nginx"
+    annotations: {}
+      # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    hosts:
+      - host: onyx.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+      # - secretName: onyx-tls-cert
+      #   hosts:
+      #     - onyx.example.com
 
 webserver:
   replicaCount: 1
-  image:
-    repository: onyxdotapp/onyx-web-server
-    # Overrides the image tag whose default is the chart appVersion.
-    tag: ""
   deploymentLabels:
     app: web-server
   podAnnotations: {}
   podLabels:
     app: web-server
   podSecurityContext:
-    {}
-    # fsGroup: 2000
+    fsGroup: 2000
 
   securityContext:
-    {}
-    # capabilities:
-    #   drop:
-    #   - ALL
-    # readOnlyRootFilesystem: true
-    # runAsNonRoot: true
-    # runAsUser: 1000
+    capabilities:
+      drop:
+      - ALL
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 1000
 
   containerPorts:
     server: 3000
@@ -203,19 +369,38 @@ webserver:
     maxReplicas: 100
     targetCPUUtilizationPercentage: 80
     targetMemoryUtilizationPercentage: 80
+    # KEDA specific configurations (only used when autoscaling.engine is set to 'keda')
+    pollingInterval: 30  # seconds
+    cooldownPeriod: 300  # seconds
+    idleReplicaCount: 1  # minimum replicas when idle
+    failureThreshold: 3  # number of failures before fallback
+    fallbackReplicas: 1  # replicas to maintain on failure
+    # Custom triggers for advanced KEDA configurations
+    # Example: customTriggers: []
+    #   - type: prometheus
+    #     metadata:
+    #       serverAddress: http://prometheus:9090
+    #       metricName: http_requests_per_second
+    #       threshold: '100'
+    customTriggers: []
 
   # Additional volumes on the output Deployment definition.
-  volumes: []
-  # - name: foo
-  #   secret:
-  #     secretName: mysecret
-  #     optional: false
+  volumes:
+    - name: logs
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
+    - name: cache
+      emptyDir: {}
 
   # Additional volumeMounts on the output Deployment definition.
-  volumeMounts: []
-  # - name: foo
-  #   mountPath: "/etc/foo"
-  #   readOnly: true
+  volumeMounts:
+    - name: logs
+      mountPath: /var/log/onyx
+    - name: tmp
+      mountPath: /tmp
+    - name: cache
+      mountPath: /.cache
 
   nodeSelector: {}
   tolerations: []
@@ -223,10 +408,6 @@ webserver:
 
 api:
   replicaCount: 1
-  image:
-    repository: onyxdotapp/onyx-backend
-    # Overrides the image tag whose default is the chart appVersion.
-    tag: ""
   deploymentLabels:
     app: api-server
   podAnnotations: {}
@@ -238,17 +419,15 @@ api:
     server: 8080
 
   podSecurityContext:
-    {}
-    # fsGroup: 2000
+    fsGroup: 2000
 
   securityContext:
-    {}
-    # capabilities:
-    #   drop:
-    #   - ALL
-    # readOnlyRootFilesystem: true
-    # runAsNonRoot: true
-    # runAsUser: 1000
+    capabilities:
+      drop:
+      - ALL
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 1000
 
   service:
     type: ClusterIP
@@ -258,11 +437,11 @@ api:
 
   resources:
     requests:
-      cpu: 1000m
+      cpu: 500m
       memory: 1Gi
     limits:
-      cpu: 2000m
-      memory: 2Gi
+      cpu: 1000m
+      memory: 3Gi
 
   autoscaling:
     enabled: false
@@ -270,22 +449,42 @@ api:
     maxReplicas: 100
     targetCPUUtilizationPercentage: 80
     targetMemoryUtilizationPercentage: 80
+    # KEDA specific configurations (only used when autoscaling.engine is set to 'keda')
+    pollingInterval: 30  # seconds
+    cooldownPeriod: 300  # seconds
+    idleReplicaCount: 1  # minimum replicas when idle
+    failureThreshold: 3  # number of failures before fallback
+    fallbackReplicas: 1  # replicas to maintain on failure
+    # Custom triggers for advanced KEDA configurations
+    # Example: customTriggers: []
+    #   - type: prometheus
+    #     metadata:
+    #       serverAddress: http://prometheus:9090
+    #       metricName: http_requests_per_second
+    #       threshold: '100'
+    customTriggers: []
 
   # Additional volumes on the output Deployment definition.
-  volumes: []
-  # - name: foo
-  #   secret:
-  #     secretName: mysecret
-  #     optional: false
+  volumes:
+    - name: logs
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
+    - name: cache
+      emptyDir: {}
 
   # Additional volumeMounts on the output Deployment definition.
-  volumeMounts: []
-  # - name: foo
-  #   mountPath: "/etc/foo"
-  #   readOnly: true
+  volumeMounts:
+    - name: logs
+      mountPath: /var/log/onyx
+    - name: tmp
+      mountPath: /tmp
+    - name: cache
+      mountPath: /.cache
 
   nodeSelector: {}
   tolerations: []
+  affinity: {}
 
 
 ######################################################################
@@ -295,9 +494,6 @@ api:
 ######################################################################
 
 celery_shared:
-  image:
-    repository: onyxdotapp/onyx-backend
-    tag: ""  # Overrides the image tag whose default is the chart appVersion.
   startupProbe:
     # startupProbe fails after 2m
     exec:
@@ -318,6 +514,15 @@ celery_shared:
     periodSeconds: 60
     failureThreshold: 5
     timeoutSeconds: 3
+  podSecurityContext: {}
+  securityContext:
+    privileged: false
+    runAsNonRoot: true
+    runAsUser: 1000
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+      - ALL
 
 celery_beat:
   replicaCount: 1
@@ -327,20 +532,35 @@ celery_beat:
     app: celery-beat
   deploymentLabels:
     app: celery-beat
-  podSecurityContext:
-    {}
-  securityContext:
-    privileged: true
-    runAsUser: 0
+  persistence:
+    enabled: false
+    size: 1Gi
+    storageClass: ""
   resources:
     requests:
-      cpu: 1000m
-      memory: 1Gi
+      cpu: 500m
+      memory: 512Mi
     limits:
       cpu: 1000m
       memory: 1Gi
-  volumes: []  # Additional volumes on the output Deployment definition.
-  volumeMounts: []  # Additional volumeMounts on the output Deployment definition.
+  volumes:
+    - name: logs
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
+    - name: cache
+      emptyDir: {}
+    - name: data
+      emptyDir: {}
+  volumeMounts:
+    - name: logs
+      mountPath: /var/log/onyx
+    - name: tmp
+      mountPath: /tmp
+    - name: cache
+      mountPath: /.cache
+    - name: data
+      mountPath: /app/data
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -349,26 +569,45 @@ celery_worker_heavy:
   replicaCount: 1
   autoscaling:
     enabled: false
+    minReplicas: 1
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 80
+    targetMemoryUtilizationPercentage: 80
+    # KEDA specific configurations (only used when autoscaling.engine is set to 'keda')
+    pollingInterval: 30  # seconds
+    cooldownPeriod: 300  # seconds
+    idleReplicaCount: 1  # minimum replicas when idle
+    failureThreshold: 3  # number of failures before fallback
+    fallbackReplicas: 1  # replicas to maintain on failure
+    # Custom triggers for advanced KEDA configurations
+    customTriggers: []
   podAnnotations: {}
   podLabels:
     scope: onyx-backend-celery
     app: celery-worker-heavy
   deploymentLabels:
     app: celery-worker-heavy
-  podSecurityContext:
-    {}
-  securityContext:
-    privileged: true
-    runAsUser: 0
   resources:
     requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
       cpu: 1000m
       memory: 2Gi
-    limits:
-      cpu: 2500m
-      memory: 5Gi
-  volumes: []  # Additional volumes on the output Deployment definition.
-  volumeMounts: []  # Additional volumeMounts on the output Deployment definition.
+  volumes:
+    - name: logs
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
+    - name: cache
+      emptyDir: {}
+  volumeMounts:
+    - name: logs
+      mountPath: /var/log/onyx
+    - name: tmp
+      mountPath: /tmp
+    - name: cache
+      mountPath: /.cache
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -377,26 +616,45 @@ celery_worker_docprocessing:
   replicaCount: 1
   autoscaling:
     enabled: false
+    minReplicas: 1
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 80
+    targetMemoryUtilizationPercentage: 80
+    # KEDA specific configurations (only used when autoscaling.engine is set to 'keda')
+    pollingInterval: 30  # seconds
+    cooldownPeriod: 300  # seconds
+    idleReplicaCount: 1  # minimum replicas when idle
+    failureThreshold: 3  # number of failures before fallback
+    fallbackReplicas: 1  # replicas to maintain on failure
+    # Custom triggers for advanced KEDA configurations
+    customTriggers: []
   podAnnotations: {}
   podLabels:
     scope: onyx-backend-celery
     app: celery-worker-docprocessing
   deploymentLabels:
     app: celery-worker-docprocessing
-  podSecurityContext:
-    {}
-  securityContext:
-    privileged: true
-    runAsUser: 0
   resources:
     requests:
       cpu: 500m
-      memory: 4Gi
+      memory: 2Gi
     limits:
       cpu: 1000m
       memory: 12Gi
-  volumes: []  # Additional volumes on the output Deployment definition.
-  volumeMounts: []  # Additional volumeMounts on the output Deployment definition.
+  volumes:
+    - name: logs
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
+    - name: cache
+      emptyDir: {}
+  volumeMounts:
+    - name: logs
+      mountPath: /var/log/onyx
+    - name: tmp
+      mountPath: /tmp
+    - name: cache
+      mountPath: /.cache
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -405,26 +663,45 @@ celery_worker_light:
   replicaCount: 1
   autoscaling:
     enabled: false
+    minReplicas: 1
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 80
+    targetMemoryUtilizationPercentage: 80
+    # KEDA specific configurations (only used when autoscaling.engine is set to 'keda')
+    pollingInterval: 30  # seconds
+    cooldownPeriod: 300  # seconds
+    idleReplicaCount: 1  # minimum replicas when idle
+    failureThreshold: 3  # number of failures before fallback
+    fallbackReplicas: 1  # replicas to maintain on failure
+    # Custom triggers for advanced KEDA configurations
+    customTriggers: []
   podAnnotations: {}
   podLabels:
     scope: onyx-backend-celery
     app: celery-worker-light
   deploymentLabels:
     app: celery-worker-light
-  podSecurityContext:
-    {}
-  securityContext:
-    privileged: true
-    runAsUser: 0
   resources:
     requests:
-      cpu: 1000m
-      memory: 1Gi
+      cpu: 250m
+      memory: 512Mi
     limits:
       cpu: 2000m
       memory: 4Gi
-  volumes: []  # Additional volumes on the output Deployment definition.
-  volumeMounts: []  # Additional volumeMounts on the output Deployment definition.
+  volumes:
+    - name: logs
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
+    - name: cache
+      emptyDir: {}
+  volumeMounts:
+    - name: logs
+      mountPath: /var/log/onyx
+    - name: tmp
+      mountPath: /tmp
+    - name: cache
+      mountPath: /.cache
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -433,26 +710,45 @@ celery_worker_monitoring:
   replicaCount: 1
   autoscaling:
     enabled: false
+    minReplicas: 1
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 80
+    targetMemoryUtilizationPercentage: 80
+    # KEDA specific configurations (only used when autoscaling.engine is set to 'keda')
+    pollingInterval: 30  # seconds
+    cooldownPeriod: 300  # seconds
+    idleReplicaCount: 1  # minimum replicas when idle
+    failureThreshold: 3  # number of failures before fallback
+    fallbackReplicas: 1  # replicas to maintain on failure
+    # Custom triggers for advanced KEDA configurations
+    customTriggers: []
   podAnnotations: {}
   podLabels:
     scope: onyx-backend-celery
     app: celery-worker-monitoring
   deploymentLabels:
     app: celery-worker-monitoring
-  podSecurityContext:
-    {}
-  securityContext:
-    privileged: true
-    runAsUser: 0
   resources:
     requests:
       cpu: 500m
-      memory: 1Gi
+      memory: 512Mi
     limits:
-      cpu: 2000m
+      cpu: 1000m
       memory: 4Gi
-  volumes: []  # Additional volumes on the output Deployment definition.
-  volumeMounts: []  # Additional volumeMounts on the output Deployment definition.
+  volumes:
+    - name: logs
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
+    - name: cache
+      emptyDir: {}
+  volumeMounts:
+    - name: logs
+      mountPath: /var/log/onyx
+    - name: tmp
+      mountPath: /tmp
+    - name: cache
+      mountPath: /.cache
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -461,26 +757,45 @@ celery_worker_primary:
   replicaCount: 1
   autoscaling:
     enabled: false
+    minReplicas: 1
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 80
+    targetMemoryUtilizationPercentage: 80
+    # KEDA specific configurations (only used when autoscaling.engine is set to 'keda')
+    pollingInterval: 30  # seconds
+    cooldownPeriod: 300  # seconds
+    idleReplicaCount: 1  # minimum replicas when idle
+    failureThreshold: 3  # number of failures before fallback
+    fallbackReplicas: 1  # replicas to maintain on failure
+    # Custom triggers for advanced KEDA configurations
+    customTriggers: []
   podAnnotations: {}
   podLabels:
     scope: onyx-backend-celery
     app: celery-worker-primary
   deploymentLabels:
     app: celery-worker-primary
-  podSecurityContext:
-    {}
-  securityContext:
-    privileged: true
-    runAsUser: 0
   resources:
     requests:
-      cpu: 1000m
-      memory: 8Gi
+      cpu: 500m
+      memory: 2Gi
     limits:
-      cpu: 2000m
-      memory: 16Gi
-  volumes: []  # Additional volumes on the output Deployment definition.
-  volumeMounts: []  # Additional volumeMounts on the output Deployment definition.
+      cpu: 1000m
+      memory: 4Gi
+  volumes:
+    - name: logs
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
+    - name: cache
+      emptyDir: {}
+  volumeMounts:
+    - name: logs
+      mountPath: /var/log/onyx
+    - name: tmp
+      mountPath: /tmp
+    - name: cache
+      mountPath: /.cache
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -489,26 +804,92 @@ celery_worker_user_files_indexing:
   replicaCount: 1
   autoscaling:
     enabled: false
+    minReplicas: 1
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 80
+    targetMemoryUtilizationPercentage: 80
+    # KEDA specific configurations (only used when autoscaling.engine is set to 'keda')
+    pollingInterval: 30  # seconds
+    cooldownPeriod: 300  # seconds
+    idleReplicaCount: 1  # minimum replicas when idle
+    failureThreshold: 3  # number of failures before fallback
+    fallbackReplicas: 1  # replicas to maintain on failure
+    # Custom triggers for advanced KEDA configurations
+    customTriggers: []
   podAnnotations: {}
   podLabels:
     scope: onyx-backend-celery
     app: celery-worker-user-files-indexing
   deploymentLabels:
     app: celery-worker-user-files-indexing
-  podSecurityContext:
-    {}
-  securityContext:
-    privileged: true
-    runAsUser: 0
   resources:
     requests:
-      cpu: 2000m
-      memory: 6Gi
+      cpu: 500m
+      memory: 512Mi
     limits:
-      cpu: 4000m
-      memory: 12Gi
-  volumes: []  # Additional volumes on the output Deployment definition.
-  volumeMounts: []  # Additional volumeMounts on the output Deployment definition.
+      cpu: 2000m
+      memory: 2Gi
+  volumes:
+    - name: logs
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
+    - name: cache
+      emptyDir: {}
+  volumeMounts:
+    - name: logs
+      mountPath: /var/log/onyx
+    - name: tmp
+      mountPath: /tmp
+    - name: cache
+      mountPath: /.cache
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+celery_worker_user_file_processing:
+  replicaCount: 1
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 80
+    targetMemoryUtilizationPercentage: 80
+    # KEDA specific configurations
+    pollingInterval: 30  # seconds
+    cooldownPeriod: 300  # seconds
+    idleReplicaCount: 1  # minimum replicas when idle
+    failureThreshold: 3  # number of failures before fallback
+    fallbackReplicas: 1  # replicas to maintain on failure
+    # Custom triggers for advanced KEDA configurations
+    customTriggers: []
+  podAnnotations: {}
+  podLabels:
+    scope: onyx-backend-celery
+    app: celery-worker-user-file-processing
+  deploymentLabels:
+    app: celery-worker-user-file-processing
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+  volumes:
+    - name: logs
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
+    - name: cache
+      emptyDir: {}
+  volumeMounts:
+    - name: logs
+      mountPath: /var/log/onyx
+    - name: tmp
+      mountPath: /tmp
+    - name: cache
+      mountPath: /.cache
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -516,9 +897,6 @@ celery_worker_user_files_indexing:
 slackbot:
   enabled: true
   replicaCount: 1
-  image:
-    repository: onyxdotapp/onyx-backend
-    tag: ""  # Overrides the image tag whose default is the chart appVersion.
   podAnnotations: {}
   podLabels:
     scope: onyx-backend
@@ -526,40 +904,82 @@ slackbot:
   deploymentLabels:
     app: slack-bot
   podSecurityContext:
-    {}
+    fsGroup: 2000
   securityContext:
-    {}
+    capabilities:
+      drop:
+      - ALL
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 1000
   resources:
     requests:
       cpu: "500m"
-      memory: "500Mi"
+      memory: "512Mi"
     limits:
       cpu: "1000m"
       memory: "2000Mi"
+  volumes:
+    - name: logs
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
+    - name: cache
+      emptyDir: {}
+  volumeMounts:
+    - name: logs
+      mountPath: /var/log/onyx
+    - name: tmp
+      mountPath: /tmp
+    - name: cache
+      mountPath: /.cache
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
 celery_worker_docfetching:
   replicaCount: 1
   autoscaling:
     enabled: false
+    minReplicas: 1
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 80
+    targetMemoryUtilizationPercentage: 80
+    # KEDA specific configurations (only used when autoscaling.engine is set to 'keda')
+    pollingInterval: 30  # seconds
+    cooldownPeriod: 300  # seconds
+    idleReplicaCount: 1  # minimum replicas when idle
+    failureThreshold: 3  # number of failures before fallback
+    fallbackReplicas: 1  # replicas to maintain on failure
+    # Custom triggers for advanced KEDA configurations
+    customTriggers: []
   podAnnotations: {}
   podLabels:
     scope: onyx-backend-celery
     app: celery-worker-docfetching
   deploymentLabels:
     app: celery-worker-docfetching
-  podSecurityContext:
-    {}
-  securityContext:
-    privileged: true
-    runAsUser: 0
   resources:
     requests:
       cpu: 500m
-      memory: 8Gi
+      memory: 2Gi
     limits:
-      cpu: 2000m
+      cpu: 1000m
       memory: 16Gi
-  volumes: []  # Additional volumes on the output Deployment definition.
-  volumeMounts: []  # Additional volumeMounts on the output Deployment definition.
+  volumes:
+    - name: logs
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
+    # - name: cache
+    #   emptyDir: {}
+  volumeMounts:
+    - name: logs
+      mountPath: /var/log/onyx
+    - name: tmp
+      mountPath: /tmp
+    # - name: cache
+    #   mountPath: /.cache
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -572,47 +992,58 @@ celery_worker_docfetching:
 
 redis:
   enabled: true
-  architecture: standalone
-  commonConfiguration: |-
-    # Enable AOF https://redis.io/topics/persistence#append-only-file
-    appendonly no
-    # Disable RDB persistence, AOF persistence already enabled.
-    save ""
-  master:
-    replicaCount: 1
-    image:
-      registry: docker.io
-      repository: bitnami/redis
-      tag: "7.4.0"
-      pullPolicy: IfNotPresent
-    persistence:
-      enabled: false
+  useSimpleDeployment: true
+  simple:
+    tag: "7.0-alpine"
+    storage: "1Gi"
+    storageClass: ""
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 999
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop:
+        - ALL
   service:
-    type: ClusterIP
     port: 6379
-  auth:
-    existingSecret: onyx-secrets
-    existingSecretPasswordKey: redis_password
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 999
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+      - ALL
+  podSecurityContext:
+    fsGroup: 2000
 
 minio:
   enabled: true
-  auth:
-    existingSecret: onyx-secrets
-    rootUserSecretKey: s3_aws_access_key_id
-    rootPasswordSecretKey: s3_aws_secret_access_key
-  defaultBuckets: "onyx-file-store-bucket"
+  mode: standalone
+  replicas: 1
+  drivesPerNode: 1
+  existingSecret: onyx-objectstorage
+  buckets:
+    - name: onyx-file-store-bucket
   persistence:
     enabled: true
     size: 30Gi
+    storageClass: ""
   service:
     type: ClusterIP
-    ports:
-      api: 9000
-      console: 9001
+    port: 9000
   consoleService:
     type: ClusterIP
-    ports:
-      http: 9001
+    port: 9001
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
 
 ingress:
   enabled: false
@@ -626,35 +1057,99 @@ letsencrypt:
   enabled: false
   email: "abc@abc.com"
 
+# -- Governs all Secrets created or used by this chart. Values set by this chart will be base64 encoded in the k8s cluster.
 auth:
-  # existingSecret onyx-secret for storing smtp, oauth, slack, and other secrets
-  # keys are lowercased version of env vars (e.g. SMTP_USER -> smtp_user)
-  existingSecret: ""
-  # optionally override the secret keys to reference in the secret
-  # this is used to populate the env vars in individual deployments
-  # the values here reference the keys in secrets below
-  secretKeys:
-    postgres_password: "postgres_password"
-    smtp_pass: ""
-    oauth_client_id: ""
-    oauth_client_secret: ""
-    oauth_cookie_secret: ""
-    redis_password: "redis_password"
-    s3_aws_access_key_id: "s3_aws_access_key_id"
-    s3_aws_secret_access_key: "s3_aws_secret_access_key"
-  # will be overridden by the existingSecret if set
-  secretName: "onyx-secrets"
-  # set values as strings, they will be base64 encoded
-  # this is used to populate the secrets yaml
-  secrets:
-    postgres_password: "postgres"
-    smtp_pass: ""
-    oauth_client_id: ""
-    oauth_client_secret: ""
-    oauth_cookie_secret: ""
-    redis_password: "password"
-    s3_aws_access_key_id: "minioadmin"
-    s3_aws_secret_access_key: "minioadmin"
+  postgresql:
+    # -- Enable or disable this secret entirely. Will remove from env var configurations and remove any created secrets.
+    enabled: true
+    # -- Overwrite the default secret name, ignored if existingSecret is defined
+    secretName: 'onyx-postgresql'
+    # -- Use a secret specified elsewhere
+    existingSecret: ""
+    # -- This defines the env var to secret map, key is always upper-cased as an env var
+    secretKeys:
+      # CloudNativePG requires `username` and `password` keys for the superuser secret.
+      POSTGRES_USER: username
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: database
+    # -- Secrets values IF existingSecret is empty. Key here must match the value in secretKeys to be used. Values will be base64 encoded in the k8s cluster.
+    values:
+      username: "postgres"
+      password: "postgres"
+      database: "onyx"
+  redis:
+    # -- Enable or disable this secret entirely. Will remove from env var configurations and remove any created secrets.
+    enabled: true
+    # -- Overwrite the default secret name, ignored if existingSecret is defined
+    secretName: 'onyx-redis'
+    # -- Use a secret specified elsewhere
+    existingSecret: ""
+    # -- This defines the env var to secret map, key is always upper-cased as an env var
+    secretKeys:
+      REDIS_PASSWORD: redis_password
+    # -- Secrets values IF existingSecret is empty. Key here must match the value in secretKeys to be used. Values will be base64 encoded in the k8s cluster.
+    values:
+      redis_password: "password"
+  objectstorage:
+    # -- Enable or disable this secret entirely. Will remove from env var configurations and remove any created secrets.
+    enabled: true
+    # -- Overwrite the default secret name, ignored if existingSecret is defined
+    secretName: 'onyx-objectstorage'
+    # -- Use a secret specified elsewhere
+    existingSecret: ""
+    # -- This defines the env var to secret map, key is always upper-cased as an env var
+    secretKeys:
+      S3_AWS_ACCESS_KEY_ID: s3_aws_access_key_id
+      S3_AWS_SECRET_ACCESS_KEY: s3_aws_secret_access_key
+    # -- Secrets values IF existingSecret is empty. Key here must match the value in secretKeys to be used. Values will be base64 encoded in the k8s cluster.
+    values:
+      s3_aws_access_key_id: "minioadmin"
+      s3_aws_secret_access_key: "minioadmin"
+      rootUser: "minioadmin"
+      rootPassword: "minioadmin"
+  oauth:
+    # -- Enable or disable this secret entirely. Will remove from env var configurations and remove any created secrets.
+    enabled: false
+    # -- Overwrite the default secret name, ignored if existingSecret is defined
+    secretName: 'onyx-oauth'
+    # -- Use a secret specified elsewhere
+    existingSecret: ""
+    # -- This defines the env var to secret map, key is always upper-cased as an env var
+    secretKeys:
+      OAUTH_CLIENT_ID: "oauth_client_id"
+      OAUTH_CLIENT_SECRET: "oauth_client_secret"
+    # -- Secrets values IF existingSecret is empty. Key here must match the value in secretKeys to be used. Values will be base64 encoded in the k8s cluster.
+    values:
+      oauth_client_id: ""
+      oauth_client_secret: ""
+  smtp:
+    # -- Enable or disable this secret entirely. Will remove from env var configurations and remove any created secrets.
+    enabled: false
+    # -- Overwrite the default secret name, ignored if existingSecret is defined
+    secretName: 'onyx-smtp'
+    # -- Use a secret specified elsewhere
+    existingSecret: ""
+    # -- This defines the env var to secret map, key is always upper-cased as an env var
+    secretKeys:
+      SMTP_PASS: "smtp_pass"
+    # -- Secrets values IF existingSecret is empty. Key here must match the value in secretKeys to be used. Values will be base64 encoded in the k8s cluster.
+    values:
+      smtp_pass: ""
+  dbreadonly:
+    # -- Enable or disable this secret entirely. Will remove from env var configurations and remove any created secrets.
+    enabled: false
+    # -- Overwrite the default secret name, ignored if existingSecret is defined
+    secretName: 'onyx-dbreadonly'
+    # -- Use a secret specified elsewhere
+    existingSecret: ""
+    # -- This defines the env var to secret map, key is always upper-cased as an env var
+    secretKeys:
+      DB_READONLY_USER: db_readonly_user
+      DB_READONLY_PASSWORD: db_readonly_password
+    # -- Secrets values IF existingSecret is empty. Key here must match the value in secretKeys to be used. Values will be base64 encoded in the k8s cluster.
+    values:
+      db_readonly_user: ""
+      db_readonly_password: ""
 
 configMap:
   # Change this for production uses unless Onyx is only accessible behind VPN
@@ -663,7 +1158,9 @@ configMap:
   SESSION_EXPIRE_TIME_SECONDS: "86400"
   # Can be something like onyx.app, as an extra double-check
   VALID_EMAIL_DOMAINS: ""
-  # For sending verification emails, if unspecified then defaults to 'smtp.gmail.com'
+  # For sending verification emails, true or false
+  REQUIRE_EMAIL_VERIFICATION: ""
+  # If unspecified then defaults to 'smtp.gmail.com'
   SMTP_SERVER: ""
   # For sending verification emails, if unspecified then defaults to '587'
   SMTP_PORT: ""
@@ -690,10 +1187,6 @@ configMap:
   MULTILINGUAL_QUERY_EXPANSION: ""
   LANGUAGE_HINT: ""
   LANGUAGE_CHAT_NAMING_HINT: ""
-  QA_PROMPT_OVERRIDE: ""
-  # Internet Search Tool
-  BING_API_KEY: ""
-  EXA_API_KEY: ""
   # Don't change the NLP models unless you know what you're doing
   EMBEDDING_BATCH_SIZE: ""
   DOCUMENT_ENCODER_MODEL: ""
@@ -703,6 +1196,11 @@ configMap:
   DISABLE_RERANK_FOR_STREAMING: ""
   MODEL_SERVER_PORT: ""
   MIN_THREADS_ML_MODELS: ""
+  # Cache Directories - Pre-downloaded models and data
+  # These should match the Dockerfile settings to use pre-downloaded content
+  NLTK_DATA: "/usr/share/nltk_data"
+  HF_HOME: "/usr/share/huggingface"
+  TIKTOKEN_CACHE_DIR: "/usr/share/tiktoken_cache"
   # Indexing Configs
   VESPA_SEARCHER_THREADS: ""
   NUM_INDEXING_WORKERS: ""
@@ -711,26 +1209,26 @@ configMap:
   CONTINUE_ON_CONNECTOR_FAILURE: ""
   EXPERIMENTAL_CHECKPOINTING_ENABLED: ""
   CONFLUENCE_CONNECTOR_LABELS_TO_SKIP: ""
-  JIRA_API_VERSION: ""
+  JIRA_CLOUD_API_VERSION: ""
+  JIRA_SERVER_API_VERSION: ""
   GONG_CONNECTOR_START_TIME: ""
   NOTION_CONNECTOR_ENABLE_RECURSIVE_PAGE_LOOKUP: ""
   # Worker Parallelism
   CELERY_WORKER_DOCPROCESSING_CONCURRENCY: ""
   CELERY_WORKER_LIGHT_CONCURRENCY: ""
   CELERY_WORKER_LIGHT_PREFETCH_MULTIPLIER: ""
+  CELERY_WORKER_USER_FILE_PROCESSING_CONCURRENCY: ""
   # OnyxBot SlackBot Configs
-  DANSWER_BOT_DISABLE_DOCS_ONLY_ANSWER: ""
-  DANSWER_BOT_DISPLAY_ERROR_MSGS: ""
-  DANSWER_BOT_RESPOND_EVERY_CHANNEL: ""
-  DANSWER_BOT_DISABLE_COT: ""
+  ONYX_BOT_DISABLE_DOCS_ONLY_ANSWER: ""
+  ONYX_BOT_DISPLAY_ERROR_MSGS: ""
+  ONYX_BOT_RESPOND_EVERY_CHANNEL: ""
   NOTIFY_SLACKBOT_NO_ANSWER: ""
   # Logging
   # Optional Telemetry, please keep it on (nothing sensitive is collected)? <3
-  # https://docs.onyx.app/more/telemetry
   DISABLE_TELEMETRY: ""
   LOG_LEVEL: ""
   LOG_ALL_MODEL_INTERACTIONS: ""
-  LOG_DANSWER_MODEL_INTERACTIONS: ""
+  LOG_ONYX_MODEL_INTERACTIONS: ""
   LOG_VESPA_TIMING_INFORMATION: ""
   # Shared or Non-backend Related
   WEB_DOMAIN: "http://localhost:3000"
@@ -738,3 +1236,53 @@ configMap:
   DOMAIN: "localhost"
   # Chat Configs
   HARD_DELETE_CHATS: ""
+  # User File Upload Configuration
+  # Skip the token count threshold check (100,000 tokens) for uploaded files
+  # For self-hosted: set to true to skip for all users
+  SKIP_USERFILE_THRESHOLD: ""
+  # For multi-tenant: comma-separated list of tenant IDs to skip threshold
+  SKIP_USERFILE_THRESHOLD_TENANT_IDS: ""
+
+# Postfix mail relay configuration
+postfix:
+  enabled: false
+  dryrun: false
+  serverName: ""
+  mtpHost: ""
+  mtpPort: 587
+  mtpRelay: ""
+  mtpUser: ""
+  mtpPass: ""
+  resources:
+    limits:
+      memory: 128Mi
+    requests:
+      cpu: 100m
+      memory: 64Mi
+  affinity: {}
+  tolerations: []
+  mailtrap:
+    httpenabled: false
+    ingress:
+      enabled: false
+    mtPasswd: ""
+    mtUser: ""
+    serviceType: ClusterIP
+
+networkPolicy:
+  # Enable network policies to restrict traffic between pods
+  enabled: false
+  # Default egress policy for all pods (when no specific egress rules defined)
+  # Options: "deny" (block all egress), "allow" (allow all egress)
+  defaultEgress: "deny"
+  # Administrative access policy for kubectl exec, port-forward, SSH console
+  # Enable this temporarily for debugging/maintenance, then disable for production
+  adminAccess:
+    enabled: false
+    # Allow access from specific source IP ranges (CIDR notation)
+    # If empty, allows from any source (less secure but more flexible)
+    allowFrom: []
+    # Example:
+    # allowFrom:
+    #   - 10.0.0.0/8      # Internal network
+    #   - 192.168.1.0/24  # Office network

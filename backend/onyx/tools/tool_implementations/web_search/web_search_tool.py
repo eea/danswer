@@ -1,0 +1,115 @@
+from collections.abc import Generator
+from typing import Any
+
+from sqlalchemy.orm import Session
+from typing_extensions import override
+
+from onyx.chat.prompt_builder.answer_prompt_builder import AnswerPromptBuilder
+from onyx.db.engine.sql_engine import get_session_with_current_tenant
+from onyx.db.web_search import fetch_active_web_search_provider
+from onyx.llm.interfaces import LLM
+from onyx.llm.models import PreviousMessage
+from onyx.tools.message import ToolCallSummary
+from onyx.tools.models import ToolResponse
+from onyx.tools.tool import RunContextWrapper
+from onyx.tools.tool import Tool
+from onyx.utils.logger import setup_logger
+from onyx.utils.special_types import JSON_ro
+
+
+logger = setup_logger()
+
+# TODO: Align on separation of Tools and SubAgents. Right now, we're only keeping this around for backwards compatibility.
+QUERY_FIELD = "query"
+_GENERIC_ERROR_MESSAGE = "WebSearchTool should only be used by the Deep Research Agent, not via tool calling."
+
+
+class WebSearchTool(Tool[None]):
+    _NAME = "run_web_search"
+    _DESCRIPTION = "Search the web for information. Never call this tool."
+    _DISPLAY_NAME = "Web Search"
+
+    def __init__(self, tool_id: int) -> None:
+        self._id = tool_id
+
+    @property
+    def id(self) -> int:
+        return self._id
+
+    @property
+    def name(self) -> str:
+        return self._NAME
+
+    @property
+    def description(self) -> str:
+        return self._DESCRIPTION
+
+    @property
+    def display_name(self) -> str:
+        return self._DISPLAY_NAME
+
+    @override
+    @classmethod
+    def is_available(cls, db_session: Session) -> bool:
+        """Available only if an active web search provider is configured in the database."""
+        with get_session_with_current_tenant() as session:
+            provider = fetch_active_web_search_provider(session)
+            return provider is not None
+
+    def tool_definition(self) -> dict:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        QUERY_FIELD: {
+                            "type": "string",
+                            "description": "What to search for",
+                        },
+                    },
+                    "required": [QUERY_FIELD],
+                },
+            },
+        }
+
+    def get_args_for_non_tool_calling_llm(
+        self,
+        query: str,
+        history: list[PreviousMessage],
+        llm: LLM,
+        force_run: bool = False,
+    ) -> dict[str, Any] | None:
+        raise ValueError(_GENERIC_ERROR_MESSAGE)
+
+    def build_tool_message_content(
+        self, *args: ToolResponse
+    ) -> str | list[str | dict[str, Any]]:
+        raise ValueError(_GENERIC_ERROR_MESSAGE)
+
+    def run_v2(
+        self,
+        run_context: RunContextWrapper[Any],
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        raise NotImplementedError("WebSearchTool.run_v2 is not implemented.")
+
+    def run(
+        self, override_kwargs: None = None, **llm_kwargs: str
+    ) -> Generator[ToolResponse, None, None]:
+        raise ValueError(_GENERIC_ERROR_MESSAGE)
+
+    def final_result(self, *args: ToolResponse) -> JSON_ro:
+        raise ValueError(_GENERIC_ERROR_MESSAGE)
+
+    def build_next_prompt(
+        self,
+        prompt_builder: AnswerPromptBuilder,
+        tool_call_summary: ToolCallSummary,
+        tool_responses: list[ToolResponse],
+        using_tool_calling_llm: bool,
+    ) -> AnswerPromptBuilder:
+        raise ValueError(_GENERIC_ERROR_MESSAGE)

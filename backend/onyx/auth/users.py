@@ -54,12 +54,17 @@ from httpx_oauth.integrations.fastapi import OAuth2AuthorizeCallback
 from httpx_oauth.oauth2 import BaseOAuth2
 from httpx_oauth.oauth2 import OAuth2Token
 from pydantic import BaseModel
+from sqlalchemy import nulls_last
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from onyx.auth.api_key import get_hashed_api_key_from_request
 from onyx.auth.email_utils import send_forgot_password_email
 from onyx.auth.email_utils import send_user_verification_email
 from onyx.auth.invited_users import get_invited_users
+from onyx.auth.invited_users import remove_user_from_invited_users
+from onyx.auth.jwt import verify_jwt_token
+from onyx.auth.pat import get_hashed_pat_from_request
 from onyx.auth.schemas import AuthBackend
 from onyx.auth.schemas import UserCreate
 from onyx.auth.schemas import UserRole
@@ -69,6 +74,7 @@ from onyx.configs.app_configs import AUTH_COOKIE_EXPIRE_TIME_SECONDS
 from onyx.configs.app_configs import AUTH_TYPE
 from onyx.configs.app_configs import DISABLE_AUTH
 from onyx.configs.app_configs import EMAIL_CONFIGURED
+from onyx.configs.app_configs import JWT_PUBLIC_KEY_URL
 from onyx.configs.app_configs import PASSWORD_MAX_LENGTH
 from onyx.configs.app_configs import PASSWORD_MIN_LENGTH
 from onyx.configs.app_configs import PASSWORD_REQUIRE_DIGIT
@@ -102,7 +108,9 @@ from onyx.db.engine.async_sql_engine import get_async_session_context_manager
 from onyx.db.engine.sql_engine import get_session_with_tenant
 from onyx.db.models import AccessToken
 from onyx.db.models import OAuthAccount
+from onyx.db.models import Persona
 from onyx.db.models import User
+from onyx.db.pat import fetch_user_for_pat
 from onyx.db.users import get_user_by_email
 from onyx.redis.redis_pool import get_async_redis_connection
 from onyx.redis.redis_pool import get_redis_client
@@ -114,7 +122,6 @@ from onyx.utils.telemetry import RecordType
 from onyx.utils.timing import log_function_time
 from onyx.utils.url import add_url_params
 from onyx.utils.variable_functionality import fetch_ee_implementation_or_noop
-from onyx.utils.variable_functionality import fetch_versioned_implementation
 from shared_configs.configs import async_return_default_schema
 from shared_configs.configs import MULTI_TENANT
 from shared_configs.configs import POSTGRES_DEFAULT_SCHEMA
@@ -134,10 +141,9 @@ def is_user_admin(user: User | None) -> bool:
 
 
 def verify_auth_setting() -> None:
-    if AUTH_TYPE not in [AuthType.DISABLED, AuthType.BASIC, AuthType.GOOGLE_OAUTH]:
+    if AUTH_TYPE == AuthType.CLOUD:
         raise ValueError(
-            "User must choose a valid user authentication method: "
-            "disabled, basic, or google_oauth"
+            f"{AUTH_TYPE.value} is not a valid auth type for self-hosted deployments."
         )
     logger.notice(f"Using Auth Type: {AUTH_TYPE.value}")
 
@@ -201,6 +207,10 @@ def anonymous_user_enabled(*, tenant_id: str | None = None) -> bool:
 
 
 def verify_email_is_invited(email: str) -> None:
+    if AUTH_TYPE in {AuthType.SAML, AuthType.OIDC}:
+        # SSO providers manage membership; allow JIT provisioning regardless of invites
+        return
+
     whitelist = get_invited_users()
     if not whitelist:
         return
@@ -242,7 +252,7 @@ def verify_email_domain(email: str) -> None:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Email is not valid",
             )
-        domain = email.split("@")[-1]
+        domain = email.split("@")[-1].lower()
         if domain not in VALID_EMAIL_DOMAINS:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -325,8 +335,12 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
                     ):
                         user_create.role = UserRole.ADMIN
 
+                user_created = False
                 try:
-                    user = await super().create(user_create, safe=safe, request=request)  # type: ignore
+                    user = await super().create(
+                        user_create, safe=safe, request=request
+                    )  # type: ignore
+                    user_created = True
                 except exceptions.UserAlreadyExists:
                     user = await self.get_by_email(user_create.email)
 
@@ -352,9 +366,41 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
                         role=user_create.role,
                     )
                     user = await self.update(user_update, user)
+                if user_created:
+                    await self._assign_default_pinned_assistants(user, db_session)
+                remove_user_from_invited_users(user_create.email)
         finally:
             CURRENT_TENANT_ID_CONTEXTVAR.reset(token)
         return user
+
+    async def _assign_default_pinned_assistants(
+        self, user: User, db_session: AsyncSession
+    ) -> None:
+        if user.pinned_assistants is not None:
+            return
+
+        result = await db_session.execute(
+            select(Persona.id)
+            .where(
+                Persona.is_default_persona.is_(True),
+                Persona.is_public.is_(True),
+                Persona.is_visible.is_(True),
+                Persona.deleted.is_(False),
+            )
+            .order_by(
+                nulls_last(Persona.display_priority.asc()),
+                Persona.id.asc(),
+            )
+        )
+        default_persona_ids = list(result.scalars().all())
+        if not default_persona_ids:
+            return
+
+        await self.user_db.update(
+            user,
+            {"pinned_assistants": default_persona_ids},
+        )
+        user.pinned_assistants = default_persona_ids
 
     async def validate_password(self, password: str, _: schemas.UC | models.UP) -> None:
         # Validate password according to configurable security policy (defined via environment variables)
@@ -476,6 +522,7 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
 
                     user = await self.user_db.create(user_dict)
                     await self.user_db.add_oauth_account(user, oauth_account_dict)
+                    await self._assign_default_pinned_assistants(user, db_session)
                     await self.on_after_register(user, request)
 
             else:
@@ -529,7 +576,7 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
             ):
                 await self.user_db.update(user, {"oidc_expiry": None})
                 user.oidc_expiry = None  # type: ignore
-
+            remove_user_from_invited_users(user.email)
             if token:
                 CURRENT_TENANT_ID_CONTEXTVAR.reset(token)
 
@@ -566,30 +613,79 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
             request=request,
         )
 
+        user_count = None
         token = CURRENT_TENANT_ID_CONTEXTVAR.set(tenant_id)
         try:
             user_count = await get_user_count()
             logger.debug(f"Current tenant user count: {user_count}")
 
             with get_session_with_tenant(tenant_id=tenant_id) as db_session:
-                if user_count == 1:
-                    create_milestone_and_report(
-                        user=user,
-                        distinct_id=user.email,
-                        event_type=MilestoneRecordType.USER_SIGNED_UP,
-                        properties=None,
-                        db_session=db_session,
-                    )
-                else:
-                    create_milestone_and_report(
-                        user=user,
-                        distinct_id=user.email,
-                        event_type=MilestoneRecordType.MULTIPLE_USERS,
-                        properties=None,
-                        db_session=db_session,
-                    )
+                event_type = (
+                    MilestoneRecordType.USER_SIGNED_UP
+                    if user_count == 1
+                    else MilestoneRecordType.MULTIPLE_USERS
+                )
+                create_milestone_and_report(
+                    user=user,
+                    distinct_id=user.email,
+                    event_type=event_type,
+                    properties=None,
+                    db_session=db_session,
+                )
+
         finally:
             CURRENT_TENANT_ID_CONTEXTVAR.reset(token)
+
+        # Fetch EE PostHog functions if available
+        get_marketing_posthog_cookie_name = fetch_ee_implementation_or_noop(
+            module="onyx.utils.posthog_client",
+            attribute="get_marketing_posthog_cookie_name",
+            noop_return_value=None,
+        )
+        parse_marketing_cookie = fetch_ee_implementation_or_noop(
+            module="onyx.utils.posthog_client",
+            attribute="parse_marketing_cookie",
+            noop_return_value=None,
+        )
+        capture_and_sync_with_alternate_posthog = fetch_ee_implementation_or_noop(
+            module="onyx.utils.posthog_client",
+            attribute="capture_and_sync_with_alternate_posthog",
+            noop_return_value=None,
+        )
+
+        if (
+            request
+            and user_count is not None
+            and (marketing_cookie_name := get_marketing_posthog_cookie_name())
+            and (marketing_cookie_value := request.cookies.get(marketing_cookie_name))
+            and (parsed_cookie := parse_marketing_cookie(marketing_cookie_value))
+        ):
+            marketing_anonymous_id = parsed_cookie["distinct_id"]
+
+            # Technically, USER_SIGNED_UP is only fired from the cloud site when
+            # it is the first user in a tenant. However, it is semantically correct
+            # for the marketing site and should probably be refactored for the cloud site
+            # to also be semantically correct.
+            properties = {
+                "email": user.email,
+                "onyx_cloud_user_id": str(user.id),
+                "tenant_id": str(tenant_id) if tenant_id else None,
+                "role": user.role.value,
+                "is_first_user": user_count == 1,
+                "source": "marketing_site_signup",
+                "conversion_timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+
+            # Add all other values from the marketing cookie (featureFlags, etc.)
+            for key, value in parsed_cookie.items():
+                if key != "distinct_id":
+                    properties.setdefault(key, value)
+
+            capture_and_sync_with_alternate_posthog(
+                alternate_distinct_id=marketing_anonymous_id,
+                event=MilestoneRecordType.USER_SIGNED_UP,
+                properties=properties,
+            )
 
         logger.debug(f"User {user.id} has registered.")
         optional_telemetry(
@@ -1021,13 +1117,123 @@ fastapi_users = FastAPIUserWithLogoutRouter[User, uuid.UUID](
 optional_fastapi_current_user = fastapi_users.current_user(active=True, optional=True)
 
 
-async def optional_user_(
+_JWT_EMAIL_CLAIM_KEYS = ("email", "preferred_username", "upn")
+
+
+def _extract_email_from_jwt(payload: dict[str, Any]) -> str | None:
+    """Return the best-effort email/username from a decoded JWT payload."""
+    for key in _JWT_EMAIL_CLAIM_KEYS:
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            try:
+                email_info = validate_email(value, check_deliverability=False)
+            except EmailNotValidError:
+                continue
+            normalized_email = email_info.normalized or email_info.email
+            return normalized_email.lower()
+    return None
+
+
+async def _sync_jwt_oidc_expiry(
+    user_manager: UserManager, user: User, payload: dict[str, Any]
+) -> None:
+    if TRACK_EXTERNAL_IDP_EXPIRY:
+        expires_at = payload.get("exp")
+        if expires_at is None:
+            return
+        try:
+            expiry_timestamp = int(expires_at)
+        except (TypeError, ValueError):
+            logger.warning("Invalid exp claim on JWT for user %s", user.email)
+            return
+
+        oidc_expiry = datetime.fromtimestamp(expiry_timestamp, tz=timezone.utc)
+        if user.oidc_expiry == oidc_expiry:
+            return
+
+        await user_manager.user_db.update(user, {"oidc_expiry": oidc_expiry})
+        user.oidc_expiry = oidc_expiry  # type: ignore
+        return
+
+    if user.oidc_expiry is not None:
+        await user_manager.user_db.update(user, {"oidc_expiry": None})
+        user.oidc_expiry = None  # type: ignore
+
+
+async def _get_or_create_user_from_jwt(
+    payload: dict[str, Any],
+    request: Request,
+    async_db_session: AsyncSession,
+) -> User | None:
+    email = _extract_email_from_jwt(payload)
+    if email is None:
+        logger.warning(
+            "JWT token decoded successfully but no email claim found; skipping auth"
+        )
+        return None
+
+    # Enforce the same allowlist/domain policies as other auth flows
+    verify_email_is_invited(email)
+    verify_email_domain(email)
+
+    user_db: SQLAlchemyUserAdminDB[User, uuid.UUID] = SQLAlchemyUserAdminDB(
+        async_db_session, User, OAuthAccount
+    )
+    user_manager = UserManager(user_db)
+
+    try:
+        user = await user_manager.get_by_email(email)
+        if not user.is_active:
+            logger.warning("Inactive user %s attempted JWT login; skipping", email)
+            return None
+        if not user.role.is_web_login():
+            raise exceptions.UserNotExists()
+    except exceptions.UserNotExists:
+        logger.info("Provisioning user %s from JWT login", email)
+        try:
+            user = await user_manager.create(
+                UserCreate(
+                    email=email,
+                    password=generate_password(),
+                    is_verified=True,
+                ),
+                request=request,
+            )
+        except exceptions.UserAlreadyExists:
+            user = await user_manager.get_by_email(email)
+            if not user.is_active:
+                logger.warning(
+                    "Inactive user %s attempted JWT login during provisioning race; skipping",
+                    email,
+                )
+                return None
+            if not user.role.is_web_login():
+                logger.warning(
+                    "Non-web-login user %s attempted JWT login during provisioning race; skipping",
+                    email,
+                )
+                return None
+
+    await _sync_jwt_oidc_expiry(user_manager, user, payload)
+    return user
+
+
+async def _check_for_saml_and_jwt(
     request: Request,
     user: User | None,
     async_db_session: AsyncSession,
 ) -> User | None:
-    """NOTE: `request` and `db_session` are not used here, but are included
-    for the EE version of this function."""
+    # If user is None, check for JWT in Authorization header
+    if user is None and JWT_PUBLIC_KEY_URL is not None:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header[len("Bearer ") :].strip()
+            payload = await verify_jwt_token(token)
+            if payload is not None:
+                user = await _get_or_create_user_from_jwt(
+                    payload, request, async_db_session
+                )
+
     return user
 
 
@@ -1036,14 +1242,20 @@ async def optional_user(
     async_db_session: AsyncSession = Depends(get_async_session),
     user: User | None = Depends(optional_fastapi_current_user),
 ) -> User | None:
-    versioned_fetch_user = fetch_versioned_implementation(
-        "onyx.auth.users", "optional_user_"
-    )
-    user = await versioned_fetch_user(request, user, async_db_session)
+    user = await _check_for_saml_and_jwt(request, user, async_db_session)
+
+    # check if a PAT is present (before API key)
+    if user is None:
+        hashed_pat = get_hashed_pat_from_request(request)
+        if hashed_pat:
+            user = await fetch_user_for_pat(hashed_pat, async_db_session)
 
     # check if an API key is present
     if user is None:
-        hashed_api_key = get_hashed_api_key_from_request(request)
+        try:
+            hashed_api_key = get_hashed_api_key_from_request(request)
+        except ValueError:
+            hashed_api_key = None
         if hashed_api_key:
             user = await fetch_user_for_api_key(hashed_api_key, async_db_session)
 
