@@ -1,0 +1,24 @@
+We are resolving a git merge conflict for the file: `{filepath}`.
+{patch_info}
+{both_added_note}
+
+Here is the conflicted file content with `diff3` markers (<<<<<<< HEAD, ||||||| merged common ancestors, =======, >>>>>>> MERGE_HEAD):
+
+```
+{file_content}
+```
+
+Instructions:
+1. Analyze the divergence between HEAD (EEA fork) and MERGE_HEAD (Upstream).
+2. Write an analysis explaining the intent of both sides and your resolution strategy.
+3. Provide the full, perfectly resolved file content without any git conflict markers.
+
+Output strictly valid JSON in this format:
+{
+  "analysis": {
+    "eea_intent": "...",
+    "upstream_intent": "...",
+    "strategy": "..."
+  },
+  "resolved_file_content": "..."
+}

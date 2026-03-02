@@ -38,14 +38,14 @@ To ensure seamless integration of upstream Onyx releases, we adhere to the follo
 
 When you (the AI assistant) are tasked with creating a feature, modifying code, or resolving conflicts in this repository, you must:
 
-1. **Read `eea-artifacts/patches-overview.md`** first to understand existing customizations.
-2. **Prioritize Upstream Compatibility**: Avoid massive structural refactors of upstream Onyx files. Instead, use hooks, subclassing, overriding, or isolated components wherever the language/framework permits.
-3. **Document Your Patches**: If you introduce a new deviation from the upstream codebase, update `eea-artifacts/patches-overview.md` with:
-   - The file(s) modified.
-   - The nature of the change.
-   - The reasoning behind it.
-   - Any potential upstream conflicts it might cause.
-4. **Keep it Clean**: Write clear, standard, and highly readable code. Do not introduce messy dependencies that conflict with Onyx's primary `package.json` or `requirements.txt` / `pyproject.toml` unless strictly necessary for EEA.
-5. **Git Commands**: To avoid issues with visual diff tools or interactive pagers in the terminal, always prefix git commands with `env GIT_PAGER=cat` (e.g., `env GIT_PAGER=cat git diff`). This ensures that the output is printed directly to the terminal without hanging or requiring user interaction.
+1. **Read `eea-artifacts/patches-overview.md`** first to get a high-level view of existing customizations.
+2. **Consult Patch Artifacts:** For detailed architectural intent and files modified by specific patches, read the corresponding `eea-artifacts/patches/EEA-XXX.md` file.
+3. **Prioritize Upstream Compatibility**: Avoid massive structural refactors of upstream Onyx files. Instead, use hooks, subclassing, overriding, or isolated components wherever the language/framework permits.
+4. **Document Your Patches**: If you introduce a new deviation from the upstream codebase:
+   - Create a new `EEA-XXX.md` file in `eea-artifacts/patches/` detailing the files modified, your intent, and how to migrate the changes during upstream updates.
+   - Update `eea-artifacts/patches-overview.md` with a bullet point linking to your new patch file.
+   - Keep comments in the code (e.g., `// EEA CUSTOMIZATION: ...`) to link back to the patch ID where appropriate.
+5. **Keep it Clean**: Write clear, standard, and highly readable code. Do not introduce messy dependencies that conflict with Onyx's primary `package.json` or `requirements.txt` / `pyproject.toml` unless strictly necessary for EEA.
+6. **Git Commands**: To avoid issues with visual diff tools or interactive pagers in the terminal, always prefix git commands with `env GIT_PAGER=cat` (e.g., `env GIT_PAGER=cat git diff`). This ensures that the output is printed directly to the terminal without hanging or requiring user interaction.
 
 By following this strategy, we can leverage the powerful features developed by the Onyx community while securely and reliably serving EEA's specific organizational and user needs.

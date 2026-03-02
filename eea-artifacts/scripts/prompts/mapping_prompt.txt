@@ -1,0 +1,19 @@
+We are resolving git merge conflicts between our EEA fork and the Onyx upstream project.
+Below is the content of our EEA patches overview document:
+
+<patches_overview>
+{patch_content}
+</patches_overview>
+
+Below is a list of conflicted files:
+{ai_files_json}
+
+Please map each conflicted file to its relevant EEA Patch ID (e.g. "EEA-001") if it is documented in the overview.
+If a file does not seem to relate to any documented patch, map it to null.
+
+Output strictly valid JSON mapping filenames to patch IDs (or null).
+Format:
+{
+  "backend/onyx/main.py": "EEA-001",
+  "web/package.json": null
+}
