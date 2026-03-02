@@ -27,6 +27,7 @@ The system stores its progress in a `.eea_merge/` directory at the project root.
 
 ```text
 .eea_merge/
+├── .tools/               # Isolated tooling (Python venv, local node_modules)
 ├── state.json            # Master state (File paths, status, retry counts, patch IDs)
 ├── prompts/              # Saved prompts sent to the LLM (for debugging)
 ├── resolutions/          # Raw JSON responses from the LLM
@@ -35,7 +36,14 @@ The system stores its progress in a `.eea_merge/` directory at the project root.
 
 ---
 
-## The 4-Phase Pipeline
+## The 5-Phase Pipeline
+
+### Phase -1: Environment Bootstrap
+
+To ensure the system is immune to Git conflicts in `package.json` or `pyproject.toml`, and to guarantee 100% reproducibility across different machines, the orchestrator first sets up an isolated environment:
+1. **Python (`ruff`):** Creates a virtual environment in `.eea_merge/.tools/python_env` and installs a pinned version of `ruff`.
+2. **TypeScript (`tsc`):** Initializes an empty npm project in `.eea_merge/.tools/node_env` and installs a pinned version of `typescript`.
+*These isolated binaries are used exclusively for the Compiler Feedback Loop in Phase 2.*
 
 ### Phase 0: The Master Orchestrator (`eea_merge_master.py <tag>`)
 
