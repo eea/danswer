@@ -107,11 +107,21 @@ def resolve_file(filepath, state_entry, patches_content, model):
 
     # Build patch context
     patch_id = state_entry.get("patch_id")
-    if patch_id and patches_content:
-        patch_info = (
-            f"This file is related to EEA Patch {patch_id}. "
-            f"Please ensure the custom logic described in the patch is preserved."
-        )
+    if patch_id:
+        patch_file = os.path.join("eea-artifacts", "patches", f"{patch_id}.md")
+        if os.path.exists(patch_file):
+            with open(patch_file, "r") as pf:
+                patch_details = pf.read()
+            patch_info = (
+                f"This file is related to EEA Patch {patch_id}. Here is the full context of this patch:\n\n"
+                f"<patch_context>\n{patch_details}\n</patch_context>\n\n"
+                f"Please ensure the custom logic and architectural intent described above is preserved."
+            )
+        else:
+            patch_info = (
+                f"This file is related to EEA Patch {patch_id}. "
+                f"Please ensure the custom logic described in the patch is preserved."
+            )
     else:
         patch_info = (
             "No EEA patch documentation exists for this file. "
