@@ -51,3 +51,4 @@ CLAUDE.md
 
 # MCP configs
 .playwright-mcp
+__pycache__/
