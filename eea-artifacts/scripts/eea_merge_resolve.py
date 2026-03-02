@@ -157,7 +157,8 @@ def resolve_file(filepath, state_entry, patches_content):
 
     while state_entry["retries"] <= max_retries:
         attempt = state_entry["retries"] + 1
-        print(f"  Attempt {attempt} for {filepath}...")
+        # Log lifecycle to file, not stdout
+        log_validation(filepath, attempt, "lifecycle", True, f"Starting attempt {attempt}")
 
         # Save the prompt for auditing
         save_prompt(filepath, current_prompt, attempt)
@@ -166,7 +167,6 @@ def resolve_file(filepath, state_entry, patches_content):
 
         if not result or "resolved_file_content" not in result:
             err_msg = "Failed to parse valid JSON from Gemini or missing 'resolved_file_content'."
-            print(f"  {err_msg}")
             log_validation(filepath, attempt, "json_parse", False, err_msg)
             current_prompt = (
                 base_prompt +
@@ -188,11 +188,11 @@ def resolve_file(filepath, state_entry, patches_content):
         is_valid, val_msg = run_file_validation(filepath, resolved_content, attempt)
 
         if is_valid:
-            print(f"  Successfully resolved and validated {filepath}.")
+            print(f"  [OK] {filepath}")
             state_entry["status"] = "resolved_and_verified"
             return True
 
-        print(f"  Validation failed for {filepath}: {val_msg}")
+        log_validation(filepath, attempt, "validation_failure", False, val_msg)
         current_prompt = (
             base_prompt +
             f"\n\nYOUR PREVIOUS RESOLUTION FAILED VALIDATION:\n{val_msg}\n"
@@ -200,7 +200,7 @@ def resolve_file(filepath, state_entry, patches_content):
         )
         state_entry["retries"] += 1
 
-    print(f"  Exhausted retries for {filepath}.")
+    print(f"  [FAIL] {filepath} - needs human review (see logs)")
     state_entry["status"] = "failed_requires_human"
     return False
 
@@ -379,7 +379,6 @@ def main():
     # Phase 2a: AI resolution for pending files (sequential, one at a time)
     for filepath, entry in state.items():
         if entry["status"] == "pending":
-            print(f"\nResolving {filepath}...")
             backup_file(filepath)
             resolve_file(filepath, entry, patches_content)
             save_state(state)

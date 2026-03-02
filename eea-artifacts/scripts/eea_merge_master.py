@@ -81,28 +81,25 @@ def main():
     # Execute Phase 1
     init_script = os.path.join(SCRIPT_DIR, "eea_merge_init.py")
     print(">>> Phase 1: Setup & Context Mapping")
-    out, _, ret = run_cmd([sys.executable, init_script, target_tag], check=False)
-    print(out)
+    _, _, ret = run_cmd([sys.executable, init_script, target_tag], check=False, capture_output=False)
     if ret != 0:
         print("Phase 1 failed. Aborting.")
         sys.exit(1)
 
     # Execute Phase 2
     resolve_script = os.path.join(SCRIPT_DIR, "eea_merge_resolve.py")
-    print(">>> Phase 2: Self-Correcting Resolution Loop")
-    out, _, ret = run_cmd([sys.executable, resolve_script], check=False)
-    print(out)
+    print("\n>>> Phase 2: Self-Correcting Resolution Loop")
+    _, _, ret = run_cmd([sys.executable, resolve_script], check=False, capture_output=False)
     if ret != 0:
         print("Phase 2 failed. Aborting.")
         sys.exit(1)
 
     # Execute Phase 3, 4, 5
     integrate_script = os.path.join(SCRIPT_DIR, "eea_merge_integrate.py")
-    print(">>> Phase 3-5: Integration, Validation & Commit")
-    out, _, ret = run_cmd([sys.executable, integrate_script, target_tag], check=False)
-    print(out)
+    print("\n>>> Phase 3-5: Integration, Validation & Commit")
+    _, _, ret = run_cmd([sys.executable, integrate_script, target_tag], check=False, capture_output=False)
     if ret != 0:
-        print("Post-resolution pipeline failed. See above for details.")
+        # eea_merge_integrate.py prints its own detailed failure message
         sys.exit(1)
 
     print(f"\nSuccessfully resolved and merged {target_tag}!")
