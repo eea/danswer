@@ -46,6 +46,6 @@ When you (the AI assistant) are tasked with creating a feature, modifying code, 
    - The reasoning behind it.
    - Any potential upstream conflicts it might cause.
 4. **Keep it Clean**: Write clear, standard, and highly readable code. Do not introduce messy dependencies that conflict with Onyx's primary `package.json` or `requirements.txt` / `pyproject.toml` unless strictly necessary for EEA.
-5. **Git Commands**: Always run git commands with the `--no-pager` option (e.g., `git --no-pager diff`, `git --no-pager log`). The environment is configured with a visual diff tool that may cause issues or hang when run without this option in the associated agentic terminal.
+5. **Git Commands**: To avoid issues with visual diff tools or interactive pagers in the terminal, always prefix git commands with `env GIT_PAGER=cat` (e.g., `env GIT_PAGER=cat git diff`). This ensures that the output is printed directly to the terminal without hanging or requiring user interaction.
 
 By following this strategy, we can leverage the powerful features developed by the Onyx community while securely and reliably serving EEA's specific organizational and user needs.
