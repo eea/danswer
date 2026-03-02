@@ -10,7 +10,7 @@ if SCRIPT_DIR not in sys.path:
 
 from eea_merge_utils import (
     load_state, save_state, run_cmd, run_gemini, VENV_PYTHON,
-    save_prompt, log_validation
+    save_prompt, log_validation, load_prompt_template
 )
 
 MAX_RETRIES = {
@@ -129,28 +129,12 @@ def resolve_file(filepath, state_entry, patches_content, model):
             "adopting upstream structure where appropriate.\n"
         )
 
-    base_prompt = (
-        f"We are resolving a git merge conflict for the file: `{filepath}`.\n"
-        f"{patch_info}\n"
-        f"{both_added_note}\n"
-        "Here is the conflicted file content with `diff3` markers "
-        "(<<<<<<< HEAD, ||||||| merged common ancestors, =======, >>>>>>> MERGE_HEAD):\n\n"
-        "```\n"
-        f"{file_content}\n"
-        "```\n\n"
-        "Instructions:\n"
-        "1. Analyze the divergence between HEAD (EEA fork) and MERGE_HEAD (Upstream).\n"
-        "2. Write an analysis explaining the intent of both sides and your resolution strategy.\n"
-        "3. Provide the full, perfectly resolved file content without any git conflict markers.\n\n"
-        "Output strictly valid JSON in this format:\n"
-        "{\n"
-        "  \"analysis\": {\n"
-        "    \"eea_intent\": \"...\",\n"
-        "    \"upstream_intent\": \"...\",\n"
-        "    \"strategy\": \"...\"\n"
-        "  },\n"
-        "  \"resolved_file_content\": \"...\"\n"
-        "}\n"
+    template = load_prompt_template("resolution_prompt.txt")
+    base_prompt = template.format(
+        filepath=filepath,
+        patch_info=patch_info,
+        both_added_note=both_added_note,
+        file_content=file_content
     )
 
     current_prompt = base_prompt

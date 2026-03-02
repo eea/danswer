@@ -127,3 +127,11 @@ def log_validation(filepath, attempt, validator, passed, message):
         f.write(f"Result: {'PASS' if passed else 'FAIL'}\n")
         f.write(f"Message:\n{message}\n")
         f.write("-" * 60 + "\n")
+
+
+def load_prompt_template(template_name):
+    """Load a prompt template from eea-artifacts/scripts/prompts/."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    template_path = os.path.join(script_dir, "prompts", template_name)
+    with open(template_path, "r") as f:
+        return f.read()

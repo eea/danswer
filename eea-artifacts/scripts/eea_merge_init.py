@@ -9,7 +9,8 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from eea_merge_utils import (
-    run_cmd, get_unmerged_files, get_git_status, is_binary, save_state, run_gemini
+    run_cmd, get_unmerged_files, get_git_status, is_binary, save_state, run_gemini,
+    load_prompt_template
 )
 
 SPECIAL_FILES = [
@@ -87,23 +88,10 @@ def map_files_to_patches(ai_files, model):
         # No patches available, map everything to null
         return {f: None for f in ai_files}
 
-    prompt = (
-        "We are resolving git merge conflicts between our EEA fork and the Onyx upstream project.\n"
-        "Below is the content of our EEA patches overview document:\n\n"
-        "<patches_overview>\n"
-        f"{patch_content}\n"
-        "</patches_overview>\n\n"
-        "Below is a list of conflicted files:\n"
-        f"{json.dumps(ai_files, indent=2)}\n\n"
-        "Please map each conflicted file to its relevant EEA Patch ID (e.g. \"EEA-001\") "
-        "if it is documented in the overview.\n"
-        "If a file does not seem to relate to any documented patch, map it to null.\n\n"
-        "Output strictly valid JSON mapping filenames to patch IDs (or null).\n"
-        "Format:\n"
-        "{\n"
-        "  \"backend/onyx/main.py\": \"EEA-001\",\n"
-        "  \"web/package.json\": null\n"
-        "}\n"
+    template = load_prompt_template("mapping_prompt.txt")
+    prompt = template.format(
+        patch_content=patch_content,
+        ai_files_json=json.dumps(ai_files, indent=2)
     )
 
     print(f"Mapping files to patches using {model}...")
