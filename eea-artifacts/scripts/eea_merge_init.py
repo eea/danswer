@@ -72,7 +72,7 @@ def auto_accept_upstream(filepath):
     return False
 
 
-def map_files_to_patches(ai_files):
+def map_files_to_patches(ai_files, model):
     """Use a fast LLM call to map conflicted files to EEA Patch IDs."""
     if not ai_files:
         return {}
@@ -106,8 +106,8 @@ def map_files_to_patches(ai_files):
         "}\n"
     )
 
-    print("Mapping files to patches using Gemini 2.5 Flash...")
-    mapping = run_gemini(prompt, model="gemini-2.5-flash", expect_json=True)
+    print(f"Mapping files to patches using {model}...")
+    mapping = run_gemini(prompt, model=model, expect_json=True)
     if not mapping:
         print("Warning: Failed to map files to patches. Defaulting to null.")
         return {f: None for f in ai_files}
@@ -115,11 +115,15 @@ def map_files_to_patches(ai_files):
 
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python eea_merge_init.py <target_tag>")
-        sys.exit(1)
-
-    target_tag = sys.argv[1]
+    import argparse
+    parser = argparse.ArgumentParser(description="EEA Merge Phase 1: Init")
+    parser.add_argument("target_tag", help="Target tag to merge")
+    parser.add_argument("--dumb-model", default="gemini-3-flash-preview", 
+                        help="LLM model for context mapping")
+    
+    args = parser.parse_args()
+    target_tag = args.target_tag
+    dumb_model = args.dumb_model
 
     # 1. Branch Creation
     datestamp = datetime.datetime.now().strftime("%Y%m%d")
@@ -167,7 +171,7 @@ def main():
                 print(f"  Failed to auto-accept upstream for: {f}")
 
     # 6. The Mapping Pass
-    patch_mapping = map_files_to_patches(ai_files)
+    patch_mapping = map_files_to_patches(ai_files, dumb_model)
     for f, patch_id in patch_mapping.items():
         if f in state:
             state[f]["patch_id"] = patch_id

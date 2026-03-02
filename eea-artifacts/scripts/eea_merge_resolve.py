@@ -96,7 +96,7 @@ def run_file_validation(filepath, content, attempt):
     return True, "Passed"
 
 
-def resolve_file(filepath, state_entry, patches_content):
+def resolve_file(filepath, state_entry, patches_content, model):
     """Run the self-correcting AI resolution loop for a single file."""
     ext = os.path.splitext(filepath)[1]
     max_retries = MAX_RETRIES.get(ext, MAX_RETRIES["default"])
@@ -158,12 +158,12 @@ def resolve_file(filepath, state_entry, patches_content):
     while state_entry["retries"] <= max_retries:
         attempt = state_entry["retries"] + 1
         # Log lifecycle to file, not stdout
-        log_validation(filepath, attempt, "lifecycle", True, f"Starting attempt {attempt}")
+        log_validation(filepath, attempt, "lifecycle", True, f"Starting attempt {attempt} using {model}")
 
         # Save the prompt for auditing
         save_prompt(filepath, current_prompt, attempt)
 
-        result = run_gemini(current_prompt, model="gemini-2.5-pro", expect_json=True)
+        result = run_gemini(current_prompt, model=model, expect_json=True)
 
         if not result or "resolved_file_content" not in result:
             err_msg = "Failed to parse valid JSON from Gemini or missing 'resolved_file_content'."
@@ -365,6 +365,14 @@ def programmatic_resolution(filepath, state_entry):
 # ---------------------------------------------------------------------------
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="EEA Merge Phase 2: Resolve")
+    parser.add_argument("--smart-model", default="gemini-3.1-pro-preview", 
+                        help="LLM model for complex conflict resolution")
+    
+    args = parser.parse_args()
+    smart_model = args.smart_model
+
     state = load_state()
     if not state:
         print("No state found. Did Phase 1 run correctly?")
@@ -380,7 +388,7 @@ def main():
     for filepath, entry in state.items():
         if entry["status"] == "pending":
             backup_file(filepath)
-            resolve_file(filepath, entry, patches_content)
+            resolve_file(filepath, entry, patches_content, smart_model)
             save_state(state)
 
     # Phase 2b: Programmatic resolution for special files

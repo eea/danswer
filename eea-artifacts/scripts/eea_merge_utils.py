@@ -46,7 +46,7 @@ def save_state(state):
         json.dump(state, f, indent=2)
 
 
-def run_gemini(prompt, model="gemini-2.5-pro", expect_json=True):
+def run_gemini(prompt, model="gemini-3.1-pro-preview", expect_json=True):
     cmd = ["gemini", "-m", model]
 
     process = subprocess.Popen(

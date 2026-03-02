@@ -96,6 +96,12 @@ To ensure the system is immune to Git conflicts in `package.json` or `pyproject.
 
 The entry point for the pipeline. All scripts live in `eea-artifacts/scripts/`. It takes the target Onyx upstream tag as a CLI parameter (e.g., `python eea-artifacts/scripts/eea_merge_master.py v2.12.1`) and coordinates the execution of all subsequent phases.
 
+**CLI Parameters:**
+
+- `target_tag`: (Required) The Onyx version to merge into the `eea` branch.
+- `--smart-model`: (Optional) The LLM model used for complex AI resolution (default: `gemini-3.1-pro-preview`).
+- `--dumb-model`: (Optional) The LLM model used for context mapping (default: `gemini-3-flash-preview`).
+
 **Pre-flight checks (abort immediately if any fail):**
 
 1. **Clean working tree:** Runs `git status --porcelain` and aborts if there are any uncommitted changes or untracked files. The user must start from a clean state.
@@ -188,6 +194,6 @@ At any point before Phase 5's commit:
 - **Language:** Python 3.x
 - **AI Interface:** `gemini` CLI (called via `subprocess` with `stdin`/`stdout` pipelines). Model selection via `-m` flag.
 - **Models:**
-  - **Heavy (resolution):** `gemini -m "gemini-2.5-pro"` — for conflict resolution requiring complex reasoning.
-  - **Fast (mapping):** `gemini -m "gemini-2.5-flash"` — for the Phase 1 mapping pass and simpler tasks.
+  - **Heavy (resolution):** `gemini-3.1-pro-preview` — for conflict resolution requiring complex reasoning.
+  - **Fast (mapping):** `gemini-3-flash-preview` — for the Phase 1 mapping pass and simpler tasks.
 - **Validators:** `ruff`, `yamllint` (isolated venv), `python -m json.tool` (stdlib), `tsc` (project-level only in Phase 4).

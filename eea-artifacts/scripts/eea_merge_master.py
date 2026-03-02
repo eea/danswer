@@ -62,11 +62,18 @@ def setup_environment():
 
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python eea_merge_master.py <target_tag>")
-        sys.exit(1)
+    import argparse
+    parser = argparse.ArgumentParser(description="EEA Merge Master Orchestrator")
+    parser.add_argument("target_tag", help="Target tag to merge (e.g., v2.12.1)")
+    parser.add_argument("--smart-model", default="gemini-3.1-pro-preview", 
+                        help="LLM model for complex conflict resolution (default: gemini-3.1-pro-preview)")
+    parser.add_argument("--dumb-model", default="gemini-3-flash-preview", 
+                        help="LLM model for fast context mapping (default: gemini-3-flash-preview)")
 
-    target_tag = sys.argv[1]
+    args = parser.parse_args()
+    target_tag = args.target_tag
+    smart_model = args.smart_model
+    dumb_model = args.dumb_model
 
     # Create the full directory structure up front
     os.makedirs(".eea_merge/.tools", exist_ok=True)
@@ -81,7 +88,8 @@ def main():
     # Execute Phase 1
     init_script = os.path.join(SCRIPT_DIR, "eea_merge_init.py")
     print(">>> Phase 1: Setup & Context Mapping")
-    _, _, ret = run_cmd([sys.executable, init_script, target_tag], check=False, capture_output=False)
+    _, _, ret = run_cmd([sys.executable, init_script, target_tag, "--dumb-model", dumb_model], 
+                        check=False, capture_output=False)
     if ret != 0:
         print("Phase 1 failed. Aborting.")
         sys.exit(1)
@@ -89,7 +97,8 @@ def main():
     # Execute Phase 2
     resolve_script = os.path.join(SCRIPT_DIR, "eea_merge_resolve.py")
     print("\n>>> Phase 2: Self-Correcting Resolution Loop")
-    _, _, ret = run_cmd([sys.executable, resolve_script], check=False, capture_output=False)
+    _, _, ret = run_cmd([sys.executable, resolve_script, "--smart-model", smart_model], 
+                        check=False, capture_output=False)
     if ret != 0:
         print("Phase 2 failed. Aborting.")
         sys.exit(1)
