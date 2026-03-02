@@ -94,7 +94,7 @@ To ensure the system is immune to Git conflicts in `package.json` or `pyproject.
 
 ### Phase 0: The Master Orchestrator (`eea_merge_master.py <tag>`)
 
-The entry point for the pipeline. It takes the target Onyx upstream tag as a CLI parameter (e.g., `python eea_merge_master.py v2.12.1`) and coordinates the execution of all subsequent phases.
+The entry point for the pipeline. All scripts live in `eea-artifacts/scripts/`. It takes the target Onyx upstream tag as a CLI parameter (e.g., `python eea-artifacts/scripts/eea_merge_master.py v2.12.1`) and coordinates the execution of all subsequent phases.
 
 **Pre-flight checks (abort immediately if any fail):**
 
