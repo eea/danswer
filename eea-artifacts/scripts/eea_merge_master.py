@@ -9,7 +9,7 @@ if SCRIPT_DIR not in sys.path:
 from eea_merge_utils import run_cmd, check_gemini_available
 
 
-def preflight_checks(target_tag):
+def preflight_checks(target_tag, no_branch_switch=False):
     print("Running pre-flight checks...")
 
     # 1. Clean working tree
@@ -21,7 +21,7 @@ def preflight_checks(target_tag):
     # 2. Source branch
     out, _, _ = run_cmd(["git", "branch", "--show-current"])
     current_branch = out.strip()
-    if current_branch != "eea":
+    if not no_branch_switch and current_branch != "eea":
         print(f"Warning: Current branch is '{current_branch}', not 'eea'.")
         print("Proceeding anyway, but ensure this is correct.")
 
@@ -69,11 +69,14 @@ def main():
                         help="LLM model for complex conflict resolution (default: gemini-3.1-pro-preview)")
     parser.add_argument("--dumb-model", default="gemini-3-flash-preview", 
                         help="LLM model for fast context mapping (default: gemini-3-flash-preview)")
+    parser.add_argument("--no-branch-switch", action="store_true", 
+                        help="Do not create a new branch, use the current one.")
 
     args = parser.parse_args()
     target_tag = args.target_tag
     smart_model = args.smart_model
     dumb_model = args.dumb_model
+    no_branch_switch = args.no_branch_switch
 
     # Create the full directory structure up front
     os.makedirs(".eea_merge/.tools", exist_ok=True)
@@ -82,14 +85,17 @@ def main():
     os.makedirs(".eea_merge/logs", exist_ok=True)
     os.makedirs(".eea_merge/backups", exist_ok=True)
 
-    preflight_checks(target_tag)
+    preflight_checks(target_tag, no_branch_switch=no_branch_switch)
     setup_environment()
 
     # Execute Phase 1
     init_script = os.path.join(SCRIPT_DIR, "eea_merge_init.py")
     print(">>> Phase 1: Setup & Context Mapping")
-    _, _, ret = run_cmd([sys.executable, init_script, target_tag, "--dumb-model", dumb_model], 
-                        check=False, capture_output=False)
+    init_cmd = [sys.executable, init_script, target_tag, "--dumb-model", dumb_model]
+    if no_branch_switch:
+        init_cmd.append("--no-branch-switch")
+    
+    _, _, ret = run_cmd(init_cmd, check=False, capture_output=False)
     if ret != 0:
         print("Phase 1 failed. Aborting.")
         sys.exit(1)

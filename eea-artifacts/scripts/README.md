@@ -27,6 +27,7 @@ python eea-artifacts/scripts/eea_merge_master.py <target_tag>
 - `target_tag`: (Required) The Onyx version to merge (e.g., `v2.12.1`).
 - `--smart-model`: (Optional) The LLM for complex resolution (default: `gemini-3.1-pro-preview`).
 - `--dumb-model`: (Optional) The LLM for mapping (default: `gemini-3-flash-preview`).
+- `--no-branch-switch`: (Optional) Use the current branch instead of creating a new one (e.g., for testing or manual branch management).
 
 ---
 
@@ -35,9 +36,9 @@ python eea-artifacts/scripts/eea_merge_master.py <target_tag>
 If the master script fails, you can resume from specific scripts or re-run them after manual adjustments to `.eea_merge/state.json`.
 
 #### Phase 1: Init (`eea_merge_init.py`)
-Creates a datestamped upgrade branch, initiates the `git merge <tag>`, identifies conflicted files, and maps them to documented EEA patches.
+Creates a datestamped upgrade branch (unless `--no-branch-switch` is used), initiates the `git merge <tag>`, identifies conflicted files, and maps them to documented EEA patches.
 ```bash
-python eea-artifacts/scripts/eea_merge_init.py <target_tag>
+python eea-artifacts/scripts/eea_merge_init.py <target_tag> [--no-branch-switch]
 ```
 
 #### Phase 2: Resolve (`eea_merge_resolve.py`)

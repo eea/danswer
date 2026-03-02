@@ -108,17 +108,24 @@ def main():
     parser.add_argument("target_tag", help="Target tag to merge")
     parser.add_argument("--dumb-model", default="gemini-3-flash-preview", 
                         help="LLM model for context mapping")
+    parser.add_argument("--no-branch-switch", action="store_true", 
+                        help="Do not create a new branch, use the current one.")
     
     args = parser.parse_args()
     target_tag = args.target_tag
     dumb_model = args.dumb_model
+    no_branch_switch = args.no_branch_switch
 
     # 1. Branch Creation
-    datestamp = datetime.datetime.now().strftime("%Y%m%d")
-    branch_name = f"eea-merge-{target_tag}-{datestamp}"
+    if not no_branch_switch:
+        datestamp = datetime.datetime.now().strftime("%Y%m%d")
+        branch_name = f"eea-merge-{target_tag}-{datestamp}"
 
-    print(f"Creating and checking out branch {branch_name}...")
-    run_cmd(["git", "checkout", "-b", branch_name])
+        print(f"Creating and checking out branch {branch_name}...")
+        run_cmd(["git", "checkout", "-b", branch_name])
+    else:
+        out, _, _ = run_cmd(["git", "branch", "--show-current"])
+        print(f"Using current branch: {out.strip()}")
 
     # 2. Git Prep
     print("Setting merge.conflictstyle to diff3...")
