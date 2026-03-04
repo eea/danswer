@@ -36,6 +36,36 @@ if LANGFUSE_HOST is not None:
 
 logger = setup_logger()
 
+
+def get_langfuse_callback_handler():
+    """Return a configured Langfuse LangChain CallbackHandler, or None if credentials are missing.
+
+    The handler is configured with update_trace=True so that the root run_name
+    is propagated to the top-level Langfuse trace name.
+    """
+    if not LANGFUSE_SECRET_KEY or not LANGFUSE_PUBLIC_KEY:
+        return None
+    from langfuse.langchain import CallbackHandler
+    return CallbackHandler(update_trace=True)
+
+
+def get_langfuse_metadata(llm) -> dict:
+    """Extract Langfuse trace attributes from the LLM's model_kwargs metadata.
+
+    Returns a dict with 'langfuse_session_id' and 'langfuse_user_id' keys
+    that the Langfuse CallbackHandler reads via
+    _parse_langfuse_trace_attributes_from_metadata().
+    The session_id format mirrors fast_chat_turn.py: "{session_id}:{trace_id}".
+    """
+    try:
+        meta = llm._model_kwargs.get("metadata", {})
+    except Exception:
+        meta = {}
+    return {
+        "langfuse_session_id": f"{meta.get('session_id', 'missing')}:{meta.get('trace_id', 'missing')}",
+        "langfuse_user_id": meta.get("user_id", "missing"),
+    }
+
 def test_url(rp, url):
     if not rp:
         return True

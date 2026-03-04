@@ -3,7 +3,6 @@ from typing import cast
 
 from langchain_core.runnables.schema import CustomStreamEvent
 from langchain_core.runnables.schema import StreamEvent
-from langfuse.langchain import CallbackHandler
 from langgraph.graph.state import CompiledStateGraph
 
 from onyx.agents.agent_search.dc_search_analysis.graph_builder import (
@@ -19,6 +18,8 @@ from onyx.chat.models import AnswerStream
 from onyx.configs.app_configs import LANGFUSE_PUBLIC_KEY
 from onyx.configs.app_configs import LANGFUSE_SECRET_KEY
 from onyx.server.query_and_chat.streaming_models import Packet
+from onyx.utils.eea_utils import get_langfuse_callback_handler
+from onyx.utils.eea_utils import get_langfuse_metadata
 from onyx.utils.logger import setup_logger
 
 
@@ -32,14 +33,19 @@ def manage_sync_streaming(
     graph_input: GraphInput,
 ) -> Iterable[StreamEvent]:
     message_id = config.persistence.message_id if config.persistence else None
-    callbacks: list[CallbackHandler] = []
+    callbacks = []
     if LANGFUSE_SECRET_KEY and LANGFUSE_PUBLIC_KEY:
-        callbacks.append(CallbackHandler())
+        callbacks.append(get_langfuse_callback_handler())
     for event in compiled_graph.stream(
         stream_mode="custom",
         input=graph_input,
         config={
-            "metadata": {"config": config, "thread_id": str(message_id)},
+            "run_name": config.inputs.prompt_builder.raw_user_query,
+            "metadata": {
+                "config": config,
+                "thread_id": str(message_id),
+                **get_langfuse_metadata(config.tooling.primary_llm),
+            },
             "callbacks": callbacks,  # type: ignore
         },
     ):
