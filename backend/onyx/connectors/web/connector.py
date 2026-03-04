@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
 from oauthlib.oauth2 import BackendApplicationClient
+from playwright.sync_api import Browser
 from playwright.sync_api import BrowserContext
 from playwright.sync_api import Playwright
 from playwright.sync_api import sync_playwright
@@ -78,11 +79,12 @@ class ScrapeSessionContext:
         self.needs_retry: bool = False
 
         self.playwright: Playwright | None = None
+        self.playwright_browser: Browser | None = None
         self.playwright_context: BrowserContext | None = None
 
     def initialize(self) -> None:
         self.stop()
-        self.playwright, self.playwright_context = start_playwright()
+        self.playwright, self.playwright_browser, self.playwright_context = start_playwright()
 
     def stop(self) -> None:
         if self.playwright_context:
@@ -300,7 +302,7 @@ def is_pdf_content(response: requests.Response) -> bool:
     return any(pdf_type in content_type for pdf_type in PDF_MIME_TYPES)
 
 
-def start_playwright() -> Tuple[Playwright, BrowserContext]:
+def start_playwright() -> Tuple[Playwright, Browser, BrowserContext]:
     playwright = sync_playwright().start()
 
     # Launch browser with more realistic settings
@@ -371,7 +373,7 @@ def start_playwright() -> Tuple[Playwright, BrowserContext]:
         )
         context.set_extra_http_headers({"Authorization": "Bearer {}".format(token["access_token"])})
 
-    return playwright, context
+    return playwright, browser, context
 
 
 def abort_unnecessary_resources(route: Route, request: Request) -> None:
