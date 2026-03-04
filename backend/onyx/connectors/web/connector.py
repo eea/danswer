@@ -91,6 +91,10 @@ class ScrapeSessionContext:
             self.playwright_context.close()
             self.playwright_context = None
 
+        if self.playwright_browser:
+            self.playwright_browser.close()
+            self.playwright_browser = None
+
         if self.playwright:
             self.playwright.stop()
             self.playwright = None
