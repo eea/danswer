@@ -259,9 +259,9 @@ def _fast_chat_turn_core(
     except:
         trace_name = "fast_chat_turn"
     try:
-        trace_session_is = dependencies.llm._model_kwargs['metadata']['session_id']
+        trace_session_id = dependencies.llm._model_kwargs['metadata']['session_id']
     except:
-        trace_session_is = "missing"
+        trace_session_id = "missing"
     try:
         trace_user_id = dependencies.llm._model_kwargs['metadata']['user_id']
     except:
@@ -273,7 +273,7 @@ def _fast_chat_turn_core(
 
     with trace(trace_name, metadata={"test":"test"}):
         with using_attributes(
-            session_id=f"{trace_session_is}:{trace_trace_id}",
+            session_id=f"{trace_session_id}:{trace_trace_id}",
             user_id=trace_user_id,
         ):
             _run_agent_loop(
