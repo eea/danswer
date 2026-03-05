@@ -50,6 +50,8 @@ RUN apt-get update && \
         libuuid1 \
         libxmlsec1-dev \
         pkg-config \
+        procps \
+        tini \
         gcc && \
     rm -rf /var/lib/apt/lists/* && \
     apt-get clean
