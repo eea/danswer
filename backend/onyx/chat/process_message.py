@@ -654,6 +654,7 @@ def handle_stream_message_objects(
                 skip_clarification=skip_clarification,
                 user_identity=user_identity,
                 chat_session_id=str(chat_session.id),
+                user_message_id=user_message.id,
             )
         else:
             yield from run_chat_loop_with_state_containers(
@@ -675,6 +676,7 @@ def handle_stream_message_objects(
                 user_identity=user_identity,
                 chat_session_id=str(chat_session.id),
                 include_citations=new_msg_req.include_citations,
+                user_message_id=user_message.id,
             )
 
     except ValueError as e:

@@ -54,6 +54,8 @@ from onyx.tools.tool_implementations.web_search.utils import extract_url_snippet
 from onyx.tools.tool_implementations.web_search.web_search_tool import WebSearchTool
 from onyx.tools.tool_runner import run_tool_calls
 from onyx.tracing.framework.create import trace
+from onyx.utils.eea_utils import get_eea_user_id
+from onyx.utils.eea_utils import get_langfuse_metadata
 from onyx.utils.logger import setup_logger
 from shared_configs.contextvars import get_current_tenant_id
 
@@ -401,13 +403,31 @@ def run_llm_loop(
     user_identity: LLMUserIdentity | None = None,
     chat_session_id: str | None = None,
     include_citations: bool = True,
+    user_message_id: int | None = None,
 ) -> None:
+    # eea: extract trace name and enhanced metadata
+    user_query = "run_llm_loop"
+    if simple_chat_history:
+        for msg in reversed(simple_chat_history):
+            if msg.message_type == MessageType.USER:
+                user_query = msg.message
+                break
+
+    trace_session_id = (
+        f"{chat_session_id}:{user_message_id}"
+        if chat_session_id and user_message_id
+        else chat_session_id
+    )
+
     with trace(
-        "run_llm_loop",
-        group_id=chat_session_id,
+        user_query[:200],
+        group_id=trace_session_id,
         metadata={
             "tenant_id": get_current_tenant_id(),
-            "chat_session_id": chat_session_id,
+            "chat_session_id": trace_session_id,
+            "user_id": get_eea_user_id(user_identity, persona),
+            "model_name": llm.config.model_name,
+            **get_langfuse_metadata(llm),
         },
     ):
         # Fix some LiteLLM issues,

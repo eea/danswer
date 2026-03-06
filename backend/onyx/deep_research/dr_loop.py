@@ -67,6 +67,8 @@ from onyx.tools.tool_implementations.search.search_tool import SearchTool
 from onyx.tools.tool_implementations.web_search.web_search_tool import WebSearchTool
 from onyx.tracing.framework.create import function_span
 from onyx.tracing.framework.create import trace
+from onyx.utils.eea_utils import get_eea_user_id
+from onyx.utils.eea_utils import get_langfuse_metadata
 from onyx.utils.logger import setup_logger
 from onyx.utils.timing import log_function_time
 from shared_configs.contextvars import get_current_tenant_id
@@ -194,13 +196,31 @@ def run_deep_research_llm_loop(
     skip_clarification: bool = False,
     user_identity: LLMUserIdentity | None = None,
     chat_session_id: str | None = None,
+    user_message_id: int | None = None,
 ) -> None:
+    # eea: extract trace name and enhanced metadata
+    user_query = "run_deep_research_llm_loop"
+    if simple_chat_history:
+        for msg in reversed(simple_chat_history):
+            if msg.message_type == MessageType.USER:
+                user_query = msg.message
+                break
+
+    trace_session_id = (
+        f"{chat_session_id}:{user_message_id}"
+        if chat_session_id and user_message_id
+        else chat_session_id
+    )
+
     with trace(
-        "run_deep_research_llm_loop",
-        group_id=chat_session_id,
+        user_query[:200],
+        group_id=trace_session_id,
         metadata={
             "tenant_id": get_current_tenant_id(),
-            "chat_session_id": chat_session_id,
+            "chat_session_id": trace_session_id,
+            "user_id": get_eea_user_id(user_identity, None), # Persona is not easily available here
+            "model_name": llm.config.model_name,
+            **get_langfuse_metadata(llm),
         },
     ):
         # Here for lazy load LiteLLM
