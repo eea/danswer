@@ -1216,6 +1216,8 @@ tzdata==2025.2
     #   tzlocal
 tzlocal==5.3.1
     # via dateparser
+ultimate-sitemap-parser==0.5
+    # via onyx
 unstructured==0.18.27
     # via onyx
 unstructured-client==0.42.6

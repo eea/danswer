@@ -448,6 +448,8 @@ scipy==1.16.3
     #   sentence-transformers
 sentence-transformers==4.0.2
     # via onyx
+sentencepiece==0.2.1
+    # via onyx
 sentry-sdk==2.14.0
     # via onyx
 setuptools==80.9.0 ; python_full_version >= '3.12'
