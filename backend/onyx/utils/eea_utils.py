@@ -25,13 +25,17 @@ LANGFUSE_HOST = os.environ.get("LANGFUSE_HOST", None)
 SOER_LOGIN = os.environ.get("SOER_LOGIN")
 SOER_PASSWORD = os.environ.get("SOER_PASSWORD")
 
+# Prevent large batches causing 413 Request Entity Too Large at the reverse proxy
+os.environ["LANGFUSE_FLUSH_AT"] = "1"
+
 langfuse = None
 
 if LANGFUSE_HOST is not None:
     langfuse = Langfuse(
         secret_key=os.environ["LANGFUSE_SECRET_KEY"],
         public_key=os.environ["LANGFUSE_PUBLIC_KEY"],
-        host=os.environ["LANGFUSE_HOST"]
+        host=os.environ["LANGFUSE_HOST"],
+        flush_at=1,
     )
 
 logger = setup_logger()
