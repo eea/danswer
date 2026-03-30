@@ -2,22 +2,12 @@
 
 import React, { useState } from "react";
 import { cn } from "@/lib/utils";
-
-const rootClasses = (checked?: boolean) =>
-  ({
-    main: checked
-      ? ["bg-action-link-05", "hover:bg-action-link-04"]
-      : ["bg-background-tint-03", "hover:bg-background-tint-04"],
-    disabled: checked ? ["bg-action-link-03"] : ["bg-background-neutral-04"],
-  }) as const;
-
-const thumbClasses = {
-  main: ["bg-background-neutral-light-00"],
-  disabled: ["bg-background-neutral-03"],
-} as const;
+import { WithoutStyles } from "@/types";
 
 export interface SwitchProps
-  extends Omit<React.ComponentPropsWithoutRef<"button">, "onChange"> {
+  extends WithoutStyles<
+    Omit<React.ComponentPropsWithoutRef<"button">, "onChange">
+  > {
   // Switch variants
   disabled?: boolean;
 
@@ -25,6 +15,7 @@ export interface SwitchProps
   defaultChecked?: boolean;
   onCheckedChange?: (checked: boolean) => void;
 }
+
 const Switch = React.forwardRef<HTMLButtonElement, SwitchProps>(
   (
     {
@@ -34,7 +25,6 @@ const Switch = React.forwardRef<HTMLButtonElement, SwitchProps>(
       defaultChecked,
       onCheckedChange,
 
-      className,
       onClick,
       ...props
     },
@@ -57,8 +47,6 @@ const Switch = React.forwardRef<HTMLButtonElement, SwitchProps>(
       onCheckedChange?.(newChecked);
     }
 
-    const variant = disabled ? "disabled" : "main";
-
     return (
       <button
         ref={ref}
@@ -67,11 +55,8 @@ const Switch = React.forwardRef<HTMLButtonElement, SwitchProps>(
         aria-checked={checked}
         data-state={checked ? "checked" : "unchecked"}
         className={cn(
-          "peer inline-flex h-[1.125rem] w-[2rem] shrink-0 cursor-pointer items-center rounded-full transition-colors focus-visible:outline-none disabled:cursor-not-allowed",
-          rootClasses(checked)[variant],
-          "border border-transparent",
-          "focus-within:focus-shadow focus-within:hover:!border-border-01",
-          className
+          "peer inline-flex h-[1.125rem] w-[2rem] shrink-0 cursor-pointer items-center rounded-full transition-colors focus-visible:outline-none",
+          disabled ? "switch-disabled" : "switch-normal"
         )}
         disabled={disabled}
         onClick={handleClick}
@@ -81,7 +66,7 @@ const Switch = React.forwardRef<HTMLButtonElement, SwitchProps>(
           data-state={checked ? "checked" : "unchecked"}
           className={cn(
             "pointer-events-none block h-[0.875rem] w-[0.875rem] rounded-full ring-0 transition-transform data-[state=checked]:translate-x-[15px] data-[state=unchecked]:translate-x-[1px]",
-            thumbClasses[variant]
+            disabled ? "switch-thumb-disabled" : "switch-thumb"
           )}
         />
       </button>

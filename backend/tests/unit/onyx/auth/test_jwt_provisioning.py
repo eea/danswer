@@ -43,13 +43,13 @@ async def test_get_or_create_user_updates_expiry(
     existing_user = MagicMock()
     existing_user.email = email
     existing_user.oidc_expiry = None
-    existing_user.role.is_web_login.return_value = True  # type: ignore[attr-defined]
+    existing_user.role.is_web_login.return_value = True
 
     manager_holder: dict[str, Any] = {}
 
     class StubUserManager:
         def __init__(self, _user_db: object) -> None:
-            manager_holder["instance"] = self  # type: ignore[assignment]
+            manager_holder["instance"] = self
             self.user_db = MagicMock()
             self.user_db.update = AsyncMock()
 
@@ -61,7 +61,7 @@ async def test_get_or_create_user_updates_expiry(
     monkeypatch.setattr(
         users_module,
         "SQLAlchemyUserAdminDB",
-        lambda *args, **kwargs: MagicMock(),
+        lambda *args, **kwargs: MagicMock(),  # noqa: ARG005
     )
 
     result = await users_module._get_or_create_user_from_jwt(
@@ -73,7 +73,7 @@ async def test_get_or_create_user_updates_expiry(
     assert domain_checked["email"] == email
     expected_expiry = datetime.fromtimestamp(exp_value, tz=timezone.utc)
     instance = manager_holder["instance"]
-    instance.user_db.update.assert_awaited_once_with(  # type: ignore[attr-defined]
+    instance.user_db.update.assert_awaited_once_with(
         existing_user, {"oidc_expiry": expected_expiry}
     )
     assert existing_user.oidc_expiry == expected_expiry
@@ -94,7 +94,7 @@ async def test_get_or_create_user_skips_inactive(
     existing_user = MagicMock()
     existing_user.email = email
     existing_user.is_active = False
-    existing_user.role.is_web_login.return_value = True  # type: ignore[attr-defined]
+    existing_user.role.is_web_login.return_value = True
 
     class StubUserManager:
         def __init__(self, _user_db: object) -> None:
@@ -109,7 +109,7 @@ async def test_get_or_create_user_skips_inactive(
     monkeypatch.setattr(
         users_module,
         "SQLAlchemyUserAdminDB",
-        lambda *args, **kwargs: MagicMock(),
+        lambda *args, **kwargs: MagicMock(),  # noqa: ARG005
     )
 
     result = await users_module._get_or_create_user_from_jwt(
@@ -134,7 +134,7 @@ async def test_get_or_create_user_handles_race_conditions(
     inactive_user = MagicMock()
     inactive_user.email = email
     inactive_user.is_active = False
-    inactive_user.role.is_web_login.return_value = True  # type: ignore[attr-defined]
+    inactive_user.role.is_web_login.return_value = True
 
     class StubUserManager:
         def __init__(self, _user_db: object) -> None:
@@ -150,14 +150,14 @@ async def test_get_or_create_user_handles_race_conditions(
             self.get_calls += 1
             return inactive_user
 
-        async def create(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        async def create(self, *args: Any, **kwargs: Any) -> MagicMock:  # noqa: ARG002
             raise users_module.exceptions.UserAlreadyExists()
 
     monkeypatch.setattr(users_module, "UserManager", StubUserManager)
     monkeypatch.setattr(
         users_module,
         "SQLAlchemyUserAdminDB",
-        lambda *args, **kwargs: MagicMock(),
+        lambda *args, **kwargs: MagicMock(),  # noqa: ARG005
     )
 
     result = await users_module._get_or_create_user_from_jwt(
@@ -177,7 +177,7 @@ async def test_get_or_create_user_provisions_new_user(
     created_user = MagicMock()
     created_user.email = email
     created_user.oidc_expiry = None
-    created_user.role.is_web_login.return_value = True  # type: ignore[attr-defined]
+    created_user.role.is_web_login.return_value = True
 
     monkeypatch.setattr(users_module, "TRACK_EXTERNAL_IDP_EXPIRY", False)
     monkeypatch.setattr(users_module, "generate_password", lambda: "TempPass123!")
@@ -195,7 +195,7 @@ async def test_get_or_create_user_provisions_new_user(
         async def get_by_email(self, _email: str) -> MagicMock:
             raise users_module.exceptions.UserNotExists()
 
-        async def create(self, user_create, safe=False, request=None):  # type: ignore[no-untyped-def]
+        async def create(self, user_create, safe=False, request=None):  # type: ignore[no-untyped-def]  # noqa: ARG002
             recorded["user_create"] = user_create
             recorded["request"] = request
             return created_user
@@ -204,7 +204,7 @@ async def test_get_or_create_user_provisions_new_user(
     monkeypatch.setattr(
         users_module,
         "SQLAlchemyUserAdminDB",
-        lambda *args, **kwargs: MagicMock(),
+        lambda *args, **kwargs: MagicMock(),  # noqa: ARG005
     )
 
     request = MagicMock()

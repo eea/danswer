@@ -13,6 +13,9 @@ from tests.integration.common_utils.constants import GENERAL_HEADERS
 from tests.integration.common_utils.managers.api_key import APIKeyManager
 from tests.integration.common_utils.managers.cc_pair import CCPairManager
 from tests.integration.common_utils.managers.document import DocumentManager
+from tests.integration.common_utils.managers.image_generation import (
+    ImageGenerationConfigManager,
+)
 from tests.integration.common_utils.managers.llm_provider import LLMProviderManager
 from tests.integration.common_utils.managers.user import build_email
 from tests.integration.common_utils.managers.user import DEFAULT_PASSWORD
@@ -20,6 +23,7 @@ from tests.integration.common_utils.managers.user import UserManager
 from tests.integration.common_utils.reset import reset_all
 from tests.integration.common_utils.reset import reset_all_multitenant
 from tests.integration.common_utils.test_models import DATestAPIKey
+from tests.integration.common_utils.test_models import DATestImageGenerationConfig
 from tests.integration.common_utils.test_models import DATestLLMProvider
 from tests.integration.common_utils.test_models import DATestUser
 from tests.integration.common_utils.test_models import SimpleTestDocument
@@ -80,7 +84,7 @@ def reset() -> None:
 
 
 @pytest.fixture
-def new_admin_user(reset: None) -> DATestUser | None:
+def new_admin_user(reset: None) -> DATestUser | None:  # noqa: ARG001
     try:
         return UserManager.create(name=ADMIN_USER_NAME)
     except Exception:
@@ -128,7 +132,7 @@ def admin_user() -> DATestUser:
 def basic_user(
     # make sure the admin user exists first to ensure this new user
     # gets the BASIC role
-    admin_user: DATestUser,
+    admin_user: DATestUser,  # noqa: ARG001
 ) -> DATestUser:
     try:
         user = UserManager.create(name=BASIC_USER_NAME)
@@ -179,6 +183,17 @@ def llm_provider(admin_user: DATestUser | None) -> DATestLLMProvider:
 
 
 @pytest.fixture
+def image_generation_config(
+    admin_user: DATestUser | None,
+) -> DATestImageGenerationConfig:
+    """Create a default image generation config for tests."""
+    return ImageGenerationConfigManager.create(
+        is_default=True,
+        user_performing_action=admin_user,
+    )
+
+
+@pytest.fixture
 def document_builder(admin_user: DATestUser) -> DocumentBuilderType:
     api_key: DATestAPIKey = APIKeyManager.create(
         user_performing_action=admin_user,
@@ -206,11 +221,13 @@ def document_builder(admin_user: DATestUser) -> DocumentBuilderType:
     return _document_builder
 
 
-def pytest_runtest_logstart(nodeid: str, location: tuple[str, int | None, str]) -> None:
+def pytest_runtest_logstart(
+    nodeid: str, location: tuple[str, int | None, str]  # noqa: ARG001
+) -> None:
     print(f"\nTest start: {nodeid}")
 
 
 def pytest_runtest_logfinish(
-    nodeid: str, location: tuple[str, int | None, str]
+    nodeid: str, location: tuple[str, int | None, str]  # noqa: ARG001
 ) -> None:
     print(f"\nTest end: {nodeid}")

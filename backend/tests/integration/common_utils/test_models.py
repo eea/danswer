@@ -7,17 +7,18 @@ from uuid import UUID
 from pydantic import BaseModel
 from pydantic import Field
 
-from onyx.agents.agent_search.dr.enums import ResearchAnswerPurpose
 from onyx.auth.schemas import UserRole
 from onyx.configs.constants import MessageType
 from onyx.configs.constants import QAFeedbackType
 from onyx.context.search.enums import RecencyBiasSetting
 from onyx.context.search.models import SavedSearchDoc
+from onyx.context.search.models import SearchDoc
 from onyx.db.enums import AccessType
 from onyx.server.documents.models import DocumentSource
 from onyx.server.documents.models import IndexAttemptSnapshot
 from onyx.server.documents.models import IndexingStatus
 from onyx.server.documents.models import InputType
+from onyx.server.query_and_chat.streaming_models import GeneratedImage
 
 """
 These data models are used to represent the data on the testing side of things.
@@ -117,10 +118,20 @@ class DATestLLMProvider(BaseModel):
     api_key: str
     default_model_name: str
     is_public: bool
+    is_auto_mode: bool = False
     groups: list[int]
     personas: list[int]
     api_base: str | None = None
     api_version: str | None = None
+
+
+class DATestImageGenerationConfig(BaseModel):
+    image_provider_id: str
+    model_configuration_id: int
+    model_name: str
+    llm_provider_id: int
+    llm_provider_name: str
+    is_default: bool
 
 
 class DATestDocumentSet(BaseModel):
@@ -163,7 +174,6 @@ class DATestChatMessage(BaseModel):
     chat_session_id: UUID
     parent_message_id: int | None
     message: str
-    research_answer_purpose: ResearchAnswerPurpose | None = None
     message_type: MessageType | None = None
     files: list | None = None
 
@@ -184,19 +194,18 @@ class ToolName(str, Enum):
     IMAGE_GENERATION = "generate_image"
 
 
-class GeneratedImage(BaseModel):
-    file_id: str
-    url: str
-    revised_prompt: str
-    shape: str | None = None
-
-
 class ToolResult(BaseModel):
     tool_name: ToolName
 
     queries: list[str] = Field(default_factory=list)
     documents: list[SavedSearchDoc] = Field(default_factory=list)
     images: list[GeneratedImage] = Field(default_factory=list)
+
+
+class ToolCallDebug(BaseModel):
+    tool_call_id: str
+    tool_name: str
+    tool_args: dict[str, Any]
 
 
 class ErrorResponse(BaseModel):
@@ -207,8 +216,9 @@ class ErrorResponse(BaseModel):
 class StreamedResponse(BaseModel):
     full_message: str
     assistant_message_id: int
-    top_documents: list[SavedSearchDoc]
+    top_documents: list[SearchDoc]
     used_tools: list[ToolResult]
+    tool_call_debug: list[ToolCallDebug] = Field(default_factory=list)
     error: ErrorResponse | None = None
 
     # Track heartbeat packets for image generation and other tools
@@ -262,3 +272,38 @@ class DATestIndexAttempt:
             ),
             time_updated=datetime.fromisoformat(index_attempt.time_updated),
         )
+
+
+class DATestTool(BaseModel):
+    id: int
+    name: str
+    description: str
+    display_name: str
+    in_code_tool_id: str | None
+
+
+# Discord Bot Models
+class DATestDiscordGuildConfig(BaseModel):
+    """Discord guild config model for testing."""
+
+    id: int
+    registration_key: str | None = None  # Only present on creation
+    guild_id: int | None = None
+    guild_name: str | None = None
+    enabled: bool = True
+    default_persona_id: int | None = None
+
+
+class DATestDiscordChannelConfig(BaseModel):
+    """Discord channel config model for testing."""
+
+    id: int
+    guild_config_id: int
+    channel_id: int
+    channel_name: str
+    channel_type: str
+    is_private: bool
+    enabled: bool = False
+    thread_only_mode: bool = False
+    require_bot_invocation: bool = True
+    persona_override_id: int | None = None

@@ -2,8 +2,13 @@ import copy
 from datetime import timedelta
 from typing import Any
 
+from celery.schedules import crontab
+
+from onyx.configs.app_configs import AUTO_LLM_CONFIG_URL
+from onyx.configs.app_configs import AUTO_LLM_UPDATE_INTERVAL_SECONDS
+from onyx.configs.app_configs import ENABLE_OPENSEARCH_INDEXING_FOR_ONYX
 from onyx.configs.app_configs import ENTERPRISE_EDITION_ENABLED
-from onyx.configs.app_configs import LLM_MODEL_UPDATE_API_URL
+from onyx.configs.app_configs import SCHEDULED_EVAL_DATASET_NAMES
 from onyx.configs.constants import ONYX_CLOUD_CELERY_TASK_PREFIX
 from onyx.configs.constants import OnyxCeleryPriority
 from onyx.configs.constants import OnyxCeleryQueues
@@ -50,34 +55,6 @@ beat_task_templates: list[dict] = [
         "schedule": timedelta(seconds=20),
         "options": {
             "priority": OnyxCeleryPriority.MEDIUM,
-            "expires": BEAT_EXPIRES_DEFAULT,
-        },
-    },
-    {
-        "name": "user-file-docid-migration",
-        "task": OnyxCeleryTask.USER_FILE_DOCID_MIGRATION,
-        "schedule": timedelta(minutes=10),
-        "options": {
-            "priority": OnyxCeleryPriority.HIGH,
-            "expires": BEAT_EXPIRES_DEFAULT,
-            "queue": OnyxCeleryQueues.USER_FILES_INDEXING,
-        },
-    },
-    {
-        "name": "check-for-kg-processing",
-        "task": OnyxCeleryTask.CHECK_KG_PROCESSING,
-        "schedule": timedelta(seconds=60),
-        "options": {
-            "priority": OnyxCeleryPriority.MEDIUM,
-            "expires": BEAT_EXPIRES_DEFAULT,
-        },
-    },
-    {
-        "name": "check-for-kg-processing-clustering-only",
-        "task": OnyxCeleryTask.CHECK_KG_PROCESSING_CLUSTERING_ONLY,
-        "schedule": timedelta(seconds=600),
-        "options": {
-            "priority": OnyxCeleryPriority.LOW,
             "expires": BEAT_EXPIRES_DEFAULT,
         },
     },
@@ -136,6 +113,15 @@ beat_task_templates: list[dict] = [
         },
     },
     {
+        "name": "check-for-hierarchy-fetching",
+        "task": OnyxCeleryTask.CHECK_FOR_HIERARCHY_FETCHING,
+        "schedule": timedelta(hours=1),  # Check hourly, but only fetch once per day
+        "options": {
+            "priority": OnyxCeleryPriority.LOW,
+            "expires": BEAT_EXPIRES_DEFAULT,
+        },
+    },
+    {
         "name": "monitor-background-processes",
         "task": OnyxCeleryTask.MONITOR_BACKGROUND_PROCESSES,
         "schedule": timedelta(minutes=5),
@@ -143,6 +129,27 @@ beat_task_templates: list[dict] = [
             "priority": OnyxCeleryPriority.LOW,
             "expires": BEAT_EXPIRES_DEFAULT,
             "queue": OnyxCeleryQueues.MONITORING,
+        },
+    },
+    # Sandbox cleanup tasks
+    {
+        "name": "cleanup-idle-sandboxes",
+        "task": OnyxCeleryTask.CLEANUP_IDLE_SANDBOXES,
+        "schedule": timedelta(minutes=1),
+        "options": {
+            "priority": OnyxCeleryPriority.LOW,
+            "expires": BEAT_EXPIRES_DEFAULT,
+            "queue": OnyxCeleryQueues.SANDBOX,
+        },
+    },
+    {
+        "name": "cleanup-old-snapshots",
+        "task": OnyxCeleryTask.CLEANUP_OLD_SNAPSHOTS,
+        "schedule": timedelta(hours=24),
+        "options": {
+            "priority": OnyxCeleryPriority.LOW,
+            "expires": BEAT_EXPIRES_DEFAULT,
+            "queue": OnyxCeleryQueues.SANDBOX,
         },
     },
 ]
@@ -171,15 +178,69 @@ if ENTERPRISE_EDITION_ENABLED:
         ]
     )
 
-# Only add the LLM model update task if the API URL is configured
-if LLM_MODEL_UPDATE_API_URL:
+# Add the Auto LLM update task if the config URL is set (has a default)
+if AUTO_LLM_CONFIG_URL:
     beat_task_templates.append(
         {
-            "name": "check-for-llm-model-update",
-            "task": OnyxCeleryTask.CHECK_FOR_LLM_MODEL_UPDATE,
-            "schedule": timedelta(hours=1),  # Check every hour
+            "name": "check-for-auto-llm-update",
+            "task": OnyxCeleryTask.CHECK_FOR_AUTO_LLM_UPDATE,
+            "schedule": timedelta(seconds=AUTO_LLM_UPDATE_INTERVAL_SECONDS),
             "options": {
                 "priority": OnyxCeleryPriority.LOW,
+                "expires": BEAT_EXPIRES_DEFAULT,
+            },
+        }
+    )
+
+# Add scheduled eval task if datasets are configured
+if SCHEDULED_EVAL_DATASET_NAMES:
+    beat_task_templates.append(
+        {
+            "name": "scheduled-eval-pipeline",
+            "task": OnyxCeleryTask.SCHEDULED_EVAL_TASK,
+            # run every Sunday at midnight UTC
+            "schedule": crontab(
+                hour=0,
+                minute=0,
+                day_of_week=0,
+            ),
+            "options": {
+                "priority": OnyxCeleryPriority.LOW,
+                "expires": BEAT_EXPIRES_DEFAULT,
+            },
+        }
+    )
+
+# Add OpenSearch migration task if enabled.
+if ENABLE_OPENSEARCH_INDEXING_FOR_ONYX:
+    beat_task_templates.append(
+        {
+            "name": "check-for-documents-for-opensearch-migration",
+            "task": OnyxCeleryTask.CHECK_FOR_DOCUMENTS_FOR_OPENSEARCH_MIGRATION_TASK,
+            # Try to enqueue an invocation of this task with this frequency.
+            "schedule": timedelta(seconds=120),  # 2 minutes
+            "options": {
+                "priority": OnyxCeleryPriority.LOW,
+                # If the task was not dequeued in this time, revoke it.
+                "expires": BEAT_EXPIRES_DEFAULT,
+            },
+        }
+    )
+    beat_task_templates.append(
+        {
+            "name": "migrate-documents-from-vespa-to-opensearch",
+            "task": OnyxCeleryTask.MIGRATE_DOCUMENTS_FROM_VESPA_TO_OPENSEARCH_TASK,
+            # Try to enqueue an invocation of this task with this frequency.
+            # NOTE: If MIGRATION_TASK_SOFT_TIME_LIMIT_S is greater than this
+            # value and the task is maximally busy, we can expect to see some
+            # enqueued tasks be revoked over time. This is ok; by erring on the
+            # side of "there will probably always be at least one task of this
+            # type in the queue", we are minimizing this task's idleness while
+            # still giving chances for other tasks to execute.
+            "schedule": timedelta(seconds=120),  # 2 minutes
+            "options": {
+                "priority": OnyxCeleryPriority.LOW,
+                # If the task was not dequeued in this time, revoke it.
                 "expires": BEAT_EXPIRES_DEFAULT,
             },
         }

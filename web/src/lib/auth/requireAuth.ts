@@ -4,6 +4,7 @@ import {
   getAuthTypeMetadataSS,
   getCurrentUserSS,
 } from "@/lib/userSS";
+import { AuthType } from "@/lib/constants";
 
 /**
  * Result of an authentication check.
@@ -46,10 +47,8 @@ export async function requireAuth(): Promise<AuthCheckResult> {
     console.log(`Failed to fetch auth information - ${e}`);
   }
 
-  const authDisabled = authTypeMetadata?.authType === "disabled";
-
-  // If auth is not disabled and user is not logged in, redirect to login
-  if (!authDisabled && !user) {
+  // If user is not logged in, redirect to login
+  if (!user) {
     return {
       user,
       authTypeMetadata,
@@ -106,14 +105,13 @@ export async function requireAdminAuth(): Promise<AuthCheckResult> {
   }
 
   const { user, authTypeMetadata } = authResult;
-  const authDisabled = authTypeMetadata?.authType === "disabled";
 
-  // Check if user has an allowed role (only if auth is not disabled)
-  if (!authDisabled && user && !ADMIN_ALLOWED_ROLES.includes(user.role)) {
+  // Check if user has an allowed role
+  if (user && !ADMIN_ALLOWED_ROLES.includes(user.role)) {
     return {
       user,
       authTypeMetadata,
-      redirect: "/chat",
+      redirect: "/app",
     };
   }
 

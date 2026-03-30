@@ -14,12 +14,12 @@ from onyx.connectors.cross_connector_utils.miscellaneous_utils import (
 from onyx.connectors.interfaces import GenerateDocumentsOutput
 from onyx.connectors.interfaces import LoadConnector
 from onyx.connectors.models import Document
+from onyx.connectors.models import HierarchyNode
 from onyx.connectors.models import ImageSection
 from onyx.connectors.models import TextSection
 from onyx.file_processing.extract_file_text import extract_text_and_images
 from onyx.file_processing.extract_file_text import get_file_ext
-from onyx.file_processing.extract_file_text import is_accepted_file_ext
-from onyx.file_processing.extract_file_text import OnyxExtensionType
+from onyx.file_processing.file_types import OnyxFileExtensions
 from onyx.file_processing.image_utils import store_image_and_create_section
 from onyx.file_store.file_store import get_default_file_store
 from onyx.utils.logger import setup_logger
@@ -90,7 +90,7 @@ def _process_file(
     # Get file extension and determine file type
     extension = get_file_ext(file_name)
 
-    if not is_accepted_file_ext(extension, OnyxExtensionType.All):
+    if extension not in OnyxFileExtensions.ALL_ALLOWED_EXTENSIONS:
         logger.warning(
             f"Skipping file '{file_name}' with unrecognized extension '{extension}'"
         )
@@ -111,7 +111,7 @@ def _process_file(
     title = metadata.get("title") or file_display_name
 
     # 1) If the file itself is an image, handle that scenario quickly
-    if extension in LoadConnector.IMAGE_EXTENSIONS:
+    if extension in OnyxFileExtensions.IMAGE_EXTENSIONS:
         # Read the image data
         image_data = file.read()
         if not image_data:
@@ -155,7 +155,7 @@ def _process_file(
         content_type=file_type,
     )
 
-    # Each file may have file-specific ONYX_METADATA https://docs.onyx.app/admin/connectors/official/file
+    # Each file may have file-specific ONYX_METADATA https://docs.onyx.app/admins/connectors/official/file
     # If so, we should add it to any metadata processed so far
     if extraction_result.metadata:
         logger.debug(
@@ -239,7 +239,7 @@ class LocalFileConnector(LoadConnector):
     def __init__(
         self,
         file_locations: list[Path | str],
-        file_names: list[str] | None = None,
+        file_names: list[str] | None = None,  # noqa: ARG002
         zip_metadata: dict[str, Any] | None = None,
         batch_size: int = INDEX_BATCH_SIZE,
     ) -> None:
@@ -263,7 +263,7 @@ class LocalFileConnector(LoadConnector):
         Iterates over each file path, fetches from Postgres, tries to parse text
         or images, and yields Document batches.
         """
-        documents: list[Document] = []
+        documents: list[Document | HierarchyNode] = []
 
         for file_id in self.file_locations:
             file_store = get_default_file_store()

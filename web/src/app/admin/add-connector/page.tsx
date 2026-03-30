@@ -1,6 +1,5 @@
 "use client";
 import { AdminPageTitle } from "@/components/admin/Title";
-import { ConnectorIcon } from "@/components/icons/icons";
 import { SourceCategory, SourceMetadata } from "@/lib/search/interfaces";
 import { listSourceMetadata } from "@/lib/sources";
 import Button from "@/refresh-components/buttons/Button";
@@ -29,11 +28,11 @@ import useSWR from "swr";
 import { errorHandlingFetcher } from "@/lib/fetcher";
 import { buildSimilarCredentialInfoURL } from "@/app/admin/connector/[ccPairId]/lib";
 import { Credential } from "@/lib/connectors/credentials";
-import { SettingsContext } from "@/components/settings/SettingsProvider";
+import { SettingsContext } from "@/providers/SettingsProvider";
 import SourceTile from "@/components/SourceTile";
 import InputTypeIn from "@/refresh-components/inputs/InputTypeIn";
 import Text from "@/refresh-components/texts/Text";
-
+import { SvgUploadCloud } from "@opal/icons";
 function SourceTileTooltipWrapper({
   sourceMetadata,
   preSelect,
@@ -66,26 +65,18 @@ function SourceTileTooltipWrapper({
 
   // Determine the URL to navigate to
   const navigationUrl = useMemo(() => {
-    // Special logic for Slack: if there are existing credentials, use the old flow
-    if (isSlackTile && hasExistingSlackCredentials) {
-      return "/admin/connectors/slack";
-    }
-
-    // Otherwise, use the existing logic
+    // If there's an existing federated connector, route to edit it
     if (existingFederatedConnector) {
       return `/admin/federated/${existingFederatedConnector.id}`;
     }
-    return sourceMetadata.adminUrl;
-  }, [
-    isSlackTile,
-    hasExistingSlackCredentials,
-    existingFederatedConnector,
-    sourceMetadata.adminUrl,
-  ]);
 
-  // Compute whether to hide the tooltip based on the provided condition
+    // For all other sources (including Slack), use the regular admin URL
+    return sourceMetadata.adminUrl;
+  }, [existingFederatedConnector, sourceMetadata]);
+
+  // Compute whether to hide the tooltip
   const shouldHideTooltip =
-    !(existingFederatedConnector && !hasExistingSlackCredentials) &&
+    !existingFederatedConnector &&
     !hasExistingSlackCredentials &&
     !sourceMetadata.federated;
 
@@ -115,26 +106,15 @@ function SourceTileTooltipWrapper({
           </div>
         </TooltipTrigger>
         <TooltipContent side="top" className="max-w-sm">
-          {existingFederatedConnector && !hasExistingSlackCredentials ? (
-            <Text textLight05 secondaryBody>
+          {existingFederatedConnector ? (
+            <Text as="p" textLight05 secondaryBody>
               <strong>Federated connector already configured.</strong> Click to
               edit the existing connector.
             </Text>
           ) : hasExistingSlackCredentials ? (
-            <Text textLight05 secondaryBody>
+            <Text as="p" textLight05 secondaryBody>
               <strong>Existing Slack credentials found.</strong> Click to manage
-              the traditional Slack connector.
-            </Text>
-          ) : sourceMetadata.federated ? (
-            <Text textLight05 secondaryBody>
-              {sourceMetadata.federatedTooltip ? (
-                sourceMetadata.federatedTooltip
-              ) : (
-                <>
-                  <strong>Federated Search.</strong> This will result in greater
-                  latency and lower search quality.
-                </>
-              )}
+              your Slack connector.
             </Text>
           ) : null}
         </TooltipContent>
@@ -268,9 +248,9 @@ export default function Page() {
   };
 
   return (
-    <div className="mx-auto container">
+    <>
       <AdminPageTitle
-        icon={<ConnectorIcon size={32} />}
+        icon={SvgUploadCloud}
         title="Add Connector"
         farRightElement={
           <Button href="/admin/indexing/status" primary>
@@ -286,12 +266,14 @@ export default function Page() {
         value={rawSearchTerm} // keep the input bound to immediate state
         onChange={(event) => setSearchTerm(event.target.value)}
         onKeyDown={handleKeyPress}
-        className="w-96"
+        className="w-96 flex-none"
       />
 
       {dedupedPopular.length > 0 && (
         <div className="pt-8">
-          <Text headingH3>Popular</Text>
+          <Text as="p" headingH3>
+            Popular
+          </Text>
           <div className="flex flex-wrap gap-4 p-4">
             {dedupedPopular.map((source) => (
               <SourceTileTooltipWrapper
@@ -310,7 +292,9 @@ export default function Page() {
         .filter(([_, sources]) => sources.length > 0)
         .map(([category, sources], categoryInd) => (
           <div key={category} className="pt-8">
-            <Text headingH3>{category}</Text>
+            <Text as="p" headingH3>
+              {category}
+            </Text>
             <div className="flex flex-wrap gap-4 p-4">
               {sources.map((source, sourceInd) => (
                 <SourceTileTooltipWrapper
@@ -328,6 +312,6 @@ export default function Page() {
             </div>
           </div>
         ))}
-    </div>
+    </>
   );
 }

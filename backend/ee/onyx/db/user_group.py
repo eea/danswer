@@ -8,6 +8,7 @@ from sqlalchemy import func
 from sqlalchemy import Select
 from sqlalchemy import select
 from sqlalchemy import update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from ee.onyx.server.user_group.models import SetCuratorRequest
@@ -124,7 +125,7 @@ def _cleanup_document_set__user_group_relationships__no_commit(
 
 def validate_object_creation_for_user(
     db_session: Session,
-    user: User | None,
+    user: User,
     target_group_ids: list[int] | None = None,
     object_is_public: bool | None = None,
     object_is_perm_sync: bool | None = None,
@@ -143,7 +144,8 @@ def validate_object_creation_for_user(
     if object_is_perm_sync and not target_group_ids:
         return
 
-    if not user or user.role == UserRole.ADMIN:
+    # Admins are allowed
+    if user.role == UserRole.ADMIN:
         return
 
     # Allow curators and global curators to create public objects
@@ -362,14 +364,29 @@ def _check_user_group_is_modifiable(user_group: UserGroup) -> None:
 
 def _add_user__user_group_relationships__no_commit(
     db_session: Session, user_group_id: int, user_ids: list[UUID]
-) -> list[User__UserGroup]:
-    """NOTE: does not commit the transaction."""
-    relationships = [
-        User__UserGroup(user_id=user_id, user_group_id=user_group_id)
-        for user_id in user_ids
-    ]
-    db_session.add_all(relationships)
-    return relationships
+) -> None:
+    """NOTE: does not commit the transaction.
+
+    This function is idempotent - it will skip users who are already in the group
+    to avoid duplicate key violations during concurrent operations or re-syncs.
+    Uses ON CONFLICT DO NOTHING to keep inserts atomic under concurrency.
+    """
+    if not user_ids:
+        return
+
+    insert_stmt = (
+        insert(User__UserGroup)
+        .values(
+            [
+                {"user_id": user_id, "user_group_id": user_group_id}
+                for user_id in user_ids
+            ]
+        )
+        .on_conflict_do_nothing(
+            index_elements=[User__UserGroup.user_group_id, User__UserGroup.user_id]
+        )
+    )
+    db_session.execute(insert_stmt)
 
 
 def _add_user_group__cc_pair_relationships__no_commit(
@@ -458,14 +475,15 @@ def remove_curator_status__no_commit(db_session: Session, user: User) -> None:
 def _validate_curator_relationship_update_requester(
     db_session: Session,
     user_group_id: int,
-    user_making_change: User | None = None,
+    user_making_change: User,
 ) -> None:
     """
     This function validates that the user making the change has the necessary permissions
     to update the curator relationship for the target user in the given user group.
     """
 
-    if user_making_change is None or user_making_change.role == UserRole.ADMIN:
+    # Admins can update curator relationships for any group
+    if user_making_change.role == UserRole.ADMIN:
         return
 
     # check if the user making the change is a curator in the group they are changing the curator relationship for
@@ -534,7 +552,7 @@ def update_user_curator_relationship(
     db_session: Session,
     user_group_id: int,
     set_curator_request: SetCuratorRequest,
-    user_making_change: User | None = None,
+    user_making_change: User,
 ) -> None:
     target_user = fetch_user_by_id(db_session, set_curator_request.user_id)
     if not target_user:
@@ -583,7 +601,7 @@ def update_user_curator_relationship(
 
 def add_users_to_user_group(
     db_session: Session,
-    user: User | None,
+    user: User,
     user_group_id: int,
     user_ids: list[UUID],
 ) -> UserGroup:
@@ -625,7 +643,7 @@ def add_users_to_user_group(
 
 def update_user_group(
     db_session: Session,
-    user: User | None,
+    user: User,  # noqa: ARG001
     user_group_id: int,
     user_group_update: UserGroupUpdate,
 ) -> UserGroup:

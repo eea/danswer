@@ -1,7 +1,16 @@
+import time
+
+from onyx.configs.constants import MessageType
 from tests.integration.common_utils.managers.chat import ChatSessionManager
 from tests.integration.common_utils.managers.llm_provider import LLMProviderManager
 from tests.integration.common_utils.test_models import DATestUser
 from tests.integration.conftest import DocumentBuilderType
+
+TERMINATED_RESPONSE_MESSAGE = (
+    "Response was terminated prior to completion, try regenerating."
+)
+
+LOADING_RESPONSE_MESSAGE = "Message is loading... Please refresh the page soon."
 
 
 def test_send_two_messages(basic_user: DATestUser) -> None:
@@ -51,40 +60,9 @@ def test_send_two_messages(basic_user: DATestUser) -> None:
     ), "Chat session should have 1 system message, 2 user messages, and 2 assistant messages"
 
 
-def test_deep_research_runs_tool_for_simple_prompt(
-    reset: None,
-    admin_user: DATestUser,
+def test_send_message_simple_with_history(
+    reset: None, admin_user: DATestUser  # noqa: ARG001
 ) -> None:
-    LLMProviderManager.create(user_performing_action=admin_user)
-
-    test_chat_session = ChatSessionManager.create(user_performing_action=admin_user)
-
-    response = ChatSessionManager.send_message(
-        chat_session_id=test_chat_session.id,
-        message="Hello",
-        user_performing_action=admin_user,
-        use_agentic_search=True,
-        chat_session=test_chat_session,
-    )
-
-    assert response.error is None, "Chat response should not have an error"
-
-    tool_used = any(result.tool_name for result in response.used_tools)
-
-    # We would like to use this, but it's not worth adding a field to get-chat-session responses
-    # just for testing
-    # assert (
-    #     tool_used
-    #     or response.research_answer_purpose
-    #     == ResearchAnswerPurpose.CLARIFICATION_REQUEST
-    # )
-
-    # TODO: the second condition is a hacky way to check whether
-    # we're making a clarification request.
-    assert tool_used or response.full_message.startswith("1. ")
-
-
-def test_send_message_simple_with_history(reset: None, admin_user: DATestUser) -> None:
     LLMProviderManager.create(user_performing_action=admin_user)
 
     test_chat_session = ChatSessionManager.create(user_performing_action=admin_user)
@@ -100,7 +78,9 @@ def test_send_message_simple_with_history(reset: None, admin_user: DATestUser) -
 
 
 def test_send_message__basic_searches(
-    reset: None, admin_user: DATestUser, document_builder: DocumentBuilderType
+    reset: None,  # noqa: ARG001
+    admin_user: DATestUser,
+    document_builder: DocumentBuilderType,
 ) -> None:
     MESSAGE = "run a search for 'test'. Use the internal search tool."
     SHORT_DOC_CONTENT = "test"
@@ -137,3 +117,59 @@ def test_send_message__basic_searches(
     # short doc should be more relevant and thus first
     assert response.top_documents[0].document_id == short_doc.id
     assert response.top_documents[1].document_id == long_doc.id
+
+
+def test_send_message_disconnect_and_cleanup(
+    reset: None, admin_user: DATestUser  # noqa: ARG001
+) -> None:
+    """
+    Test that when a client disconnects mid-stream:
+    1. Client sends a message and disconnects after receiving just 1 packet
+    2. Client checks to see that their message ends up completed
+
+    Note: There is an interim period (between disconnect and checkup) where we expect
+    to see some sort of 'loading' message.
+    """
+    LLMProviderManager.create(user_performing_action=admin_user)
+
+    test_chat_session = ChatSessionManager.create(user_performing_action=admin_user)
+
+    # Send a message and disconnect after receiving just 1 packet
+    ChatSessionManager.send_message_with_disconnect(
+        chat_session_id=test_chat_session.id,
+        message="What are some important events that happened today?",
+        user_performing_action=admin_user,
+        disconnect_after_packets=1,
+    )
+
+    # Every 5 seconds, check if we have the latest state of the chat session up to a minute
+    increment_seconds = 1
+    max_seconds = 60
+    msg = TERMINATED_RESPONSE_MESSAGE
+
+    for _ in range(max_seconds // increment_seconds):
+        time.sleep(increment_seconds)
+
+        # Get the chat history
+        chat_history = ChatSessionManager.get_chat_history(
+            chat_session=test_chat_session,
+            user_performing_action=admin_user,
+        )
+
+        # Find the assistant message
+        assistant_message = None
+        for chat_obj in chat_history:
+            if chat_obj.message_type == MessageType.ASSISTANT:
+                assistant_message = chat_obj
+                break
+
+        assert assistant_message is not None, "Assistant message should exist"
+        msg = assistant_message.message
+
+        if msg != TERMINATED_RESPONSE_MESSAGE and msg != LOADING_RESPONSE_MESSAGE:
+            break
+
+    assert msg != TERMINATED_RESPONSE_MESSAGE and msg != LOADING_RESPONSE_MESSAGE, (
+        f"Assistant message should no longer be the terminated response message after cleanup, "
+        f"got: {msg}"
+    )

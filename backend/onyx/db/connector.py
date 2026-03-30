@@ -40,6 +40,21 @@ def check_connectors_exist(db_session: Session) -> bool:
     return result.scalar() or False
 
 
+def check_user_files_exist(db_session: Session) -> bool:
+    """Check if any user files exist in the system.
+
+    This is used to determine if the search tool should be available
+    when there are no regular connectors but there are user files
+    (User Knowledge mode).
+    """
+    from onyx.db.models import UserFile
+    from onyx.db.enums import UserFileStatus
+
+    stmt = select(exists(UserFile).where(UserFile.status == UserFileStatus.COMPLETED))
+    result = db_session.execute(stmt)
+    return result.scalar() or False
+
+
 def fetch_connectors(
     db_session: Session,
     sources: list[DocumentSource] | None = None,
@@ -290,6 +305,18 @@ def mark_ccpair_as_pruned(cc_pair_id: int, db_session: Session) -> None:
         raise ValueError(f"No cc_pair with ID: {cc_pair_id}")
 
     cc_pair.last_pruned = datetime.now(timezone.utc)
+    db_session.commit()
+
+
+def mark_cc_pair_as_hierarchy_fetched(db_session: Session, cc_pair_id: int) -> None:
+    stmt = select(ConnectorCredentialPair).where(
+        ConnectorCredentialPair.id == cc_pair_id
+    )
+    cc_pair = db_session.scalar(stmt)
+    if cc_pair is None:
+        raise ValueError(f"No cc_pair with ID: {cc_pair_id}")
+
+    cc_pair.last_time_hierarchy_fetch = datetime.now(timezone.utc)
     db_session.commit()
 
 

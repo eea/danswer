@@ -8,6 +8,7 @@ from ee.onyx.external_permissions.slack.utils import fetch_user_id_to_email_map
 from onyx.access.models import DocExternalAccess
 from onyx.access.models import ExternalAccess
 from onyx.connectors.credentials_provider import OnyxDBCredentialsProvider
+from onyx.connectors.models import HierarchyNode
 from onyx.connectors.slack.connector import get_channels
 from onyx.connectors.slack.connector import make_paginated_slack_api_call
 from onyx.connectors.slack.connector import SlackConnector
@@ -102,7 +103,7 @@ def _fetch_channel_permissions(
 
 def _get_slack_document_access(
     slack_connector: SlackConnector,
-    channel_permissions: dict[str, ExternalAccess],
+    channel_permissions: dict[str, ExternalAccess],  # noqa: ARG001
     callback: IndexingHeartbeatInterface | None,
 ) -> Generator[DocExternalAccess, None, None]:
     slim_doc_generator = slack_connector.retrieve_all_slim_docs_perm_sync(
@@ -111,6 +112,9 @@ def _get_slack_document_access(
 
     for doc_metadata_batch in slim_doc_generator:
         for doc_metadata in doc_metadata_batch:
+            if isinstance(doc_metadata, HierarchyNode):
+                # TODO: handle hierarchynodes during sync
+                continue
             if doc_metadata.external_access is None:
                 raise ValueError(
                     f"No external access for document {doc_metadata.id}. "
@@ -132,8 +136,8 @@ def _get_slack_document_access(
 
 def slack_doc_sync(
     cc_pair: ConnectorCredentialPair,
-    fetch_all_existing_docs_fn: FetchAllDocumentsFunction,
-    fetch_all_existing_docs_ids_fn: FetchAllDocumentsIdsFunction,
+    fetch_all_existing_docs_fn: FetchAllDocumentsFunction,  # noqa: ARG001
+    fetch_all_existing_docs_ids_fn: FetchAllDocumentsIdsFunction,  # noqa: ARG001
     callback: IndexingHeartbeatInterface | None,
 ) -> Generator[DocExternalAccess, None, None]:
     """

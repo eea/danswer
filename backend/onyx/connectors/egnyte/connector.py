@@ -24,14 +24,13 @@ from onyx.connectors.interfaces import SecondsSinceUnixEpoch
 from onyx.connectors.models import BasicExpertInfo
 from onyx.connectors.models import ConnectorMissingCredentialError
 from onyx.connectors.models import Document
+from onyx.connectors.models import HierarchyNode
 from onyx.connectors.models import TextSection
 from onyx.file_processing.extract_file_text import detect_encoding
 from onyx.file_processing.extract_file_text import extract_file_text
 from onyx.file_processing.extract_file_text import get_file_ext
-from onyx.file_processing.extract_file_text import is_accepted_file_ext
-from onyx.file_processing.extract_file_text import is_text_file_extension
-from onyx.file_processing.extract_file_text import OnyxExtensionType
 from onyx.file_processing.extract_file_text import read_text_file
+from onyx.file_processing.file_types import OnyxFileExtensions
 from onyx.utils.logger import setup_logger
 from onyx.utils.retry_wrapper import request_with_retries
 
@@ -70,14 +69,15 @@ def _process_egnyte_file(
 
     file_name = file_metadata["name"]
     extension = get_file_ext(file_name)
-    if not is_accepted_file_ext(
-        extension, OnyxExtensionType.Plain | OnyxExtensionType.Document
-    ):
+
+    # Explicitly excluding image extensions here. TODO: consider allowing images
+    if extension not in OnyxFileExtensions.TEXT_AND_DOCUMENT_EXTENSIONS:
         logger.warning(f"Skipping file '{file_name}' with extension '{extension}'")
         return None
 
     # Extract text content based on file type
-    if is_text_file_extension(file_name):
+    # TODO @wenxi-onyx: convert to extract_text_and_images
+    if extension in OnyxFileExtensions.PLAIN_TEXT_EXTENSIONS:
         encoding = detect_encoding(file_content)
         file_content_raw, file_metadata = read_text_file(
             file_content, encoding=encoding, ignore_onyx_metadata=False
@@ -279,8 +279,8 @@ class EgnyteConnector(LoadConnector, PollConnector, OAuthConnector):
         self,
         start_time: datetime | None = None,
         end_time: datetime | None = None,
-    ) -> Generator[list[Document], None, None]:
-        current_batch: list[Document] = []
+    ) -> Generator[list[Document | HierarchyNode], None, None]:
+        current_batch: list[Document | HierarchyNode] = []
 
         # Iterate through yielded files and filter them
         for file in self._get_files_list(self.folder_path):

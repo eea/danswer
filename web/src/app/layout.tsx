@@ -18,7 +18,7 @@ import {
   EnterpriseSettings,
   ApplicationStatus,
 } from "./admin/settings/interfaces";
-import AppProvider from "@/components/context/AppProvider";
+import AppProvider from "@/providers/AppProvider";
 import { PHProvider } from "./providers";
 import { getAuthTypeMetadataSS, getCurrentUserSS } from "@/lib/userSS";
 import { Suspense } from "react";
@@ -29,11 +29,10 @@ import { WebVitals } from "./web-vitals";
 import { ThemeProvider } from "next-themes";
 import CloudError from "@/components/errorPages/CloudErrorPage";
 import Error from "@/components/errorPages/ErrorPage";
-
-import AccessRestrictedPage from "@/components/errorPages/AccessRestrictedPage";
-import { fetchAssistantData } from "@/lib/chat/fetchAssistantdata";
+import GatedContentWrapper from "@/components/GatedContentWrapper";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { fetchAppSidebarMetadata } from "@/lib/appSidebarSS";
+import StatsOverlayLoader from "@/components/dev/StatsOverlayLoader";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -74,13 +73,11 @@ export default async function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const [combinedSettings, assistants, user, authTypeMetadata] =
-    await Promise.all([
-      fetchSettingsSS(),
-      fetchAssistantData(),
-      getCurrentUserSS(),
-      getAuthTypeMetadataSS(),
-    ]);
+  const [combinedSettings, user, authTypeMetadata] = await Promise.all([
+    fetchSettingsSS(),
+    getCurrentUserSS(),
+    getAuthTypeMetadataSS(),
+  ]);
 
   const { folded } = await fetchAppSidebarMetadata(user);
 
@@ -142,9 +139,6 @@ export default async function RootLayout({
     </html>
   );
 
-//  if (productGating === ApplicationStatus.GATED_ACCESS) {
-//    return getPageContent(<AccessRestrictedPage />);
-//  }
 
   if (!combinedSettings) {
     return getPageContent(
@@ -152,21 +146,37 @@ export default async function RootLayout({
     );
   }
 
+  // When gated, wrap children in GatedContentWrapper which checks the path
+  // client-side and shows AccessRestrictedPage for non-billing paths.
+  //
+  // Trade-off: Server components still render and attempt API calls before the
+  // client-side check runs. This is safe because the backend license enforcement
+  // middleware returns 402 for all non-allowlisted API calls, preventing data
+  // leakage. The user sees a brief loading state before being redirected.
+  const content =
+    productGating === ApplicationStatus.GATED_ACCESS ? (
+      <GatedContentWrapper>{children}</GatedContentWrapper>
+    ) : (
+      children
+    );
+
   return getPageContent(
     <AppProvider
       authTypeMetadata={authTypeMetadata}
       user={user}
       settings={combinedSettings}
-      assistants={assistants}
       folded={folded}
     >
       <Suspense fallback={null}>
         <PostHogPageView />
       </Suspense>
       <div id={MODAL_ROOT_ID} className="h-screen w-screen">
-        {children}
+        {content}
       </div>
       {process.env.NEXT_PUBLIC_POSTHOG_KEY && <WebVitals />}
+      {process.env.NEXT_PUBLIC_ENABLE_STATS === "true" && (
+        <StatsOverlayLoader />
+      )}
     </AppProvider>
   );
 }

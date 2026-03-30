@@ -5,22 +5,52 @@ This is a [Next.js](https://nextjs.org/) project bootstrapped with [`create-next
 ## Getting Started
 
 Install node / npm: https://docs.npmjs.com/downloading-and-installing-node-js-and-npm
-Install all dependencies: `npm i`
+Install all dependencies: `npm i`.
 
 Then, run the development server:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
 _Note:_ if you are having problems accessing the ^, try setting the `WEB_DOMAIN` env variable to
 `http://127.0.0.1:3000` and accessing it there.
+
+> [!TIP]
+> Packages are installed automatically when switching branches after `package.json` changes with [pre-commit](https://github.com/onyx-dot-app/onyx/blob/main/CONTRIBUTING.md#formatting-and-linting) configured.
+
+### Connecting to a Cloud Backend
+
+To test your local frontend development server against a cloud backend (e.g., staging or production),
+create a `.env.local` file in the `web/` directory with the following configuration:
+
+```text
+# Point local dev server to cloud backend
+INTERNAL_URL=https://st-dev.onyx.app/api
+
+# Debug auth cookie for authenticating against remote backend
+# This cookie is automatically injected into API requests when in development mode
+# To get this value:
+#   1. Go to https://st-dev.onyx.app (or your target backend URL) and log in
+#   2. Open DevTools (F12) → Application → Cookies → [your backend domain]
+#   3. Find the "fastapiusersauth" cookie and copy its value
+#   4. Paste the value below (without quotes)
+# Note: This cookie may expire, so you may need to refresh it periodically
+DEBUG_AUTH_COOKIE=your_cookie_value_here
+```
+
+By default, this does _NOT_ override existing cookies, so if you've logged in previously, you
+may need to delete the cookies for the `localhost` domain.
+
+**Important notes:**
+
+- The `.env.local` file should be created in the `web/` directory (same level as `package.json`)
+- After creating or modifying `.env.local`, restart your development server for changes to take effect
+- The `DEBUG_AUTH_COOKIE` is only used in development mode (`NODE_ENV=development`)
+- If `INTERNAL_URL` is not set, the frontend will connect to the local backend at `http://127.0.0.1:8080`
+- Keep your `.env.local` file secure and never commit it to version control (it should already be in `.gitignore`)
 
 ## Testing
 
@@ -30,6 +60,7 @@ Don't run these tests if you don't want to do this!
 Bring up the entire application.
 
 0. Install playwright dependencies
+
 ```cd web
 npx playwright install
 ```
@@ -46,7 +77,7 @@ with SKIP_AUTH=true. This is convenient but slightly different from what happens
 in CI so tests might pass locally and fail in CI.
 
 ```cd web
-SKIP_AUTH=true npx playwright test create_and_edit_assistant.spec.ts --project=no-auth
+SKIP_AUTH=true npx playwright test create_and_edit_assistant.spec.ts --project=admin
 ```
 
 2. Run playwright
@@ -76,14 +107,4 @@ By default, playwright.config.ts is configured to output the results to:
 
 ```
 web/test-results
-```
-
-4. Upload results to Chromatic (Optional)
-
-This step would normally not be run by third party developers, but first party devs
-may use this for local troubleshooting and testing.
-
-```
-cd web
-npx chromatic --playwright --project-token={your token here}
 ```

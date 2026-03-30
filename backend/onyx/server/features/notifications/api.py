@@ -9,11 +9,14 @@ from onyx.db.models import User
 from onyx.db.notification import dismiss_notification
 from onyx.db.notification import get_notification_by_id
 from onyx.db.notification import get_notifications
+from onyx.server.features.build.utils import ensure_build_mode_intro_notification
+from onyx.server.features.release_notes.utils import (
+    ensure_release_notes_fresh_and_notify,
+)
 from onyx.server.settings.models import Notification as NotificationModel
 from onyx.utils.logger import setup_logger
 
 logger = setup_logger()
-
 router = APIRouter(prefix="/notifications")
 
 
@@ -22,9 +25,32 @@ def get_notifications_api(
     user: User = Depends(current_user),
     db_session: Session = Depends(get_session),
 ) -> list[NotificationModel]:
+    """
+    Get all undismissed notifications for the current user.
+
+    Note: also executes background checks that should create notifications.
+
+    Examples of checks that create new notifications:
+    - Checking for new release notes the user hasn't seen
+    - Checking for misconfigurations due to version changes
+    - Explicitly announcing breaking changes
+    """
+    # Background checks that create notifications
+    try:
+        ensure_build_mode_intro_notification(user, db_session)
+    except Exception:
+        logger.exception(
+            "Failed to check for build mode intro in notifications endpoint"
+        )
+
+    try:
+        ensure_release_notes_fresh_and_notify(db_session)
+    except Exception:
+        logger.exception("Failed to check for release notes in notifications endpoint")
+
     notifications = [
         NotificationModel.from_model(notif)
-        for notif in get_notifications(user, db_session, include_dismissed=False)
+        for notif in get_notifications(user, db_session, include_dismissed=True)
     ]
     return notifications
 
@@ -32,7 +58,7 @@ def get_notifications_api(
 @router.post("/{notification_id}/dismiss")
 def dismiss_notification_endpoint(
     notification_id: int,
-    user: User | None = Depends(current_user),
+    user: User = Depends(current_user),
     db_session: Session = Depends(get_session),
 ) -> None:
     try:

@@ -8,13 +8,15 @@ from uuid import UUID
 import requests
 from requests.models import Response
 
-from onyx.context.search.models import RetrievalDetails
 from onyx.context.search.models import SavedSearchDoc
+from onyx.context.search.models import SearchDoc
 from onyx.file_store.models import FileDescriptor
 from onyx.llm.override_models import LLMOverride
 from onyx.llm.override_models import PromptOverride
 from onyx.server.query_and_chat.models import ChatSessionCreationRequest
 from onyx.server.query_and_chat.models import CreateChatMessageRequest
+from onyx.server.query_and_chat.models import RetrievalDetails
+from onyx.server.query_and_chat.streaming_models import StreamingType
 from tests.integration.common_utils.constants import API_SERVER_URL
 from tests.integration.common_utils.constants import GENERAL_HEADERS
 from tests.integration.common_utils.test_models import DATestChatMessage
@@ -22,6 +24,7 @@ from tests.integration.common_utils.test_models import DATestChatSession
 from tests.integration.common_utils.test_models import DATestUser
 from tests.integration.common_utils.test_models import ErrorResponse
 from tests.integration.common_utils.test_models import StreamedResponse
+from tests.integration.common_utils.test_models import ToolCallDebug
 from tests.integration.common_utils.test_models import ToolName
 from tests.integration.common_utils.test_models import ToolResult
 
@@ -32,11 +35,13 @@ class StreamPacketObj(TypedDict, total=False):
     type: Literal[
         "message_start",
         "message_delta",
-        "internal_search_tool_start",
-        "internal_search_tool_delta",
-        "image_generation_tool_start",
-        "image_generation_tool_heartbeat",
-        "image_generation_tool_delta",
+        "search_tool_start",
+        "search_tool_queries_delta",
+        "search_tool_documents_delta",
+        "image_generation_start",
+        "image_generation_heartbeat",
+        "image_generation_final",
+        "tool_call_debug",
     ]
     content: str
     final_documents: list[dict[str, Any]]
@@ -44,6 +49,17 @@ class StreamPacketObj(TypedDict, total=False):
     images: list[dict[str, Any]]
     queries: list[str]
     documents: list[dict[str, Any]]
+    tool_call_id: str
+    tool_name: str
+    tool_args: dict[str, Any]
+
+
+class PlacementData(TypedDict, total=False):
+    """Structure for packet placement information."""
+
+    turn_index: int
+    tab_index: int
+    sub_turn_index: int | None
 
 
 class StreamPacketData(TypedDict, total=False):
@@ -53,7 +69,7 @@ class StreamPacketData(TypedDict, total=False):
     error: str
     stack_trace: str
     obj: StreamPacketObj
-    ind: int
+    placement: PlacementData
 
 
 class ChatSessionManager:
@@ -88,7 +104,6 @@ class ChatSessionManager:
         parent_message_id: int | None = None,
         user_performing_action: DATestUser | None = None,
         file_descriptors: list[FileDescriptor] | None = None,
-        current_message_files: list[FileDescriptor] | None = None,
         search_doc_ids: list[int] | None = None,
         retrieval_options: RetrievalDetails | None = None,
         query_override: str | None = None,
@@ -97,26 +112,24 @@ class ChatSessionManager:
         prompt_override: PromptOverride | None = None,
         alternate_assistant_id: int | None = None,
         use_existing_user_message: bool = False,
-        use_agentic_search: bool = False,
         forced_tool_ids: list[int] | None = None,
         chat_session: DATestChatSession | None = None,
+        mock_llm_response: str | None = None,
     ) -> StreamedResponse:
         chat_message_req = CreateChatMessageRequest(
             chat_session_id=chat_session_id,
             parent_message_id=parent_message_id,
             message=message,
             file_descriptors=file_descriptors or [],
-            current_message_files=current_message_files or [],
             search_doc_ids=search_doc_ids or [],
             retrieval_options=retrieval_options,
-            rerank_settings=None,  # Can be added if needed
             query_override=query_override,
             regenerate=regenerate,
             llm_override=llm_override,
+            mock_llm_response=mock_llm_response,
             prompt_override=prompt_override,
             alternate_assistant_id=alternate_assistant_id,
             use_existing_user_message=use_existing_user_message,
-            use_agentic_search=use_agentic_search,
             forced_tool_ids=forced_tool_ids,
         )
 
@@ -158,6 +171,87 @@ class ChatSessionManager:
         return streamed_response
 
     @staticmethod
+    def send_message_with_disconnect(
+        chat_session_id: UUID,
+        message: str,
+        disconnect_after_packets: int = 0,
+        parent_message_id: int | None = None,
+        user_performing_action: DATestUser | None = None,
+        file_descriptors: list[FileDescriptor] | None = None,
+        search_doc_ids: list[int] | None = None,
+        query_override: str | None = None,
+        regenerate: bool | None = None,
+        llm_override: LLMOverride | None = None,
+        prompt_override: PromptOverride | None = None,
+        alternate_assistant_id: int | None = None,
+        use_existing_user_message: bool = False,
+        forced_tool_ids: list[int] | None = None,
+        mock_llm_response: str | None = None,
+    ) -> None:
+        """
+        Send a message and simulate client disconnect before stream completes.
+
+        This is useful for testing how the server handles client disconnections
+        during streaming responses.
+
+        Args:
+            chat_session_id: The chat session ID
+            message: The message to send
+            disconnect_after_packets: Disconnect after receiving this many packets.
+                If None, disconnect_after_type must be specified.
+            disconnect_after_type: Disconnect after receiving a packet of this type
+                (e.g., "message_start", "search_tool_start"). If None,
+                disconnect_after_packets must be specified.
+            ... (other standard message parameters)
+
+        Returns:
+            StreamedResponse containing data received before disconnect,
+            with is_disconnected=True flag set.
+        """
+        chat_message_req = CreateChatMessageRequest(
+            chat_session_id=chat_session_id,
+            parent_message_id=parent_message_id,
+            message=message,
+            file_descriptors=file_descriptors or [],
+            search_doc_ids=search_doc_ids or [],
+            retrieval_options=RetrievalDetails(),  # This will be deprecated soon anyway
+            query_override=query_override,
+            regenerate=regenerate,
+            llm_override=llm_override,
+            mock_llm_response=mock_llm_response,
+            prompt_override=prompt_override,
+            alternate_assistant_id=alternate_assistant_id,
+            use_existing_user_message=use_existing_user_message,
+            forced_tool_ids=forced_tool_ids,
+        )
+
+        headers = (
+            user_performing_action.headers
+            if user_performing_action
+            else GENERAL_HEADERS
+        )
+        cookies = user_performing_action.cookies if user_performing_action else None
+
+        packets_received = 0
+
+        with requests.post(
+            f"{API_SERVER_URL}/chat/send-message",
+            json=chat_message_req.model_dump(),
+            headers=headers,
+            stream=True,
+            cookies=cookies,
+        ) as response:
+            for line in response.iter_lines():
+                if not line:
+                    continue
+
+                packets_received += 1
+                if packets_received > disconnect_after_packets:
+                    break
+
+        return None
+
+    @staticmethod
     def analyze_response(response: Response) -> StreamedResponse:
         response_data = cast(
             list[StreamPacketData],
@@ -168,11 +262,13 @@ class ChatSessionManager:
             ],
         )
         ind_to_tool_use: dict[int, ToolResult] = {}
-        top_documents: list[SavedSearchDoc] = []
+        tool_call_debug: list[ToolCallDebug] = []
+        top_documents: list[SearchDoc] = []
         heartbeat_packets: list[StreamPacketData] = []
         full_message = ""
         assistant_message_id: int | None = None
         error = None
+        ind: int
         for data in response_data:
             if reserved_id := data.get("reserved_assistant_message_id"):
                 assistant_message_id = reserved_id
@@ -184,16 +280,27 @@ class ChatSessionManager:
             elif (
                 (data_obj := data.get("obj"))
                 and (packet_type := data_obj.get("type"))
-                and (ind := data.get("ind")) is not None
+                and (
+                    ind := cast(
+                        int,
+                        (
+                            data.get("ind")
+                            if data.get("ind") is not None
+                            else data.get("placement", {}).get("turn_index")
+                        ),
+                    )
+                )
+                is not None
             ):
-                if packet_type == "message_start":
+                packet_type_str = str(packet_type)
+                if packet_type_str == StreamingType.MESSAGE_START.value:
                     final_docs = data_obj.get("final_documents")
                     if isinstance(final_docs, list):
-                        top_documents = [SavedSearchDoc(**doc) for doc in final_docs]
+                        top_documents = [SearchDoc(**doc) for doc in final_docs]
                     full_message += data_obj.get("content", "")
-                elif packet_type == "message_delta":
+                elif packet_type_str == StreamingType.MESSAGE_DELTA.value:
                     full_message += data_obj["content"]
-                elif packet_type == "internal_search_tool_start":
+                elif packet_type_str == StreamingType.SEARCH_TOOL_START.value:
                     tool_name = (
                         ToolName.INTERNET_SEARCH
                         if data_obj.get("is_internet_search", False)
@@ -202,14 +309,14 @@ class ChatSessionManager:
                     ind_to_tool_use[ind] = ToolResult(
                         tool_name=tool_name,
                     )
-                elif packet_type == "image_generation_tool_start":
+                elif packet_type_str == StreamingType.IMAGE_GENERATION_START.value:
                     ind_to_tool_use[ind] = ToolResult(
                         tool_name=ToolName.IMAGE_GENERATION,
                     )
-                elif packet_type == "image_generation_tool_heartbeat":
+                elif packet_type_str == StreamingType.IMAGE_GENERATION_HEARTBEAT.value:
                     # Track heartbeat packets for debugging/testing
                     heartbeat_packets.append(data)
-                elif packet_type == "image_generation_tool_delta":
+                elif packet_type_str == StreamingType.IMAGE_GENERATION_FINAL.value:
                     from tests.integration.common_utils.test_models import (
                         GeneratedImage,
                     )
@@ -218,12 +325,30 @@ class ChatSessionManager:
                     ind_to_tool_use[ind].images.extend(
                         [GeneratedImage(**img) for img in images]
                     )
-                elif packet_type == "internal_search_tool_delta":
+                elif packet_type_str == StreamingType.SEARCH_TOOL_QUERIES_DELTA.value:
                     ind_to_tool_use[ind].queries.extend(data_obj.get("queries", []))
-
-                    documents = data_obj.get("documents", [])
-                    ind_to_tool_use[ind].documents.extend(
-                        [SavedSearchDoc(**doc) for doc in documents]
+                elif packet_type_str == StreamingType.SEARCH_TOOL_DOCUMENTS_DELTA.value:
+                    docs = []
+                    for doc in data_obj.get("documents", []):
+                        if "db_doc_id" in doc:
+                            # Already a SavedSearchDoc format
+                            docs.append(SavedSearchDoc(**doc))
+                        else:
+                            # SearchDoc format - Convert to SavedSearchDoc
+                            search_doc = SearchDoc(**doc)
+                            docs.append(
+                                SavedSearchDoc.from_search_doc(search_doc, db_doc_id=0)
+                            )
+                    ind_to_tool_use[ind].documents.extend(docs)
+                elif packet_type_str == StreamingType.TOOL_CALL_DEBUG.value:
+                    tool_call_debug.append(
+                        ToolCallDebug(
+                            tool_call_id=str(data_obj.get("tool_call_id", "")),
+                            tool_name=str(data_obj.get("tool_name", "")),
+                            tool_args=cast(
+                                dict[str, Any], data_obj.get("tool_args") or {}
+                            ),
+                        )
                     )
         # If there's an error, assistant_message_id might not be present
         if not assistant_message_id and not error:
@@ -233,6 +358,7 @@ class ChatSessionManager:
             assistant_message_id=assistant_message_id or -1,  # Use -1 for error cases
             top_documents=top_documents,
             used_tools=list(ind_to_tool_use.values()),
+            tool_call_debug=tool_call_debug,
             heartbeat_packets=[dict(packet) for packet in heartbeat_packets],
             error=error,
         )
@@ -258,7 +384,6 @@ class ChatSessionManager:
                 chat_session_id=chat_session.id,
                 parent_message_id=msg.get("parent_message"),
                 message=msg["message"],
-                research_answer_purpose=msg.get("research_answer_purpose"),
                 message_type=msg.get("message_type"),
                 files=msg.get("files"),
             )
@@ -370,8 +495,8 @@ class ChatSessionManager:
                 else GENERAL_HEADERS
             ),
         )
-        # Chat session should return 400 if it doesn't exist
-        return response.status_code == 400
+        # Chat session should return 404 if it doesn't exist or is deleted
+        return response.status_code == 404
 
     @staticmethod
     def verify_soft_deleted(

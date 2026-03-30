@@ -1,4 +1,4 @@
-import { test, expect } from "@chromatic-com/playwright";
+import { test, expect } from "@playwright/test";
 import { loginAsRandomUser, loginAs } from "../utils/auth";
 import { TEST_ADMIN2_CREDENTIALS, TEST_ADMIN_CREDENTIALS } from "../constants";
 
@@ -36,13 +36,13 @@ test.skip("User changes password and logs in with new password", async ({
   await page.getByText("Log out").click();
 
   // Log in with new password
-  await page.goto("http://localhost:3000/auth/login");
+  await page.goto("/auth/login");
   await page.getByTestId("email").fill(uniqueEmail);
   await page.getByTestId("password").fill(newPassword);
   await page.getByRole("button", { name: "Log In" }).click();
 
   // Verify successful login
-  await expect(page).toHaveURL("http://localhost:3000/chat");
+  await expect(page).toHaveURL("http://localhost:3000/app");
   await expect(page.getByText("Explore Assistants")).toBeVisible();
 });
 
@@ -55,7 +55,7 @@ test.skip("Admin resets own password and logs in with new password", async ({
   const { email: adminEmail, password: adminPassword } =
     TEST_ADMIN2_CREDENTIALS;
   // Navigate to admin panel
-  await page.goto("http://localhost:3000/admin/indexing/status");
+  await page.goto("/admin/indexing/status");
 
   // Check if redirected to login page
   if (page.url().includes("/auth/login")) {
@@ -63,7 +63,7 @@ test.skip("Admin resets own password and logs in with new password", async ({
   }
 
   // Navigate to Users page in admin panel
-  await page.goto("http://localhost:3000/admin/users");
+  await page.goto("/admin/users");
 
   await page.waitForTimeout(500);
   // Find the admin user and click on it
@@ -104,13 +104,13 @@ test.skip("Admin resets own password and logs in with new password", async ({
   await page.getByText("Log out").click();
 
   // Log in with new password
-  await page.goto("http://localhost:3000/auth/login");
+  await page.goto("/auth/login");
   await page.getByTestId("email").fill(adminEmail);
   await page.getByTestId("password").fill(newPassword);
 
   await page.getByRole("button", { name: "Log In" }).click();
 
   // Verify successful login
-  await expect(page).toHaveURL("http://localhost:3000/chat");
+  await expect(page).toHaveURL("http://localhost:3000/app");
   await expect(page.getByText("Explore Assistants")).toBeVisible();
 });

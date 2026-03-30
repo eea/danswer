@@ -1,13 +1,13 @@
 import { useState, KeyboardEvent } from "react";
 import InputTypeIn from "@/refresh-components/inputs/InputTypeIn";
 import Button from "@/refresh-components/buttons/Button";
-import SvgX from "@/icons/x";
-
+import { SvgX } from "@opal/icons";
 interface ListFieldInputProps {
   values: string[];
   onChange: (values: string[]) => void;
   placeholder?: string;
   disabled?: boolean;
+  error?: boolean;
 }
 
 /**
@@ -24,6 +24,7 @@ export function ListFieldInput({
   onChange,
   placeholder = "",
   disabled = false,
+  error = false,
 }: ListFieldInputProps) {
   const [inputValue, setInputValue] = useState("");
 
@@ -50,7 +51,7 @@ export function ListFieldInput({
       <InputTypeIn
         placeholder={placeholder}
         value={inputValue}
-        disabled={disabled}
+        variant={disabled ? "disabled" : error ? "error" : undefined}
         onChange={(e) => setInputValue(e.target.value)}
         onKeyDown={handleKeyDown}
       />

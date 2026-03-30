@@ -8,7 +8,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { openDocument } from "@/lib/search/utils";
-import { SubQuestionDetail } from "@/app/chat/interfaces";
+import { SubQuestionDetail } from "@/app/app/interfaces";
 import { getSourceDisplayName } from "@/lib/sources";
 import { ValidSources } from "@/lib/types";
 import Text from "@/refresh-components/texts/Text";
@@ -85,12 +85,12 @@ export function Citation({
             className="inline-flex items-center cursor-pointer transition-all duration-200 ease-in-out ml-1"
           >
             <span
-              className="flex items-center justify-center p-1 h-4
+              className="flex items-center justify-center p-1 h-4 max-w-[200px]
                          bg-background-tint-03 rounded-04
                          hover:bg-background-tint-04 shadow-sm"
               style={{ transform: "translateY(-10%)", lineHeight: "1" }}
             >
-              <Text figureSmallValue as="span">
+              <Text figureSmallValue className="truncate">
                 {citationText}
               </Text>
             </span>

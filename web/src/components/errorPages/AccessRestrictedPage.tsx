@@ -1,15 +1,27 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import ErrorPageLayout from "@/components/errorPages/ErrorPageLayout";
-import { fetchCustomerPortal } from "@/lib/billing/utils";
-import { useRouter } from "next/navigation";
 import Button from "@/refresh-components/buttons/Button";
+import InlineExternalLink from "@/refresh-components/InlineExternalLink";
 import { logout } from "@/lib/user";
 import { loadStripe } from "@stripe/stripe-js";
-import { NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY } from "@/lib/constants";
+import { NEXT_PUBLIC_CLOUD_ENABLED } from "@/lib/constants";
+import { useLicense } from "@/hooks/useLicense";
 import Text from "@/refresh-components/texts/Text";
-import SvgLock from "@/icons/lock";
+import { SvgLock } from "@opal/icons";
+
+const linkClassName = "text-action-link-05 hover:text-action-link-06";
+
+const fetchStripePublishableKey = async (): Promise<string> => {
+  const response = await fetch("/api/tenants/stripe-publishable-key");
+  if (!response.ok) {
+    throw new Error("Failed to fetch Stripe publishable key");
+  }
+  const data = await response.json();
+  return data.publishable_key;
+};
 
 const fetchResubscriptionSession = async () => {
   const response = await fetch("/api/tenants/create-subscription-session", {
@@ -27,49 +39,18 @@ const fetchResubscriptionSession = async () => {
 export default function AccessRestricted() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const router = useRouter();
+  const { data: license } = useLicense();
 
-  const handleManageSubscription = async () => {
-    setIsLoading(true);
-    setError(null);
-    try {
-      const response = await fetchCustomerPortal();
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(
-          `Failed to create customer portal session: ${
-            errorData.message || response.statusText
-          }`
-        );
-      }
-
-      const { url } = await response.json();
-
-      if (!url) {
-        throw new Error("No portal URL returned from the server");
-      }
-
-      router.push(url);
-    } catch (error) {
-      console.error("Error creating customer portal session:", error);
-      setError("Error opening customer portal. Please try again later.");
-    } finally {
-      setIsLoading(false);
-    }
-  };
+  // Distinguish between "never had a license" vs "license lapsed"
+  const hasLicenseLapsed = license?.has_license === true;
 
   const handleResubscribe = async () => {
     setIsLoading(true);
     setError(null);
-    if (!NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY) {
-      setError("Stripe public key not found");
-      setIsLoading(false);
-      return;
-    }
     try {
+      const publishableKey = await fetchStripePublishableKey();
       const { sessionId } = await fetchResubscriptionSession();
-      const stripe = await loadStripe(NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY);
+      const stripe = await loadStripe(publishableKey);
 
       if (stripe) {
         await stripe.redirectToCheckout({ sessionId });
@@ -92,55 +73,83 @@ export default function AccessRestricted() {
       </div>
 
       <Text text03>
-        We regret to inform you that your access to Onyx has been temporarily
-        suspended due to a lapse in your subscription.
+        {hasLicenseLapsed
+          ? "Your access to Onyx has been temporarily suspended due to a lapse in your subscription."
+          : "An Enterprise license is required to use Onyx. Your data is protected and will be available once a license is activated."}
       </Text>
 
-      <Text text03>
-        To reinstate your access and continue benefiting from Onyx&apos;s
-        powerful features, please update your payment information.
-      </Text>
+      {NEXT_PUBLIC_CLOUD_ENABLED ? (
+        <>
+          <Text text03>
+            To reinstate your access and continue benefiting from Onyx&apos;s
+            powerful features, please update your payment information.
+          </Text>
 
-      <Text text03>
-        If you&apos;re an admin, you can manage your subscription by clicking
-        the button below. For other users, please reach out to your
-        administrator to address this matter.
-      </Text>
+          <Text text03>
+            If you&apos;re an admin, you can manage your subscription by
+            clicking the button below. For other users, please reach out to your
+            administrator to address this matter.
+          </Text>
 
-      <div className="flex flex-row gap-2">
-        <Button onClick={handleResubscribe} disabled={isLoading}>
-          {isLoading ? "Loading..." : "Resubscribe"}
-        </Button>
-        <Button
-          secondary
-          onClick={handleManageSubscription}
-          disabled={isLoading}
-        >
-          Manage Existing Subscription
-        </Button>
-        <Button
-          secondary
-          onClick={async () => {
-            await logout();
-            window.location.reload();
-          }}
-        >
-          Log out
-        </Button>
-      </div>
+          <div className="flex flex-row gap-2">
+            <Button onClick={handleResubscribe} disabled={isLoading}>
+              {isLoading ? "Loading..." : "Resubscribe"}
+            </Button>
+            <Button
+              secondary
+              onClick={async () => {
+                await logout();
+                window.location.reload();
+              }}
+            >
+              Log out
+            </Button>
+          </div>
 
-      {error && <Text className="text-status-error-05">{error}</Text>}
+          {error && <Text className="text-status-error-05">{error}</Text>}
+        </>
+      ) : (
+        <>
+          <Text text03>
+            {hasLicenseLapsed
+              ? "To reinstate your access and continue using Onyx, please contact your system administrator to renew your license."
+              : "To get started, please contact your system administrator to obtain an Enterprise license."}
+          </Text>
+
+          <Text text03>
+            If you are the administrator, please visit the{" "}
+            <Link className={linkClassName} href="/admin/billing">
+              Admin Billing
+            </Link>{" "}
+            page to {hasLicenseLapsed ? "renew" : "activate"} your license, sign
+            up through Stripe or reach out to{" "}
+            <a className={linkClassName} href="mailto:support@onyx.app">
+              support@onyx.app
+            </a>
+            for billing assistance.
+          </Text>
+
+          <div className="flex flex-row gap-2">
+            <Button
+              onClick={async () => {
+                await logout();
+                window.location.reload();
+              }}
+            >
+              Log out
+            </Button>
+          </div>
+        </>
+      )}
 
       <Text text03>
         Need help? Join our{" "}
-        <a
-          className="text-action-link-05 hover:text-action-link-06"
+        <InlineExternalLink
+          className={linkClassName}
           href="https://discord.gg/4NA5SbzrWb"
-          target="_blank"
-          rel="noopener noreferrer"
         >
           Discord community
-        </a>{" "}
+        </InlineExternalLink>{" "}
         for support.
       </Text>
     </ErrorPageLayout>

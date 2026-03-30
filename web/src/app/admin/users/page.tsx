@@ -1,16 +1,15 @@
 "use client";
 
 import { useState } from "react";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import SimpleTabs from "@/refresh-components/SimpleTabs";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import InvitedUserTable from "@/components/admin/users/InvitedUserTable";
 import SignedUpUserTable from "@/components/admin/users/SignedUpUserTable";
 
-import { Modal } from "@/components/Modal";
+import Modal from "@/refresh-components/Modal";
 import { ThreeDotsLoader } from "@/components/Loading";
 import { AdminPageTitle } from "@/components/admin/Title";
 import { usePopup, PopupSpec } from "@/components/admin/connectors/Popup";
-import { UsersIcon } from "@/components/icons/icons";
 import { errorHandlingFetcher } from "@/lib/fetcher";
 import useSWR, { mutate } from "swr";
 import { ErrorCallout } from "@/components/ErrorCallout";
@@ -18,15 +17,14 @@ import BulkAdd from "@/components/admin/users/BulkAdd";
 import Text from "@/refresh-components/texts/Text";
 import { InvitedUserSnapshot } from "@/lib/types";
 import { ConfirmEntityModal } from "@/components/modals/ConfirmEntityModal";
-import { NEXT_PUBLIC_CLOUD_ENABLED } from "@/lib/constants";
+import { AuthType, NEXT_PUBLIC_CLOUD_ENABLED } from "@/lib/constants";
 import PendingUsersTable from "@/components/admin/users/PendingUsersTable";
 import CreateButton from "@/refresh-components/buttons/CreateButton";
 import Button from "@/refresh-components/buttons/Button";
 import InputTypeIn from "@/refresh-components/inputs/InputTypeIn";
 import { Spinner } from "@/components/Spinner";
-import SvgDownloadCloud from "@/icons/download-cloud";
 import { useAuthType } from "@/lib/hooks";
-
+import { SvgDownloadCloud, SvgUser, SvgUserPlus } from "@opal/icons";
 interface CountDisplayProps {
   label: string;
   value: number | null;
@@ -42,10 +40,10 @@ function CountDisplay({ label, value, isLoading }: CountDisplayProps) {
 
   return (
     <div className="flex items-center gap-1 px-1 py-0.5 rounded-06">
-      <Text mainUiMuted text03>
+      <Text as="p" mainUiMuted text03>
         {label}
       </Text>
-      <Text headingH3 text05>
+      <Text as="p" headingH3 text05>
         {displayValue}
       </Text>
     </div>
@@ -147,18 +145,11 @@ const UsersTables = ({
     );
   }
 
-  return (
-    <Tabs defaultValue="current">
-      <TabsList>
-        <TabsTrigger value="current">Current Users</TabsTrigger>
-        <TabsTrigger value="invited">Invited Users</TabsTrigger>
-        {NEXT_PUBLIC_CLOUD_ENABLED && (
-          <TabsTrigger value="pending">Pending Users</TabsTrigger>
-        )}
-      </TabsList>
-
-      <TabsContent value="current">
-        <Card>
+  const tabs = SimpleTabs.generateTabs({
+    current: {
+      name: "Current Users",
+      content: (
+        <Card className="w-full">
           <CardHeader>
             <div className="flex justify-between items-center gap-1">
               <CardTitle>Current Users</CardTitle>
@@ -194,9 +185,12 @@ const UsersTables = ({
             />
           </CardContent>
         </Card>
-      </TabsContent>
-      <TabsContent value="invited">
-        <Card>
+      ),
+    },
+    invited: {
+      name: "Invited Users",
+      content: (
+        <Card className="w-full">
           <CardHeader>
             <div className="flex justify-between items-center gap-1">
               <CardTitle>Invited Users</CardTitle>
@@ -218,9 +212,12 @@ const UsersTables = ({
             />
           </CardContent>
         </Card>
-      </TabsContent>
-      {NEXT_PUBLIC_CLOUD_ENABLED && (
-        <TabsContent value="pending">
+      ),
+    },
+    ...(NEXT_PUBLIC_CLOUD_ENABLED && {
+      pending: {
+        name: "Pending Users",
+        content: (
           <Card>
             <CardHeader>
               <div className="flex justify-between items-center gap-1">
@@ -243,10 +240,12 @@ const UsersTables = ({
               />
             </CardContent>
           </Card>
-        </TabsContent>
-      )}
-    </Tabs>
-  );
+        ),
+      },
+    }),
+  });
+
+  return <SimpleTabs tabs={tabs} defaultValue="current" />;
 };
 
 const SearchableTables = () => {
@@ -296,8 +295,8 @@ const AddUserButton = ({
   const shouldShowFirstInviteWarning =
     !NEXT_PUBLIC_CLOUD_ENABLED &&
     authType !== null &&
-    authType !== "saml" &&
-    authType !== "oidc" &&
+    authType !== AuthType.SAML &&
+    authType !== AuthType.OIDC &&
     invitedUsers &&
     invitedUsers.length === 0;
 
@@ -351,18 +350,24 @@ const AddUserButton = ({
       )}
 
       {bulkAddUsersModal && (
-        <Modal
-          title="Bulk Add Users"
-          onOutsideClick={() => setBulkAddUsersModal(false)}
-        >
-          <div className="flex flex-col gap-2">
-            <Text>
-              Add the email addresses to import, separated by whitespaces.
-              Invited users will be able to login to this domain with their
-              email address.
-            </Text>
-            <BulkAdd onSuccess={onSuccess} onFailure={onFailure} />
-          </div>
+        <Modal open onOpenChange={() => setBulkAddUsersModal(false)}>
+          <Modal.Content>
+            <Modal.Header
+              icon={SvgUserPlus}
+              title="Bulk Add Users"
+              onClose={() => setBulkAddUsersModal(false)}
+            />
+            <Modal.Body>
+              <div className="flex flex-col gap-2">
+                <Text as="p">
+                  Add the email addresses to import, separated by whitespaces.
+                  Invited users will be able to login to this domain with their
+                  email address.
+                </Text>
+                <BulkAdd onSuccess={onSuccess} onFailure={onFailure} />
+              </div>
+            </Modal.Body>
+          </Modal.Content>
         </Modal>
       )}
     </>
@@ -371,10 +376,10 @@ const AddUserButton = ({
 
 const Page = () => {
   return (
-    <div className="mx-auto container">
-      <AdminPageTitle title="Manage Users" icon={<UsersIcon size={32} />} />
+    <>
+      <AdminPageTitle title="Manage Users" icon={SvgUser} />
       <SearchableTables />
-    </div>
+    </>
   );
 };
 

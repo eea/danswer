@@ -22,12 +22,12 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.expression import null
 
-from onyx.agents.agent_search.kb_search.models import KGEntityDocInfo
 from onyx.configs.constants import DEFAULT_BOOST
 from onyx.configs.constants import DocumentSource
 from onyx.configs.kg_configs import KG_SIMPLE_ANSWER_MAX_DISPLAYED_SOURCES
 from onyx.db.chunk import delete_chunk_stats_by_connector_credential_pair__no_commit
 from onyx.db.connector_credential_pair import get_connector_credential_pair_from_id
+from onyx.db.document_access import apply_document_access_filter
 from onyx.db.entities import delete_from_kg_entities__no_commit
 from onyx.db.entities import delete_from_kg_entities_extraction_staging__no_commit
 from onyx.db.enums import AccessType
@@ -36,7 +36,6 @@ from onyx.db.feedback import delete_document_feedback_for_documents__no_commit
 from onyx.db.models import Connector
 from onyx.db.models import ConnectorCredentialPair
 from onyx.db.models import Credential
-from onyx.db.models import Document
 from onyx.db.models import Document as DbDocument
 from onyx.db.models import DocumentByConnectorCredentialPair
 from onyx.db.models import KGEntity
@@ -227,6 +226,211 @@ def get_documents_by_ids(
     return list(documents)
 
 
+def _apply_last_updated_cursor_filter(
+    stmt: Select,
+    cursor_last_modified: datetime | None,
+    cursor_last_synced: datetime | None,
+    cursor_document_id: str | None,
+    is_ascending: bool,
+) -> Select:
+    """Apply cursor filter for last_updated sorting.
+
+    ASC uses nulls_first (NULLs at start), DESC uses nulls_last (NULLs at end).
+    This affects which extra clauses are needed when the cursor has NULL last_synced
+    vs non-NULL last_synced.
+    """
+    if not cursor_last_modified or not cursor_document_id:
+        return stmt
+
+    # Pick comparison operators based on sort direction
+    if is_ascending:
+        modified_cmp = DbDocument.last_modified > cursor_last_modified
+        synced_cmp = DbDocument.last_synced > cursor_last_synced
+        id_cmp = DbDocument.id > cursor_document_id
+    else:
+        modified_cmp = DbDocument.last_modified < cursor_last_modified
+        synced_cmp = DbDocument.last_synced < cursor_last_synced
+        id_cmp = DbDocument.id < cursor_document_id
+
+    if cursor_last_synced is None:
+        # Cursor has NULL last_synced
+        # ASC (nulls_first): NULL is at start, so non-NULL values come after
+        # DESC (nulls_last): NULL is at end, so nothing with non-NULL comes after
+        base_clauses = [
+            modified_cmp,
+            and_(
+                DbDocument.last_modified == cursor_last_modified,
+                DbDocument.last_synced.is_(None),
+                id_cmp,
+            ),
+        ]
+        if is_ascending:
+            # Any non-NULL last_synced comes after NULL when nulls_first
+            base_clauses.append(
+                and_(
+                    DbDocument.last_modified == cursor_last_modified,
+                    DbDocument.last_synced.is_not(None),
+                )
+            )
+        return stmt.where(or_(*base_clauses))
+
+    # Cursor has non-NULL last_synced
+    # ASC (nulls_first): NULLs came before, so no NULL clause needed
+    # DESC (nulls_last): NULLs come after non-NULL values
+    synced_clauses = [
+        synced_cmp,
+        and_(DbDocument.last_synced == cursor_last_synced, id_cmp),
+    ]
+    if not is_ascending:
+        # NULLs come after all non-NULL values when nulls_last
+        synced_clauses.append(DbDocument.last_synced.is_(None))
+
+    return stmt.where(
+        or_(
+            modified_cmp,
+            and_(
+                DbDocument.last_modified == cursor_last_modified,
+                or_(*synced_clauses),
+            ),
+        )
+    )
+
+
+def _apply_name_cursor_filter_asc(
+    stmt: Select,
+    cursor_name: str | None,
+    cursor_document_id: str | None,
+) -> Select:
+    """Apply cursor filter for name ASC sorting."""
+    if not cursor_name or not cursor_document_id:
+        return stmt
+    return stmt.where(
+        or_(
+            DbDocument.semantic_id > cursor_name,
+            and_(
+                DbDocument.semantic_id == cursor_name,
+                DbDocument.id > cursor_document_id,
+            ),
+        )
+    )
+
+
+def _apply_name_cursor_filter_desc(
+    stmt: Select,
+    cursor_name: str | None,
+    cursor_document_id: str | None,
+) -> Select:
+    """Apply cursor filter for name DESC sorting."""
+    if not cursor_name or not cursor_document_id:
+        return stmt
+    return stmt.where(
+        or_(
+            DbDocument.semantic_id < cursor_name,
+            and_(
+                DbDocument.semantic_id == cursor_name,
+                DbDocument.id < cursor_document_id,
+            ),
+        )
+    )
+
+
+def get_accessible_documents_for_hierarchy_node_paginated(
+    db_session: Session,
+    parent_hierarchy_node_id: int,
+    user_email: str | None,
+    external_group_ids: list[str],
+    limit: int,
+    # Sort options
+    sort_by_name: bool = False,
+    sort_ascending: bool = False,
+    # Cursor fields for last_updated sorting
+    cursor_last_modified: datetime | None = None,
+    cursor_last_synced: datetime | None = None,
+    # Cursor field for name sorting
+    cursor_name: str | None = None,
+    # Document ID for tie-breaking (used by both sort types)
+    cursor_document_id: str | None = None,
+) -> list[DbDocument]:
+    stmt = select(DbDocument).where(
+        DbDocument.parent_hierarchy_node_id == parent_hierarchy_node_id
+    )
+    stmt = apply_document_access_filter(stmt, user_email, external_group_ids)
+
+    # Apply cursor filter based on sort type and direction
+    if sort_by_name:
+        if sort_ascending:
+            stmt = _apply_name_cursor_filter_asc(stmt, cursor_name, cursor_document_id)
+            stmt = stmt.order_by(DbDocument.semantic_id.asc(), DbDocument.id.asc())
+        else:
+            stmt = _apply_name_cursor_filter_desc(stmt, cursor_name, cursor_document_id)
+            stmt = stmt.order_by(DbDocument.semantic_id.desc(), DbDocument.id.desc())
+    else:
+        # Sort by last_updated
+        if sort_ascending:
+            stmt = _apply_last_updated_cursor_filter(
+                stmt,
+                cursor_last_modified,
+                cursor_last_synced,
+                cursor_document_id,
+                is_ascending=True,
+            )
+            stmt = stmt.order_by(
+                DbDocument.last_modified.asc(),
+                DbDocument.last_synced.asc().nulls_first(),
+                DbDocument.id.asc(),
+            )
+        else:
+            stmt = _apply_last_updated_cursor_filter(
+                stmt,
+                cursor_last_modified,
+                cursor_last_synced,
+                cursor_document_id,
+                is_ascending=False,
+            )
+            stmt = stmt.order_by(
+                DbDocument.last_modified.desc(),
+                DbDocument.last_synced.desc().nulls_last(),
+                DbDocument.id.desc(),
+            )
+
+    # Use distinct to avoid duplicates when a document belongs to multiple cc_pairs
+    stmt = stmt.distinct()
+    stmt = stmt.limit(limit)
+    return list(db_session.execute(stmt).scalars().all())
+
+
+def filter_existing_document_ids(
+    db_session: Session,
+    document_ids: list[str],
+) -> set[str]:
+    """Filter a list of document IDs to only those that exist in the database.
+
+    Args:
+        db_session: Database session
+        document_ids: List of document IDs to check for existence
+
+    Returns:
+        Set of document IDs from the input list that exist in the database
+    """
+    if not document_ids:
+        return set()
+    stmt = select(DbDocument.id).where(DbDocument.id.in_(document_ids))
+    return set(db_session.execute(stmt).scalars().all())
+
+
+def fetch_document_ids_by_links(
+    db_session: Session,
+    links: list[str],
+) -> dict[str, str]:
+    """Fetch document IDs for documents whose link matches any of the provided values."""
+    if not links:
+        return {}
+
+    stmt = select(DbDocument.link, DbDocument.id).where(DbDocument.link.in_(links))
+    rows = db_session.execute(stmt).all()
+    return {link: doc_id for link, doc_id in rows if link}
+
+
 def get_document_connector_count(
     db_session: Session,
     document_id: str,
@@ -292,7 +496,7 @@ def get_document_counts_for_cc_pairs(
             )
         )
 
-        for connector_id, credential_id, cnt in db_session.execute(stmt).all():  # type: ignore
+        for connector_id, credential_id, cnt in db_session.execute(stmt).all():
             aggregated_counts[(connector_id, credential_id)] = cnt
 
     # Convert aggregated results back to the expected sequence of tuples
@@ -414,6 +618,8 @@ def upsert_documents(
         logger.info("No documents to upsert. Skipping.")
         return
 
+    includes_permissions = any(doc.external_access for doc in seen_documents.values())
+
     insert_stmt = insert(DbDocument).values(
         [
             model_to_dict(
@@ -429,6 +635,7 @@ def upsert_documents(
                     primary_owners=doc.primary_owners,
                     secondary_owners=doc.secondary_owners,
                     kg_stage=KGStage.NOT_STARTED,
+                    parent_hierarchy_node_id=doc.parent_hierarchy_node_id,
                     **(
                         {
                             "external_user_emails": list(
@@ -449,21 +656,39 @@ def upsert_documents(
         ]
     )
 
+    update_set = {
+        "from_ingestion_api": insert_stmt.excluded.from_ingestion_api,
+        "boost": insert_stmt.excluded.boost,
+        "hidden": insert_stmt.excluded.hidden,
+        "semantic_id": insert_stmt.excluded.semantic_id,
+        "link": insert_stmt.excluded.link,
+        "primary_owners": insert_stmt.excluded.primary_owners,
+        "secondary_owners": insert_stmt.excluded.secondary_owners,
+        "doc_metadata": insert_stmt.excluded.doc_metadata,
+        "parent_hierarchy_node_id": insert_stmt.excluded.parent_hierarchy_node_id,
+    }
+    if includes_permissions:
+        # Use COALESCE to preserve existing permissions when new values are NULL.
+        # This prevents subsequent indexing runs (which don't fetch permissions)
+        # from overwriting permissions set by permission sync jobs.
+        update_set.update(
+            {
+                "external_user_emails": func.coalesce(
+                    insert_stmt.excluded.external_user_emails,
+                    DbDocument.external_user_emails,
+                ),
+                "external_user_group_ids": func.coalesce(
+                    insert_stmt.excluded.external_user_group_ids,
+                    DbDocument.external_user_group_ids,
+                ),
+                "is_public": func.coalesce(
+                    insert_stmt.excluded.is_public,
+                    DbDocument.is_public,
+                ),
+            }
+        )
     on_conflict_stmt = insert_stmt.on_conflict_do_update(
-        index_elements=["id"],  # Conflict target
-        set_={
-            "from_ingestion_api": insert_stmt.excluded.from_ingestion_api,
-            "boost": insert_stmt.excluded.boost,
-            "hidden": insert_stmt.excluded.hidden,
-            "semantic_id": insert_stmt.excluded.semantic_id,
-            "link": insert_stmt.excluded.link,
-            "primary_owners": insert_stmt.excluded.primary_owners,
-            "secondary_owners": insert_stmt.excluded.secondary_owners,
-            "external_user_emails": insert_stmt.excluded.external_user_emails,
-            "external_user_group_ids": insert_stmt.excluded.external_user_group_ids,
-            "is_public": insert_stmt.excluded.is_public,
-            "doc_metadata": insert_stmt.excluded.doc_metadata,
-        },
+        index_elements=["id"], set_=update_set  # Conflict target
     )
     db_session.execute(on_conflict_stmt)
     db_session.commit()
@@ -681,11 +906,6 @@ def delete_documents_complete__no_commit(
     )
 
     # Continue with deleting the chunk stats for the documents
-    delete_chunk_stats_by_connector_credential_pair__no_commit(
-        db_session=db_session,
-        document_ids=document_ids,
-    )
-
     delete_chunk_stats_by_connector_credential_pair__no_commit(
         db_session=db_session,
         document_ids=document_ids,
@@ -1124,7 +1344,7 @@ def reset_all_document_kg_stages(db_session: Session) -> int:
 
     # The hasattr check is needed for type checking, even though rowcount
     # is guaranteed to exist at runtime for UPDATE operations
-    return result.rowcount if hasattr(result, "rowcount") else 0  # type: ignore
+    return result.rowcount if hasattr(result, "rowcount") else 0
 
 
 def update_document_kg_stages(
@@ -1147,7 +1367,7 @@ def update_document_kg_stages(
     result = db_session.execute(stmt)
     # The hasattr check is needed for type checking, even though rowcount
     # is guaranteed to exist at runtime for UPDATE operations
-    return result.rowcount if hasattr(result, "rowcount") else 0  # type: ignore
+    return result.rowcount if hasattr(result, "rowcount") else 0
 
 
 def get_skipped_kg_documents(db_session: Session) -> list[str]:
@@ -1163,35 +1383,35 @@ def get_skipped_kg_documents(db_session: Session) -> list[str]:
     return list(db_session.scalars(stmt).all())
 
 
-def get_kg_doc_info_for_entity_name(
-    db_session: Session, document_id: str, entity_type: str
-) -> KGEntityDocInfo:
-    """
-    Get the semantic ID and the link for an entity name.
-    """
+# def get_kg_doc_info_for_entity_name(
+#     db_session: Session, document_id: str, entity_type: str
+# ) -> KGEntityDocInfo:
+#     """
+#     Get the semantic ID and the link for an entity name.
+#     """
 
-    result = (
-        db_session.query(Document.semantic_id, Document.link)
-        .filter(Document.id == document_id)
-        .first()
-    )
+#     result = (
+#         db_session.query(Document.semantic_id, Document.link)
+#         .filter(Document.id == document_id)
+#         .first()
+#     )
 
-    if result is None:
-        return KGEntityDocInfo(
-            doc_id=None,
-            doc_semantic_id=None,
-            doc_link=None,
-            semantic_entity_name=f"{entity_type}:{document_id}",
-            semantic_linked_entity_name=f"{entity_type}:{document_id}",
-        )
+#     if result is None:
+#         return KGEntityDocInfo(
+#             doc_id=None,
+#             doc_semantic_id=None,
+#             doc_link=None,
+#             semantic_entity_name=f"{entity_type}:{document_id}",
+#             semantic_linked_entity_name=f"{entity_type}:{document_id}",
+#         )
 
-    return KGEntityDocInfo(
-        doc_id=document_id,
-        doc_semantic_id=result[0],
-        doc_link=result[1],
-        semantic_entity_name=f"{entity_type.upper()}:{result[0]}",
-        semantic_linked_entity_name=f"[{entity_type.upper()}:{result[0]}]({result[1]})",
-    )
+#     return KGEntityDocInfo(
+#         doc_id=document_id,
+#         doc_semantic_id=result[0],
+#         doc_link=result[1],
+#         semantic_entity_name=f"{entity_type.upper()}:{result[0]}",
+#         semantic_linked_entity_name=f"[{entity_type.upper()}:{result[0]}]({result[1]})",
+#     )
 
 
 def check_for_documents_needing_kg_processing(

@@ -1,12 +1,12 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 import { usePopup } from "@/components/admin/connectors/Popup";
 import {
-  fetchCustomerPortal,
+  createCustomerPortalSession,
   useBillingInformation,
-} from "@/lib/billing/utils";
+  hasActiveSubscription,
+} from "@/lib/billing";
 
 import {
   Card,
@@ -16,13 +16,10 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import Button from "@/refresh-components/buttons/Button";
-import { CreditCard } from "@phosphor-icons/react";
 import { SubscriptionSummary } from "./SubscriptionSummary";
 import { BillingAlerts } from "./BillingAlerts";
-import { ClipboardIcon } from "@/components/icons/icons";
-
+import { SvgClipboard, SvgWallet } from "@opal/icons";
 export default function BillingInformationPage() {
-  const router = useRouter();
   const { popup, setPopup } = usePopup();
 
   const {
@@ -57,7 +54,7 @@ export default function BillingInformationPage() {
     );
   }
 
-  if (!billingInformation) {
+  if (!billingInformation || !hasActiveSubscription(billingInformation)) {
     return (
       <div className="text-center py-8">No billing information available.</div>
     );
@@ -65,21 +62,12 @@ export default function BillingInformationPage() {
 
   const handleManageSubscription = async () => {
     try {
-      const response = await fetchCustomerPortal();
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(
-          `Failed to create customer portal session: ${
-            errorData.message || response.statusText
-          }`
-        );
-      }
-
-      const { url } = await response.json();
-      if (!url) {
+      const response = await createCustomerPortalSession();
+      console.log("response", response);
+      if (!response.stripe_customer_portal_url) {
         throw new Error("No portal URL returned from the server");
       }
-      router.push(url);
+      window.location.href = response.stripe_customer_portal_url;
     } catch (error) {
       console.error("Error creating customer portal session:", error);
       setPopup({
@@ -95,7 +83,7 @@ export default function BillingInformationPage() {
       <Card className="shadow-md">
         <CardHeader>
           <CardTitle className="text-2xl font-bold flex items-center">
-            <CreditCard className="mr-4 text-muted-foreground" size={24} />
+            <SvgWallet className="mr-4 text-muted-foreground h-6 w-6" />
             Subscription Details
           </CardTitle>
         </CardHeader>
@@ -118,7 +106,7 @@ export default function BillingInformationPage() {
           <Button
             onClick={handleManageSubscription}
             className="w-full"
-            leftIcon={ClipboardIcon}
+            leftIcon={SvgClipboard}
           >
             Manage Subscription
           </Button>

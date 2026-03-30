@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from onyx.configs.constants import DocumentSource
 from onyx.connectors.airtable.airtable_connector import AirtableConnector
 from onyx.connectors.models import Document
+from onyx.connectors.models import HierarchyNode
 from onyx.connectors.models import ImageSection
 from onyx.connectors.models import TextSection
 
@@ -192,7 +193,8 @@ def compare_documents(
 
 
 def test_airtable_connector_basic(
-    mock_get_unstructured_api_key: MagicMock, airtable_config: AirtableConfig
+    mock_get_unstructured_api_key: MagicMock,  # noqa: ARG001
+    airtable_config: AirtableConfig,
 ) -> None:
     """Test behavior when all non-attachment fields are treated as metadata."""
     connector = AirtableConnector(
@@ -206,7 +208,9 @@ def test_airtable_connector_basic(
         }
     )
     doc_batch_generator = connector.load_from_state()
-    doc_batch = next(doc_batch_generator)
+    doc_batch = [
+        doc for doc in next(doc_batch_generator) if not isinstance(doc, HierarchyNode)
+    ]
     with pytest.raises(StopIteration):
         next(doc_batch_generator)
 
@@ -256,7 +260,8 @@ def test_airtable_connector_basic(
 
 
 def test_airtable_connector_all_metadata(
-    mock_get_unstructured_api_key: MagicMock, airtable_config: AirtableConfig
+    mock_get_unstructured_api_key: MagicMock,  # noqa: ARG001
+    airtable_config: AirtableConfig,
 ) -> None:
     connector = AirtableConnector(
         base_id=airtable_config.base_id,
@@ -269,7 +274,9 @@ def test_airtable_connector_all_metadata(
         }
     )
     doc_batch_generator = connector.load_from_state()
-    doc_batch = next(doc_batch_generator)
+    doc_batch = [
+        doc for doc in next(doc_batch_generator) if not isinstance(doc, HierarchyNode)
+    ]
     with pytest.raises(StopIteration):
         next(doc_batch_generator)
 
@@ -308,7 +315,8 @@ def test_airtable_connector_all_metadata(
 
 
 def test_airtable_connector_with_share_and_view(
-    mock_get_unstructured_api_key: MagicMock, airtable_config: AirtableConfig
+    mock_get_unstructured_api_key: MagicMock,  # noqa: ARG001
+    airtable_config: AirtableConfig,
 ) -> None:
     """Test behavior when using share_id and view_id for URL generation."""
     SHARE_ID = "shrkfjEzDmLaDtK83"
@@ -326,7 +334,9 @@ def test_airtable_connector_with_share_and_view(
         }
     )
     doc_batch_generator = connector.load_from_state()
-    doc_batch = next(doc_batch_generator)
+    doc_batch = [
+        doc for doc in next(doc_batch_generator) if not isinstance(doc, HierarchyNode)
+    ]
     with pytest.raises(StopIteration):
         next(doc_batch_generator)
 

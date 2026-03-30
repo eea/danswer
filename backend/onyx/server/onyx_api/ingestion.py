@@ -6,12 +6,15 @@ from fastapi import Depends
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from onyx.auth.users import api_key_dep
+from onyx.auth.users import current_curator_or_admin_user
 from onyx.configs.constants import DEFAULT_CC_PAIR_ID
 from onyx.configs.constants import DocumentSource
+from onyx.configs.constants import PUBLIC_API_TAGS
 from onyx.connectors.models import Document
 from onyx.connectors.models import IndexAttemptMetadata
 from onyx.db.connector_credential_pair import get_connector_credential_pair_from_id
+from onyx.db.document import delete_documents_complete__no_commit
+from onyx.db.document import get_document
 from onyx.db.document import get_documents_by_cc_pair
 from onyx.db.document import get_ingestion_documents
 from onyx.db.engine.sql_engine import get_session
@@ -19,15 +22,12 @@ from onyx.db.models import User
 from onyx.db.search_settings import get_active_search_settings
 from onyx.db.search_settings import get_current_search_settings
 from onyx.db.search_settings import get_secondary_search_settings
-from onyx.document_index.factory import get_default_document_index
+from onyx.document_index.factory import get_all_document_indices
 from onyx.indexing.adapters.document_indexing_adapter import (
     DocumentIndexingBatchAdapter,
 )
 from onyx.indexing.embedder import DefaultIndexingEmbedder
 from onyx.indexing.indexing_pipeline import run_indexing_pipeline
-from onyx.natural_language_processing.search_nlp_models import (
-    InformationContentClassificationModel,
-)
 from onyx.server.onyx_api.models import DocMinimalInfo
 from onyx.server.onyx_api.models import IngestionDocument
 from onyx.server.onyx_api.models import IngestionResult
@@ -37,13 +37,13 @@ from shared_configs.contextvars import get_current_tenant_id
 logger = setup_logger()
 
 # not using /api to avoid confusion with nginx api path routing
-router = APIRouter(prefix="/onyx-api")
+router = APIRouter(prefix="/onyx-api", tags=PUBLIC_API_TAGS)
 
 
 @router.get("/connector-docs/{cc_pair_id}")
 def get_docs_by_connector_credential_pair(
     cc_pair_id: int,
-    _: User | None = Depends(api_key_dep),
+    _: User = Depends(current_curator_or_admin_user),
     db_session: Session = Depends(get_session),
 ) -> list[DocMinimalInfo]:
     db_docs = get_documents_by_cc_pair(cc_pair_id=cc_pair_id, db_session=db_session)
@@ -59,7 +59,7 @@ def get_docs_by_connector_credential_pair(
 
 @router.get("/ingestion")
 def get_ingestion_docs(
-    _: User | None = Depends(api_key_dep),
+    _: User = Depends(current_curator_or_admin_user),
     db_session: Session = Depends(get_session),
 ) -> list[DocMinimalInfo]:
     db_docs = get_ingestion_documents(db_session)
@@ -76,7 +76,7 @@ def get_ingestion_docs(
 @router.post("/ingestion")
 def upsert_ingestion_doc(
     doc_info: IngestionDocument,
-    _: User | None = Depends(api_key_dep),
+    _: User = Depends(current_curator_or_admin_user),
     db_session: Session = Depends(get_session),
 ) -> IngestionResult:
     tenant_id = get_current_tenant_id()
@@ -103,8 +103,10 @@ def upsert_ingestion_doc(
 
     # Need to index for both the primary and secondary index if possible
     active_search_settings = get_active_search_settings(db_session)
-    curr_doc_index = get_default_document_index(
+    # This flow is for indexing so we get all indices.
+    document_indices = get_all_document_indices(
         active_search_settings.primary,
+        None,
         None,
     )
 
@@ -113,8 +115,6 @@ def upsert_ingestion_doc(
     index_embedding_model = DefaultIndexingEmbedder.from_db_search_settings(
         search_settings=search_settings
     )
-
-    information_content_classification_model = InformationContentClassificationModel()
 
     # Build adapter for primary indexing
     adapter = DocumentIndexingBatchAdapter(
@@ -130,8 +130,7 @@ def upsert_ingestion_doc(
 
     indexing_pipeline_result = run_indexing_pipeline(
         embedder=index_embedding_model,
-        information_content_classification_model=information_content_classification_model,
-        document_index=curr_doc_index,
+        document_indices=document_indices,
         ignore_time_skip=True,
         db_session=db_session,
         tenant_id=tenant_id,
@@ -154,14 +153,14 @@ def upsert_ingestion_doc(
             search_settings=sec_search_settings
         )
 
-        sec_doc_index = get_default_document_index(
-            active_search_settings.secondary, None
+        # This flow is for indexing so we get all indices.
+        sec_document_indices = get_all_document_indices(
+            active_search_settings.secondary, None, None
         )
 
         run_indexing_pipeline(
             embedder=new_index_embedding_model,
-            information_content_classification_model=information_content_classification_model,
-            document_index=sec_doc_index,
+            document_indices=sec_document_indices,
             ignore_time_skip=True,
             db_session=db_session,
             tenant_id=tenant_id,
@@ -174,3 +173,41 @@ def upsert_ingestion_doc(
         document_id=document.id,
         already_existed=indexing_pipeline_result.new_docs > 0,
     )
+
+
+@router.delete("/ingestion/{document_id}")
+def delete_ingestion_doc(
+    document_id: str,
+    _: User = Depends(current_curator_or_admin_user),
+    db_session: Session = Depends(get_session),
+) -> None:
+    tenant_id = get_current_tenant_id()
+
+    # Verify the document exists and was created via the ingestion API
+    document = get_document(document_id=document_id, db_session=db_session)
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if not document.from_ingestion_api:
+        raise HTTPException(
+            status_code=400,
+            detail="Document was not created via the ingestion API",
+        )
+
+    active_search_settings = get_active_search_settings(db_session)
+    # This flow is for deletion so we get all indices.
+    document_indices = get_all_document_indices(
+        active_search_settings.primary,
+        active_search_settings.secondary,
+        None,
+    )
+    for document_index in document_indices:
+        document_index.delete_single(
+            doc_id=document_id,
+            tenant_id=tenant_id,
+            chunk_count=document.chunk_count,
+        )
+
+    # Delete from database
+    delete_documents_complete__no_commit(db_session, [document_id])
+    db_session.commit()

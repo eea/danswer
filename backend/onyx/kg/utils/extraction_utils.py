@@ -1,7 +1,5 @@
 import json
 
-from langchain_core.messages import HumanMessage
-
 from onyx.configs.constants import DocumentSource
 from onyx.configs.constants import OnyxCallTypes
 from onyx.configs.kg_configs import KG_METADATA_TRACKING_THRESHOLD
@@ -30,12 +28,15 @@ from onyx.kg.utils.formatting_utils import make_entity_id
 from onyx.kg.utils.formatting_utils import make_relationship_id
 from onyx.kg.utils.formatting_utils import make_relationship_type_id
 from onyx.kg.vespa.vespa_interactions import get_document_vespa_contents
-from onyx.llm.factory import get_default_llms
-from onyx.llm.utils import message_to_string
+from onyx.llm.factory import get_default_llm
+from onyx.llm.models import UserMessage
+from onyx.llm.utils import llm_response_to_string
 from onyx.prompts.kg_prompts import CALL_CHUNK_PREPROCESSING_PROMPT
 from onyx.prompts.kg_prompts import CALL_DOCUMENT_CLASSIFICATION_PROMPT
 from onyx.prompts.kg_prompts import GENERAL_CHUNK_PREPROCESSING_PROMPT
 from onyx.prompts.kg_prompts import MASTER_EXTRACTION_PROMPT
+from onyx.tracing.llm_utils import llm_generation_span
+from onyx.tracing.llm_utils import record_llm_span_output
 from onyx.utils.logger import setup_logger
 
 logger = setup_logger()
@@ -416,16 +417,21 @@ def kg_classify_document(
         vendor=kg_config_settings.KG_VENDOR,
     )
 
-    # classify with LLM
-    primary_llm, _ = get_default_llms()
-    msg = [HumanMessage(content=prompt)]
+    # classify with LLM with Braintrust tracing
+    llm = get_default_llm()
     try:
-        raw_classification_result = primary_llm.invoke_langchain(msg)
+        prompt_msg = UserMessage(content=prompt)
+        with llm_generation_span(
+            llm=llm, flow="kg_document_classification", input_messages=[prompt_msg]
+        ) as span_generation:
+            response = llm.invoke(prompt_msg)
+            raw_classification_result = llm_response_to_string(response)
+            record_llm_span_output(
+                span_generation, raw_classification_result, response.usage
+            )
+
         classification_result = (
-            message_to_string(raw_classification_result)
-            .replace("```json", "")
-            .replace("```", "")
-            .strip()
+            raw_classification_result.replace("```json", "").replace("```", "").strip()
         )
         # no json parsing here because of reasoning output
         classification_class = classification_result.split("CATEGORY:")[1].strip()
@@ -484,14 +490,21 @@ def kg_deep_extract_chunks(
         relationship_types=relationship_types_str,
     ).replace("---content---", llm_context)
 
-    # extract with LLM
-    _, fast_llm = get_default_llms()
-    msg = [HumanMessage(content=prompt)]
+    # extract with LLM with Braintrust tracing
+    llm = get_default_llm()
     try:
-        raw_extraction_result = fast_llm.invoke_langchain(msg)
+        prompt_msg = UserMessage(content=prompt)
+        with llm_generation_span(
+            llm=llm, flow="kg_deep_extraction", input_messages=[prompt_msg]
+        ) as span_generation:
+            response = llm.invoke(prompt_msg)
+            raw_extraction_result = llm_response_to_string(response)
+            record_llm_span_output(
+                span_generation, raw_extraction_result, response.usage
+            )
+
         cleaned_response = (
-            message_to_string(raw_extraction_result)
-            .replace("{{", "{")
+            raw_extraction_result.replace("{{", "{")
             .replace("}}", "}")
             .replace("```json\n", "")
             .replace("\n```", "")

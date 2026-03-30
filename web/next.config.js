@@ -19,6 +19,7 @@ const nextConfig = {
   productionBrowserSourceMaps: false,
   output: "standalone",
   transpilePackages: ["@onyx/opal"],
+  typedRoutes: true,
   reactCompiler: true,
   images: {
     // Used to fetch favicons
@@ -94,6 +95,20 @@ const nextConfig = {
         destination: `${
           process.env.INTERNAL_URL || "http://localhost:8080"
         }/openapi.json`,
+      },
+    ];
+  },
+  async redirects() {
+    return [
+      {
+        source: "/chat",
+        destination: "/app",
+        permanent: true,
+      },
+      {
+        source: "/chat/:path*",
+        destination: "/app/:path*",
+        permanent: true,
       },
     ];
   },

@@ -1,38 +1,40 @@
 import { Form, Formik } from "formik";
 import { PopupSpec } from "@/components/admin/connectors/Popup";
-import { SelectorFormField, TextFormField } from "@/components/Field";
 import { createApiKey, updateApiKey } from "./lib";
-import { Modal } from "@/components/Modal";
+import Modal from "@/refresh-components/Modal";
 import Button from "@/refresh-components/buttons/Button";
-import Separator from "@/refresh-components/Separator";
-import Text from "@/components/ui/text";
+import Text from "@/refresh-components/texts/Text";
+import InputTypeIn from "@/refresh-components/inputs/InputTypeIn";
+import InputSelect from "@/refresh-components/inputs/InputSelect";
+import { FormikField } from "@/refresh-components/form/FormikField";
+import { FormField } from "@/refresh-components/form/FormField";
 import { USER_ROLE_LABELS, UserRole } from "@/lib/types";
 import { APIKey } from "./types";
+import { SvgKey } from "@opal/icons";
 
-interface OnyxApiKeyFormProps {
+export interface OnyxApiKeyFormProps {
   onClose: () => void;
   setPopup: (popupSpec: PopupSpec | null) => void;
   onCreateApiKey: (apiKey: APIKey) => void;
   apiKey?: APIKey;
 }
 
-export const OnyxApiKeyForm = ({
+export default function OnyxApiKeyForm({
   onClose,
   setPopup,
   onCreateApiKey,
   apiKey,
-}: OnyxApiKeyFormProps) => {
+}: OnyxApiKeyFormProps) {
   const isUpdate = apiKey !== undefined;
 
   return (
-    <Modal onOutsideClick={onClose} width="w-2/6">
-      <>
-        <h2 className="text-xl font-bold flex">
-          {isUpdate ? "Update API Key" : "Create a new API Key"}
-        </h2>
-
-        <Separator />
-
+    <Modal open onOpenChange={onClose}>
+      <Modal.Content width="sm" height="lg">
+        <Modal.Header
+          icon={SvgKey}
+          title={isUpdate ? "Update API Key" : "Create a new API Key"}
+          onClose={onClose}
+        />
         <Formik
           initialValues={{
             name: apiKey?.api_key_name || "",
@@ -77,50 +79,76 @@ export const OnyxApiKeyForm = ({
             }
           }}
         >
-          {({ isSubmitting, values, setFieldValue }) => (
+          {({ isSubmitting }) => (
             <Form className="w-full overflow-visible">
-              <Text className="mb-4 text-lg">
-                Choose a memorable name for your API key. This is optional and
-                can be added or changed later!
-              </Text>
+              <Modal.Body>
+                <Text as="p">
+                  Choose a memorable name for your API key. This is optional and
+                  can be added or changed later!
+                </Text>
 
-              <TextFormField
-                name="name"
-                label="Name (optional):"
-                autoCompleteDisabled={true}
-              />
+                <FormikField<string>
+                  name="name"
+                  render={(field, helper, _meta, state) => (
+                    <FormField name="name" state={state} className="w-full">
+                      <FormField.Label>Name (optional):</FormField.Label>
+                      <FormField.Control>
+                        <InputTypeIn
+                          {...field}
+                          placeholder=""
+                          onClear={() => helper.setValue("")}
+                          showClearButton={false}
+                        />
+                      </FormField.Control>
+                    </FormField>
+                  )}
+                />
 
-              <SelectorFormField
-                // defaultValue is managed by Formik
-                label="Role:"
-                subtext="Select the role for this API key.
-                         Limited has access to simple public API's.
-                         Basic has access to regular user API's.
-                         Admin has access to admin level APIs."
-                name="role"
-                options={[
-                  {
-                    name: USER_ROLE_LABELS[UserRole.LIMITED],
-                    value: UserRole.LIMITED.toString(),
-                  },
-                  {
-                    name: USER_ROLE_LABELS[UserRole.BASIC],
-                    value: UserRole.BASIC.toString(),
-                  },
-                  {
-                    name: USER_ROLE_LABELS[UserRole.ADMIN],
-                    value: UserRole.ADMIN.toString(),
-                  },
-                ]}
-              />
+                <FormikField<string>
+                  name="role"
+                  render={(field, helper, _meta, state) => (
+                    <FormField name="role" state={state} className="w-full">
+                      <FormField.Label>Role:</FormField.Label>
+                      <FormField.Control>
+                        <InputSelect
+                          value={field.value}
+                          onValueChange={(value) => helper.setValue(value)}
+                        >
+                          <InputSelect.Trigger placeholder="Select a role" />
+                          <InputSelect.Content>
+                            <InputSelect.Item
+                              value={UserRole.LIMITED.toString()}
+                            >
+                              {USER_ROLE_LABELS[UserRole.LIMITED]}
+                            </InputSelect.Item>
+                            <InputSelect.Item value={UserRole.BASIC.toString()}>
+                              {USER_ROLE_LABELS[UserRole.BASIC]}
+                            </InputSelect.Item>
+                            <InputSelect.Item value={UserRole.ADMIN.toString()}>
+                              {USER_ROLE_LABELS[UserRole.ADMIN]}
+                            </InputSelect.Item>
+                          </InputSelect.Content>
+                        </InputSelect>
+                      </FormField.Control>
+                      <FormField.Description>
+                        Select the role for this API key. Limited has access to
+                        simple public APIs. Basic has access to regular user
+                        APIs. Admin has access to admin level APIs.
+                      </FormField.Description>
+                    </FormField>
+                  )}
+                />
+              </Modal.Body>
 
-              <Button type="submit" disabled={isSubmitting}>
-                {isUpdate ? "Update" : "Create"}
-              </Button>
+              <Modal.Footer>
+                <Button type="submit" disabled={isSubmitting}>
+                  {isUpdate ? "Update" : "Create"}
+                </Button>
+              </Modal.Footer>
             </Form>
           )}
         </Formik>
-      </>
+      </Modal.Content>
     </Modal>
   );
-};
+}

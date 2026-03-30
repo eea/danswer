@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useMemo } from "react";
-import { SvgProps } from "@/icons";
+import type { IconProps } from "@opal/types";
 import { cn } from "@/lib/utils";
 import SimpleTooltip from "@/refresh-components/SimpleTooltip";
 
@@ -239,6 +239,9 @@ export interface IconButtonProps
   tertiary?: boolean;
   internal?: boolean;
 
+  // Button size
+  large?: boolean;
+
   // Button states
   transient?: boolean;
   disabled?: boolean;
@@ -246,8 +249,12 @@ export interface IconButtonProps
   // Button properties
   onHover?: (isHovering: boolean) => void;
   onClick?: React.MouseEventHandler<HTMLButtonElement>;
-  icon: React.FunctionComponent<SvgProps>;
+  icon: React.FunctionComponent<IconProps>;
   tooltip?: string;
+  toolTipPosition?: "top" | "bottom" | "left" | "right";
+  tooltipSize?: "sm" | "md" | "lg";
+  /** Additional className to apply to the icon element */
+  iconClassName?: string;
 }
 
 export default function IconButton({
@@ -267,8 +274,10 @@ export default function IconButton({
   onClick,
   icon: Icon,
   className,
+  iconClassName,
   tooltip,
-
+  toolTipPosition = "top",
+  tooltipSize = "lg",
   ...props
 }: IconButtonProps) {
   const variant = main
@@ -300,6 +309,7 @@ export default function IconButton({
 
   const buttonElement = (
     <button
+      type="button"
       className={cn(
         "flex items-center justify-center h-fit w-fit group/IconButton",
         internal ? "p-1" : "p-2",
@@ -320,14 +330,14 @@ export default function IconButton({
       disabled={disabled}
       {...props}
     >
-      <Icon className={cn("h-[1rem] w-[1rem]", iconClass)} />
+      <Icon className={cn("h-[1rem] w-[1rem]", iconClass, iconClassName)} />
     </button>
   );
 
   if (!tooltip) return buttonElement;
 
   return (
-    <SimpleTooltip side="top" tooltip={tooltip}>
+    <SimpleTooltip side={toolTipPosition} size={tooltipSize} tooltip={tooltip}>
       {buttonElement}
     </SimpleTooltip>
   );

@@ -22,7 +22,9 @@ from onyx.utils.variable_functionality import global_version
 class RedisUserGroup(RedisObjectHelper):
     PREFIX = "usergroup"
     FENCE_PREFIX = PREFIX + "_fence"
+    FENCE_TTL = 7 * 24 * 60 * 60  # 7 days - defensive TTL to prevent memory leaks
     TASKSET_PREFIX = PREFIX + "_taskset"
+    TASKSET_TTL = FENCE_TTL
 
     def __init__(self, tenant_id: str, id: int) -> None:
         super().__init__(tenant_id, str(id))
@@ -40,7 +42,7 @@ class RedisUserGroup(RedisObjectHelper):
             self.redis.delete(self.fence_key)
             return
 
-        self.redis.set(self.fence_key, payload)
+        self.redis.set(self.fence_key, payload, ex=self.FENCE_TTL)
         self.redis.sadd(OnyxRedisConstants.ACTIVE_FENCES, self.fence_key)
 
     @property
@@ -54,7 +56,7 @@ class RedisUserGroup(RedisObjectHelper):
 
     def generate_tasks(
         self,
-        max_tasks: int,
+        max_tasks: int,  # noqa: ARG002
         celery_app: Celery,
         db_session: Session,
         redis_client: Redis,
@@ -96,6 +98,7 @@ class RedisUserGroup(RedisObjectHelper):
 
             # add to the set BEFORE creating the task.
             redis_client.sadd(self.taskset_key, custom_task_id)
+            redis_client.expire(self.taskset_key, self.TASKSET_TTL)
 
             celery_app.send_task(
                 OnyxCeleryTask.VESPA_METADATA_SYNC_TASK,

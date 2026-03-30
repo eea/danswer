@@ -15,9 +15,10 @@ class PageType(str, Enum):
 
 
 class ApplicationStatus(str, Enum):
-    PAYMENT_REMINDER = "payment_reminder"
-    GATED_ACCESS = "gated_access"
     ACTIVE = "active"
+    PAYMENT_REMINDER = "payment_reminder"
+    GRACE_PERIOD = "grace_period"
+    GATED_ACCESS = "gated_access"
 
 
 class Notification(BaseModel):
@@ -26,6 +27,8 @@ class Notification(BaseModel):
     dismissed: bool
     last_shown: datetime
     first_shown: datetime
+    title: str
+    description: str | None = None
     additional_data: dict | None = None
 
     @classmethod
@@ -36,6 +39,8 @@ class Notification(BaseModel):
             dismissed=notif.dismissed,
             last_shown=notif.last_shown,
             first_shown=notif.first_shown,
+            title=notif.title,
+            description=notif.description,
             additional_data=notif.additional_data,
         )
 
@@ -51,6 +56,13 @@ class Settings(BaseModel):
     application_status: ApplicationStatus = ApplicationStatus.ACTIVE
     anonymous_user_enabled: bool | None = None
     deep_research_enabled: bool | None = None
+
+    # Whether EE features are unlocked for use.
+    # Depends on license status: True when the user has a valid license
+    # (ACTIVE, GRACE_PERIOD, PAYMENT_REMINDER), False when there's no license
+    # or the license is expired (GATED_ACCESS).
+    # This controls UI visibility of EE features (user groups, analytics, RBAC, etc.).
+    ee_features_enabled: bool = False
 
     temperature_override_enabled: bool | None = False
     auto_scroll: bool | None = False
@@ -75,3 +87,5 @@ class UserSettings(Settings):
     notifications: list[Notification]
     needs_reindexing: bool
     tenant_id: str = POSTGRES_DEFAULT_SCHEMA
+    # Feature flag for Onyx Craft (Build Mode) - used for server-side redirects
+    onyx_craft_enabled: bool = False

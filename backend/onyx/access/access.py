@@ -43,7 +43,7 @@ def get_access_for_document(
     versioned_get_access_for_document_fn = fetch_versioned_implementation(
         "onyx.access.access", "_get_access_for_document"
     )
-    return versioned_get_access_for_document_fn(document_id, db_session)  # type: ignore
+    return versioned_get_access_for_document_fn(document_id, db_session)
 
 
 def get_null_document_access() -> DocumentAccess:
@@ -93,27 +93,27 @@ def get_access_for_documents(
     versioned_get_access_for_documents_fn = fetch_versioned_implementation(
         "onyx.access.access", "_get_access_for_documents"
     )
-    return versioned_get_access_for_documents_fn(
-        document_ids, db_session
-    )  # type: ignore
+    return versioned_get_access_for_documents_fn(document_ids, db_session)
 
 
-def _get_acl_for_user(user: User | None, db_session: Session) -> set[str]:
+def _get_acl_for_user(user: User, db_session: Session) -> set[str]:  # noqa: ARG001
     """Returns a list of ACL entries that the user has access to. This is meant to be
     used downstream to filter out documents that the user does not have access to. The
     user should have access to a document if at least one entry in the document's ACL
     matches one entry in the returned set.
+
+    Anonymous users only have access to public documents.
     """
-    if user:
-        return {prefix_user_email(user.email), PUBLIC_DOC_PAT}
-    return {PUBLIC_DOC_PAT}
+    if user.is_anonymous:
+        return {PUBLIC_DOC_PAT}
+    return {prefix_user_email(user.email), PUBLIC_DOC_PAT}
 
 
-def get_acl_for_user(user: User | None, db_session: Session | None = None) -> set[str]:
+def get_acl_for_user(user: User, db_session: Session | None = None) -> set[str]:
     versioned_acl_for_user_fn = fetch_versioned_implementation(
         "onyx.access.access", "_get_acl_for_user"
     )
-    return versioned_acl_for_user_fn(user, db_session)  # type: ignore
+    return versioned_acl_for_user_fn(user, db_session)
 
 
 def source_should_fetch_permissions_during_indexing(source: DocumentSource) -> bool:

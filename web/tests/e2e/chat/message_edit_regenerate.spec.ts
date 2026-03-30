@@ -1,4 +1,4 @@
-import { test, expect } from "@chromatic-com/playwright";
+import { test, expect } from "@playwright/test";
 import { loginAsRandomUser } from "../utils/auth";
 import { sendMessage, switchModel } from "../utils/chatActions";
 
@@ -9,7 +9,7 @@ test.describe("Message Edit and Regenerate Tests", () => {
     await loginAsRandomUser(page);
 
     // Navigate to the chat page
-    await page.goto("http://localhost:3000/chat");
+    await page.goto("/app");
     await page.waitForLoadState("networkidle");
   });
 
@@ -50,10 +50,10 @@ test.describe("Message Edit and Regenerate Tests", () => {
     await submitButton.click();
 
     // Wait for the new AI response to complete
-    await page.waitForSelector('[data-testid="AIMessage/copy-button"]', {
+    await page.waitForSelector('[data-testid="AgentMessage/copy-button"]', {
       state: "detached",
     });
-    await page.waitForSelector('[data-testid="AIMessage/copy-button"]', {
+    await page.waitForSelector('[data-testid="AgentMessage/copy-button"]', {
       state: "visible",
       timeout: 30000,
     });
@@ -85,10 +85,10 @@ test.describe("Message Edit and Regenerate Tests", () => {
     await submitButton.click();
 
     // Wait for the new AI response to complete
-    await page.waitForSelector('[data-testid="AIMessage/copy-button"]', {
+    await page.waitForSelector('[data-testid="AgentMessage/copy-button"]', {
       state: "detached",
     });
-    await page.waitForSelector('[data-testid="AIMessage/copy-button"]', {
+    await page.waitForSelector('[data-testid="AgentMessage/copy-button"]', {
       state: "visible",
       timeout: 30000,
     });
@@ -140,9 +140,9 @@ test.describe("Message Edit and Regenerate Tests", () => {
   });
 
   test("Message regeneration with model selection", async ({ page }) => {
-    // make sure we're using something other than GPT 4o Mini, otherwise the below
+    // make sure we're using something other than GPT-4o Mini, otherwise the below
     // will fail since we need to switch to a different model for the test
-    await switchModel(page, "GPT 4o");
+    await switchModel(page, "GPT-4.1");
 
     // Send initial message
     await sendMessage(page, "hi! Respond with no more than a sentence");
@@ -159,19 +159,22 @@ test.describe("Message Edit and Regenerate Tests", () => {
     await aiMessage.hover();
 
     // Click regenerate button using its data-testid
-    const regenerateButton = aiMessage.getByTestId("AIMessage/regenerate");
+    const regenerateButton = aiMessage.getByTestId("AgentMessage/regenerate");
     await regenerateButton.click();
 
-    // Wait for dropdown to appear and select GPT-4o-mini
+    // Wait for dropdown to appear and select GPT-4o Mini
     await page.waitForTimeout(500);
 
-    // Look for the GPT-4o-mini option in the dropdown
-    const gpt4oMiniOption = page.locator("text=/.*GPT.?4o.?Mini.*/i").first();
+    // Look for the GPT-4o Mini option in the dropdown
+    const gpt4oMiniOption = page
+      .locator('[role="dialog"]')
+      .getByText("GPT-4o Mini", { exact: true })
+      .first();
     await gpt4oMiniOption.click();
 
     // Wait for regeneration to complete by waiting for feedback buttons to appear
     // The feedback buttons (copy, like, dislike, regenerate) appear when streaming is complete
-    await page.waitForSelector('[data-testid="AIMessage/regenerate"]', {
+    await page.waitForSelector('[data-testid="AgentMessage/regenerate"]', {
       state: "visible",
       timeout: 15000,
     });

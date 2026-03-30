@@ -6,15 +6,19 @@ from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import selectinload
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.session import TransactionalContext
 
 from onyx.access.access import get_access_for_user_files
 from onyx.access.models import DocumentAccess
 from onyx.configs.constants import DEFAULT_BOOST
+from onyx.configs.constants import NotificationType
 from onyx.connectors.models import Document
 from onyx.db.enums import UserFileStatus
+from onyx.db.models import Persona
 from onyx.db.models import UserFile
+from onyx.db.notification import create_notification
 from onyx.db.user_file import fetch_chunk_counts_for_user_files
 from onyx.db.user_file import fetch_user_project_ids_for_user_files
 from onyx.file_store.utils import store_user_file_plaintext
@@ -23,7 +27,7 @@ from onyx.indexing.models import BuildMetadataAwareChunksResult
 from onyx.indexing.models import DocMetadataAwareIndexChunk
 from onyx.indexing.models import IndexChunk
 from onyx.indexing.models import UpdatableChunkData
-from onyx.llm.factory import get_default_llms
+from onyx.llm.factory import get_default_llm
 from onyx.natural_language_processing.utils import get_tokenizer
 from onyx.utils.logger import setup_logger
 
@@ -59,7 +63,7 @@ class UserFileIndexingAdapter:
         self.db_session = db_session
 
     def prepare(
-        self, documents: list[Document], ignore_time_skip: bool
+        self, documents: list[Document], ignore_time_skip: bool  # noqa: ARG002
     ) -> DocumentBatchPrepareContext:
         return DocumentBatchPrepareContext(
             updatable_docs=documents, id_to_boost_map={}  # TODO(subash): add boost map
@@ -140,7 +144,7 @@ class UserFileIndexingAdapter:
 
         # Initialize tokenizer used for token count calculation
         try:
-            llm, _ = get_default_llms()
+            llm = get_default_llm()
             llm_tokenizer = get_tokenizer(
                 model_name=llm.config.model_name,
                 provider_type=llm.config.model_provider,
@@ -194,17 +198,56 @@ class UserFileIndexingAdapter:
             user_file_id_to_token_count=user_file_id_to_token_count,
         )
 
+    def _notify_assistant_owners_if_files_ready(
+        self, user_files: list[UserFile]
+    ) -> None:
+        """
+        Check if all files for associated assistants are processed and notify owners.
+        Only sends notification when all files for an assistant are COMPLETED.
+        """
+        for user_file in user_files:
+            if user_file.status == UserFileStatus.COMPLETED:
+                for assistant in user_file.assistants:
+                    # Skip assistants without owners
+                    if assistant.user_id is None:
+                        continue
+
+                    # Check if all OTHER files for this assistant are completed
+                    # (we already know current file is completed from the outer check)
+                    all_files_completed = all(
+                        f.status == UserFileStatus.COMPLETED
+                        for f in assistant.user_files
+                        if f.id != user_file.id
+                    )
+
+                    if all_files_completed:
+                        create_notification(
+                            user_id=assistant.user_id,
+                            notif_type=NotificationType.ASSISTANT_FILES_READY,
+                            db_session=self.db_session,
+                            title="Your files are ready!",
+                            description=f"All files for agent {assistant.name} have been processed and are now available.",
+                            additional_data={
+                                "persona_id": assistant.id,
+                                "link": f"/assistants/{assistant.id}",
+                            },
+                            autocommit=False,
+                        )
+
     def post_index(
         self,
         context: DocumentBatchPrepareContext,
-        updatable_chunk_data: list[UpdatableChunkData],
-        filtered_documents: list[Document],
+        updatable_chunk_data: list[UpdatableChunkData],  # noqa: ARG002
+        filtered_documents: list[Document],  # noqa: ARG002
         result: BuildMetadataAwareChunksResult,
     ) -> None:
         user_file_ids = [doc.id for doc in context.updatable_docs]
 
         user_files = (
-            self.db_session.query(UserFile).filter(UserFile.id.in_(user_file_ids)).all()
+            self.db_session.query(UserFile)
+            .options(selectinload(UserFile.assistants).selectinload(Persona.user_files))
+            .filter(UserFile.id.in_(user_file_ids))
+            .all()
         )
         for user_file in user_files:
             # don't update the status if the user file is being deleted
@@ -217,6 +260,10 @@ class UserFileIndexingAdapter:
             user_file.token_count = result.user_file_id_to_token_count[
                 str(user_file.id)
             ]
+
+        # Notify assistant owners if all their files are now processed
+        self._notify_assistant_owners_if_files_ready(user_files)
+
         self.db_session.commit()
 
         # Store the plaintext in the file store for faster retrieval

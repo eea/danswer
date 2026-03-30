@@ -20,7 +20,7 @@ import Button from "@/refresh-components/buttons/Button";
 import { usePaidEnterpriseFeaturesEnabled } from "@/components/settings/usePaidEnterpriseFeaturesEnabled";
 import { IsPublicGroupSelector } from "@/components/IsPublicGroupSelector";
 import React, { useEffect, useState } from "react";
-import { useUser } from "@/components/user/UserProvider";
+import { useUser } from "@/providers/UserProvider";
 import { ConnectorMultiSelect } from "@/components/ConnectorMultiSelect";
 import { NonSelectableConnectors } from "@/components/NonSelectableConnectors";
 import { FederatedConnectorSelector } from "@/components/FederatedConnectorSelector";
@@ -178,13 +178,11 @@ export const DocumentSetCreationForm = ({
                   name="name"
                   label="Name:"
                   placeholder="A name for the document set"
-                  autoCompleteDisabled={true}
                 />
                 <TextFormField
                   name="description"
                   label="Description:"
                   placeholder="Describe what the document set represents"
-                  autoCompleteDisabled={true}
                   optional={true}
                 />
 

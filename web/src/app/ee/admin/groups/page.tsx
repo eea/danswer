@@ -1,17 +1,17 @@
 "use client";
 
-import { GroupsIcon } from "@/components/icons/icons";
 import { UserGroupsTable } from "./UserGroupsTable";
-import { UserGroupCreationForm } from "./UserGroupCreationForm";
+import UserGroupCreationForm from "./UserGroupCreationForm";
 import { usePopup } from "@/components/admin/connectors/Popup";
 import { useState } from "react";
 import { ThreeDotsLoader } from "@/components/Loading";
-import { useConnectorStatus, useUserGroups, useUsers } from "@/lib/hooks";
+import { useConnectorStatus, useUserGroups } from "@/lib/hooks";
 import { AdminPageTitle } from "@/components/admin/Title";
+import useUsers from "@/hooks/useUsers";
 
-import { useUser } from "@/components/user/UserProvider";
+import { useUser } from "@/providers/UserProvider";
 import CreateButton from "@/refresh-components/buttons/CreateButton";
-
+import { SvgUsers } from "@opal/icons";
 const Main = () => {
   const { popup, setPopup } = usePopup();
   const [showForm, setShowForm] = useState(false);
@@ -82,14 +82,11 @@ const Main = () => {
 
 const Page = () => {
   return (
-    <div className="mx-auto container">
-      <AdminPageTitle
-        title="Manage User Groups"
-        icon={<GroupsIcon size={32} />}
-      />
+    <>
+      <AdminPageTitle title="Manage User Groups" icon={SvgUsers} />
 
       <Main />
-    </div>
+    </>
   );
 };
 

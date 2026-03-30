@@ -29,6 +29,7 @@ interface UserPreferences {
   shortcut_enabled: boolean;
   temperature_override_enabled: boolean;
   theme_preference: ThemePreference | null;
+  chat_background: string | null;
 }
 
 export interface UserPersonalization {
@@ -143,6 +144,7 @@ export type ValidStatuses =
 export type TaskStatus = "PENDING" | "STARTED" | "SUCCESS" | "FAILURE";
 export type Feedback = "like" | "dislike" | "mixed";
 export type AccessType = "public" | "private" | "sync";
+export type ProcessingMode = "REGULAR" | "FILE_SYSTEM";
 export type SessionType = "Chat" | "Search" | "Slack";
 
 export interface DocumentBoostStatus {
@@ -464,6 +466,7 @@ export enum ValidSources {
   Jira = "jira",
   Productboard = "productboard",
   Slab = "slab",
+  Coda = "coda",
   Notion = "notion",
   Guru = "guru",
   Gong = "gong",
@@ -500,6 +503,7 @@ export enum ValidSources {
   Airtable = "airtable",
   Gitbook = "gitbook",
   Highspot = "highspot",
+  DrupalWiki = "drupal_wiki",
   Imap = "imap",
   Bitbucket = "bitbucket",
   TestRail = "testrail",
@@ -526,6 +530,7 @@ export const validAutoSyncSources = [
   ValidSources.Salesforce,
   ValidSources.GitHub,
   ValidSources.Sharepoint,
+  ValidSources.Teams,
 ] as const;
 
 // Create a type from the array elements

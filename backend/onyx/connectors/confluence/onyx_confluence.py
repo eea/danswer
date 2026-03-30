@@ -579,13 +579,18 @@ class OnyxConfluence:
         while url_suffix:
             logger.debug(f"Making confluence call to {url_suffix}")
             try:
+                # Only pass params if they're not already in the URL to avoid duplicate
+                # params accumulating. Confluence's _links.next already includes these.
+                params = {}
+                if "body-format=" not in url_suffix:
+                    params["body-format"] = "atlas_doc_format"
+                if "expand=" not in url_suffix:
+                    params["expand"] = "body.atlas_doc_format"
+
                 raw_response = self.get(
                     path=url_suffix,
                     advanced_mode=True,
-                    params={
-                        "body-format": "atlas_doc_format",
-                        "expand": "body.atlas_doc_format",
-                    },
+                    params=params,
                 )
             except Exception as e:
                 logger.exception(f"Error in confluence call to {url_suffix}")
@@ -897,13 +902,16 @@ class OnyxConfluence:
         space_key: str,
     ) -> list[dict[str, Any]]:
         """
-        This is a confluence server specific method that can be used to
+        This is a confluence server/data center specific method that can be used to
         fetch the permissions of a space.
-        This is better logging than calling the get_space_permissions method
-        because it returns a jsonrpc response.
-        TODO: Make this call these endpoints for newer confluence versions:
-        - /rest/api/space/{spaceKey}/permissions
-        - /rest/api/space/{spaceKey}/permissions/anonymous
+
+        NOTE: This uses the JSON-RPC API which is the ONLY way to get space permissions
+        on Confluence Server/Data Center. The REST API equivalent (expand=permissions)
+        is Cloud-only and not available on Data Center as of version 8.9.x.
+
+        If this fails with 401 Unauthorized, the customer needs to enable JSON-RPC:
+        Confluence Admin -> General Configuration -> Further Configuration
+        -> Enable "Remote API (XML-RPC & SOAP)"
         """
         url = "rpc/json-rpc/confluenceservice-v2"
         data = {
@@ -912,7 +920,18 @@ class OnyxConfluence:
             "id": 7,
             "params": [space_key],
         }
-        response = self.post(url, data=data)
+        try:
+            response = self.post(url, data=data)
+        except HTTPError as e:
+            if e.response is not None and e.response.status_code == 401:
+                raise HTTPError(
+                    "Unauthorized (401) when calling JSON-RPC API for space permissions. "
+                    "This is likely because the Remote API is disabled. "
+                    "To fix: Confluence Admin -> General Configuration -> Further Configuration "
+                    "-> Enable 'Remote API (XML-RPC & SOAP)'",
+                    response=e.response,
+                ) from e
+            raise
         logger.debug(f"jsonrpc response: {response}")
         if not response.get("result"):
             logger.warning(
@@ -957,14 +976,20 @@ def get_user_email_from_username__server(
         try:
             response = confluence_client.get_mobile_parameters(user_name)
             email = response.get("email")
-        except Exception:
-            logger.warning(f"failed to get confluence email for {user_name}")
+        except HTTPError as e:
+            status_code = e.response.status_code if e.response is not None else "N/A"
+            logger.warning(
+                f"Failed to get confluence email for {user_name}: "
+                f"HTTP {status_code} - {e}"
+            )
             # For now, we'll just return None and log a warning. This means
             # we will keep retrying to get the email every group sync.
             email = None
-            # We may want to just return a string that indicates failure so we dont
-            # keep retrying
-            # email = f"FAILED TO GET CONFLUENCE EMAIL FOR {user_name}"
+        except Exception as e:
+            logger.warning(
+                f"Failed to get confluence email for {user_name}: {type(e).__name__} - {e}"
+            )
+            email = None
         _USER_EMAIL_CACHE[user_name] = email
     return _USER_EMAIL_CACHE[user_name]
 

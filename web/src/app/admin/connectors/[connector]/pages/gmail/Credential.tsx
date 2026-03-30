@@ -4,9 +4,14 @@ import React, { useState, useEffect } from "react";
 import { useSWRConfig } from "swr";
 import * as Yup from "yup";
 import { useRouter } from "next/navigation";
+import type { Route } from "next";
 import { adminDeleteCredential } from "@/lib/credential";
 import { setupGmailOAuth } from "@/lib/gmail";
-import { GMAIL_AUTH_IS_ADMIN_COOKIE_NAME } from "@/lib/constants";
+import {
+  DOCS_ADMINS_PATH,
+  GMAIL_AUTH_IS_ADMIN_COOKIE_NAME,
+} from "@/lib/constants";
+import { CRAFT_OAUTH_COOKIE_NAME } from "@/app/craft/v1/constants";
 import Cookies from "js-cookie";
 import { TextFormField, SectionHeader } from "@/components/Field";
 import { Form, Formik } from "formik";
@@ -21,6 +26,7 @@ import { ValidSources } from "@/lib/types";
 import { buildSimilarCredentialInfoURL } from "@/app/admin/connector/[ccPairId]/lib";
 import { FiFile, FiCheck, FiLink, FiAlertTriangle } from "react-icons/fi";
 import { cn, truncateString } from "@/lib/utils";
+import { Section } from "@/layouts/general-layouts";
 
 type GmailCredentialJsonTypes = "authorized_user" | "service_account";
 
@@ -253,7 +259,6 @@ export const GmailJsonUploadSection = ({
   existingAuthCredential,
 }: GmailJsonUploadSectionProps) => {
   const { mutate } = useSWRConfig();
-  const router = useRouter();
   const [localServiceAccountData, setLocalServiceAccountData] = useState(
     serviceAccountCredentialData
   );
@@ -298,7 +303,7 @@ export const GmailJsonUploadSection = ({
         <a
           className="text-primary hover:text-primary/80 flex items-center gap-1 text-sm"
           target="_blank"
-          href="https://docs.onyx.app/admin/connectors/official/gmail/overview"
+          href={`${DOCS_ADMINS_PATH}/connectors/official/gmail/overview`}
           rel="noreferrer"
         >
           <FiLink className="h-3 w-3" />
@@ -413,6 +418,13 @@ interface GmailCredentialSectionProps {
   refreshCredentials: () => void;
   connectorExists: boolean;
   user: User | null;
+  buildMode?: boolean;
+  onOAuthRedirect?: () => void;
+  onCredentialCreated?: (
+    credential: Credential<
+      GmailCredentialJson | GmailServiceAccountCredentialJson
+    >
+  ) => void;
 }
 
 async function handleRevokeAccess(
@@ -452,6 +464,9 @@ export const GmailAuthSection = ({
   refreshCredentials,
   connectorExists,
   user,
+  buildMode = false,
+  onOAuthRedirect,
+  onCredentialCreated,
 }: GmailCredentialSectionProps) => {
   const router = useRouter();
   const [isAuthenticating, setIsAuthenticating] = useState(false);
@@ -497,19 +512,29 @@ export const GmailAuthSection = ({
               </p>
             </div>
           </div>
-          <Button
-            danger
-            onClick={async () => {
-              handleRevokeAccess(
-                connectorExists,
-                setPopup,
-                existingCredential,
-                refreshCredentials
-              );
-            }}
-          >
-            Revoke Access
-          </Button>
+          <Section flexDirection="row" justifyContent="between" height="fit">
+            <Button
+              danger
+              onClick={async () => {
+                handleRevokeAccess(
+                  connectorExists,
+                  setPopup,
+                  existingCredential,
+                  refreshCredentials
+                );
+              }}
+            >
+              Revoke Access
+            </Button>
+            {buildMode && onCredentialCreated && (
+              <Button
+                primary
+                onClick={() => onCredentialCreated(existingCredential)}
+              >
+                Continue
+              </Button>
+            )}
+          </Section>
         </div>
       </div>
     );
@@ -625,12 +650,18 @@ export const GmailAuthSection = ({
               Cookies.set(GMAIL_AUTH_IS_ADMIN_COOKIE_NAME, "true", {
                 path: "/",
               });
+              if (buildMode) {
+                Cookies.set(CRAFT_OAUTH_COOKIE_NAME, "true", {
+                  path: "/",
+                });
+              }
               const [authUrl, errorMsg] = await setupGmailOAuth({
                 isAdmin: true,
               });
 
               if (authUrl) {
-                router.push(authUrl);
+                onOAuthRedirect?.();
+                router.push(authUrl as Route);
               } else {
                 setPopup({
                   message: errorMsg,

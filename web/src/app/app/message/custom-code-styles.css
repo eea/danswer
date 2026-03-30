@@ -1,0 +1,258 @@
+/* Light mode syntax highlighting (Atom One Light) */
+.hljs {
+  color: #383a42 !important;
+  background: #fafafa !important;
+}
+
+.hljs-comment,
+.hljs-quote {
+  color: #a0a1a7;
+  font-style: italic;
+}
+
+.hljs-doctag,
+.hljs-keyword,
+.hljs-formula {
+  color: #a626a4;
+}
+
+.hljs-section,
+.hljs-name,
+.hljs-selector-tag,
+.hljs-deletion,
+.hljs-subst {
+  color: #e45649;
+}
+
+.hljs-literal {
+  color: #0184bb;
+}
+
+.hljs-string,
+.hljs-regexp,
+.hljs-addition,
+.hljs-attribute,
+.hljs-meta .hljs-string {
+  color: #50a14f;
+}
+
+.hljs-attr,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-type,
+.hljs-selector-class,
+.hljs-selector-attr,
+.hljs-selector-pseudo,
+.hljs-number {
+  color: #986801;
+}
+
+.hljs-symbol,
+.hljs-bullet,
+.hljs-link,
+.hljs-meta,
+.hljs-selector-id,
+.hljs-title {
+  color: #4078f2;
+}
+
+.hljs-built_in,
+.hljs-title.class_,
+.hljs-class .hljs-title {
+  color: #c18401;
+}
+
+.hljs-emphasis {
+  font-style: italic;
+}
+
+.hljs-strong {
+  font-weight: bold;
+}
+
+.hljs-link {
+  text-decoration: underline;
+}
+
+/* Dark mode syntax highlighting (Atom One Dark) */
+.dark .hljs {
+  color: #e2e6eb !important;
+  background: #151617 !important;
+}
+
+.dark .hljs-comment,
+.dark .hljs-quote {
+  color: #5c6370;
+  font-style: italic;
+}
+
+.dark .hljs-doctag,
+.dark .hljs-keyword,
+.dark .hljs-formula {
+  color: #c678dd;
+}
+
+.dark .hljs-section,
+.dark .hljs-name,
+.dark .hljs-selector-tag,
+.dark .hljs-deletion,
+.dark .hljs-subst {
+  color: #e06c75;
+}
+
+.dark .hljs-literal {
+  color: #56b6c2;
+}
+
+.dark .hljs-string,
+.dark .hljs-regexp,
+.dark .hljs-addition,
+.dark .hljs-attribute,
+.dark .hljs-meta .hljs-string {
+  color: #98c379;
+}
+
+.dark .hljs-attr,
+.dark .hljs-variable,
+.dark .hljs-template-variable,
+.dark .hljs-type,
+.dark .hljs-selector-class,
+.dark .hljs-selector-attr,
+.dark .hljs-selector-pseudo,
+.dark .hljs-number {
+  color: #d19a66;
+}
+
+.dark .hljs-symbol,
+.dark .hljs-bullet,
+.dark .hljs-link,
+.dark .hljs-meta,
+.dark .hljs-selector-id,
+.dark .hljs-title {
+  color: #61aeee;
+}
+
+.dark .hljs-built_in,
+.dark .hljs-title.class_,
+.dark .hljs-class .hljs-title {
+  color: #e6c07b;
+}
+
+.dark .hljs-emphasis {
+  font-style: italic;
+}
+
+.dark .hljs-strong {
+  font-weight: bold;
+}
+
+.dark .hljs-link {
+  text-decoration: underline;
+}
+
+pre[class*="language-"] {
+  padding: 0px; /* Override padding */
+  margin: 0px;
+  border: none;
+}
+
+.prose :where(pre):not(:where([class~="not-prose"], [class~="not-prose"] *)) {
+  padding: 0px; /* Override padding */
+  margin: 0px;
+
+  /* Override scrollbar style to match highlight.js theme */
+  ::-webkit-scrollbar {
+    width: 8px; /* Vertical scrollbar width */
+    height: 8px; /* Horizontal scrollbar height */
+  }
+
+  /* Light mode scrollbar */
+  ::-webkit-scrollbar-track {
+    background: #e5e7eb; /* Light track background color */
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #c9cdd1; /* Light handle color - subtle */
+    border-radius: 10px;
+    transition: background 0.2s ease;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #6b7280; /* Light handle color on hover */
+  }
+
+  scrollbar-width: thin;
+  scrollbar-color: #c9cdd1 #e5e7eb; /* thumb and track colors for light mode */
+}
+
+/* Light mode - highlight scrollbar when hovering code block */
+.prose
+  :where(pre):not(:where([class~="not-prose"], [class~="not-prose"] *)):hover {
+  ::-webkit-scrollbar-thumb {
+    background: #9ca3af; /* More visible on code block hover */
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #6b7280;
+  }
+
+  scrollbar-color: #9ca3af #e5e7eb;
+}
+
+/* Dark mode scrollbar for code blocks */
+.dark
+  .prose
+  :where(pre):not(:where([class~="not-prose"], [class~="not-prose"] *)) {
+  ::-webkit-scrollbar-track {
+    background: #1f2937; /* Dark track background color */
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #374151; /* Dark handle color - subtle */
+    transition: background 0.2s ease;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #6b7280; /* Dark handle color on hover */
+    box-shadow: 0 0 10px #6b7280; /* Light up effect on hover */
+  }
+
+  scrollbar-color: #374151 #1f2937; /* thumb and track colors for dark mode */
+}
+
+/* Dark mode - highlight scrollbar when hovering code block */
+.dark
+  .prose
+  :where(pre):not(:where([class~="not-prose"], [class~="not-prose"] *)):hover {
+  ::-webkit-scrollbar-thumb {
+    background: #4b5563; /* More visible on code block hover */
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #6b7280;
+    box-shadow: 0 0 10px #6b7280;
+  }
+
+  scrollbar-color: #4b5563 #1f2937;
+}
+
+/*
+ * Table breakout container - allows tables to extend beyond their parent's
+ * constrained width to use the full container query width (100cqw).
+ *
+ * Requires an ancestor element with `container-type: inline-size` (@container in Tailwind).
+ *
+ * How the math works:
+ * - width: 100cqw → expand to full container query width
+ * - marginLeft: calc((100% - 100cqw) / 2) → negative margin pulls element left
+ *   (100% is parent width, 100cqw is larger, so result is negative)
+ * - paddingLeft/Right: calc((100cqw - 100%) / 2) → padding keeps content aligned
+ *   with original position while allowing scroll area to extend
+ */
+.markdown-table-breakout {
+  overflow-x: auto;
+  width: 100cqw;
+  margin-left: calc((100% - 100cqw) / 2);
+  padding-left: calc((100cqw - 100%) / 2);
+  padding-right: calc((100cqw - 100%) / 2);
+}

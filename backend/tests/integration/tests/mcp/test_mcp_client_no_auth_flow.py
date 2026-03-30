@@ -83,11 +83,11 @@ def ensure_mcp_server_exists() -> None:
 
 
 def test_mcp_client_no_auth_flow(
-    mcp_no_auth_server: None,
-    reset: None,
+    mcp_no_auth_server: None,  # noqa: ARG001
+    reset: None,  # noqa: ARG001
     admin_user: DATestUser,
     basic_user: DATestUser,
-    llm_provider: DATestLLMProvider,
+    llm_provider: DATestLLMProvider,  # noqa: ARG001
 ) -> None:
     # Step a) Create a no-auth MCP server via the admin API
     create_response = requests.post(
@@ -116,18 +116,14 @@ def test_mcp_client_no_auth_flow(
     tool_entries = tools_response.json()["tools"]
     assert len(tool_entries) == 101
 
-    # Step c) Attach the "hello" tool from the MCP server
-    update_response = requests.post(
-        f"{API_SERVER_URL}/admin/mcp/servers/update",
-        json={
-            "server_id": server_id,
-            "selected_tools": [MCP_HELLO_TOOL],
-        },
+    # Update server status to CONNECTED
+    status_response = requests.patch(
+        f"{API_SERVER_URL}/admin/mcp/server/{server_id}/status",
+        params={"status": "CONNECTED"},
         headers=admin_user.headers,
         cookies=admin_user.cookies,
     )
-    update_response.raise_for_status()
-    assert update_response.json()["updated_tools"] == 1
+    status_response.raise_for_status()
 
     tools_response = requests.get(
         f"{API_SERVER_URL}/admin/mcp/server/{server_id}/db-tools",

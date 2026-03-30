@@ -16,8 +16,7 @@ import Button from "@/refresh-components/buttons/Button";
 import { Card } from "@/components/ui/card";
 import Text from "@/components/ui/text";
 import { Spinner } from "@/components/Spinner";
-import SvgDownloadCloud from "@/icons/download-cloud";
-
+import { SvgDownloadCloud } from "@opal/icons";
 function Main() {
   const [categories, setCategories] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -117,10 +116,10 @@ function Main() {
 
 const Page = () => {
   return (
-    <div className="container mx-auto">
+    <>
       <AdminPageTitle icon={<FiDownload size={32} />} title="Debug Logs" />
       <Main />
-    </div>
+    </>
   );
 };
 

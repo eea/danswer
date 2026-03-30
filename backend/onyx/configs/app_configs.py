@@ -7,12 +7,13 @@ from typing import cast
 
 from onyx.auth.schemas import AuthBackend
 from onyx.configs.constants import AuthType
-from onyx.configs.constants import DocumentIndexType
 from onyx.configs.constants import QueryHistoryType
 from onyx.file_processing.enums import HtmlBasedConnectorTransformLinksStrategy
-from onyx.prompts.image_analysis import DEFAULT_IMAGE_ANALYSIS_SYSTEM_PROMPT
 from onyx.prompts.image_analysis import DEFAULT_IMAGE_SUMMARIZATION_SYSTEM_PROMPT
 from onyx.prompts.image_analysis import DEFAULT_IMAGE_SUMMARIZATION_USER_PROMPT
+from onyx.utils.logger import setup_logger
+
+logger = setup_logger()
 
 #####
 # App Configs
@@ -24,6 +25,20 @@ APP_PORT = 8080
 # prefix from requests directed towards the API server. In these cases, set this to `/api`
 APP_API_PREFIX = os.environ.get("API_PREFIX", "")
 
+# Certain services need to make HTTP requests to the API server, such as the MCP server and Discord bot
+API_SERVER_PROTOCOL = os.environ.get("API_SERVER_PROTOCOL", "http")
+API_SERVER_HOST = os.environ.get("API_SERVER_HOST", "127.0.0.1")
+# This override allows self-hosting the MCP server with Onyx Cloud backend.
+API_SERVER_URL_OVERRIDE_FOR_HTTP_REQUESTS = os.environ.get(
+    "API_SERVER_URL_OVERRIDE_FOR_HTTP_REQUESTS"
+)
+
+# Whether to send user metadata (user_id/email and session_id) to the LLM provider.
+# Disabled by default.
+SEND_USER_METADATA_TO_LLM_PROVIDER = (
+    os.environ.get("SEND_USER_METADATA_TO_LLM_PROVIDER", "")
+).lower() == "true"
+
 #####
 # User Facing Features Configs
 #####
@@ -31,7 +46,6 @@ BLURB_SIZE = 128  # Number Encoder Tokens included in the chunk blurb
 GENERATIVE_MODEL_ACCESS_CHECK_FREQ = int(
     os.environ.get("GENERATIVE_MODEL_ACCESS_CHECK_FREQ") or 86400
 )  # 1 day
-DISABLE_GENERATIVE_AI = os.environ.get("DISABLE_GENERATIVE_AI", "").lower() == "true"
 
 # Controls whether users can use User Knowledge (personal documents) in assistants
 DISABLE_USER_KNOWLEDGE = os.environ.get("DISABLE_USER_KNOWLEDGE", "").lower() == "true"
@@ -60,8 +74,20 @@ WEB_DOMAIN = os.environ.get("WEB_DOMAIN") or "http://localhost:3000"
 #####
 # Auth Configs
 #####
-AUTH_TYPE = AuthType((os.environ.get("AUTH_TYPE") or AuthType.DISABLED.value).lower())
-DISABLE_AUTH = AUTH_TYPE == AuthType.DISABLED
+# Upgrades users from disabled auth to basic auth and shows warning.
+_auth_type_str = (os.environ.get("AUTH_TYPE") or "basic").lower()
+if _auth_type_str == "disabled":
+    logger.warning(
+        "AUTH_TYPE='disabled' is no longer supported. "
+        "Defaulting to 'basic'. Please update your configuration. "
+        "Your existing data will be migrated automatically."
+    )
+    _auth_type_str = AuthType.BASIC.value
+try:
+    AUTH_TYPE = AuthType(_auth_type_str)
+except ValueError:
+    logger.error(f"Invalid AUTH_TYPE: {_auth_type_str}. Defaulting to 'basic'.")
+    AUTH_TYPE = AuthType.BASIC
 
 PASSWORD_MIN_LENGTH = int(os.getenv("PASSWORD_MIN_LENGTH", 8))
 PASSWORD_MAX_LENGTH = int(os.getenv("PASSWORD_MAX_LENGTH", 64))
@@ -117,6 +143,14 @@ VALID_EMAIL_DOMAINS = (
     if _VALID_EMAIL_DOMAINS_STR
     else []
 )
+
+# Disposable email blocking - blocks temporary/throwaway email addresses
+# Set to empty string to disable disposable email blocking
+DISPOSABLE_EMAIL_DOMAINS_URL = os.environ.get(
+    "DISPOSABLE_EMAIL_DOMAINS_URL",
+    "https://disposable.github.io/disposable-email-domains/domains.json",
+)
+
 # OAuth Login Flow
 # Used for both Google OAuth2 and OIDC flows
 OAUTH_CLIENT_ID = (
@@ -126,6 +160,10 @@ OAUTH_CLIENT_SECRET = (
     os.environ.get("OAUTH_CLIENT_SECRET", os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET"))
     or ""
 )
+
+# Whether Google OAuth is enabled (requires both client ID and secret)
+OAUTH_ENABLED = bool(OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET)
+
 # OpenID Connect configuration URL for OIDC integrations
 OPENID_CONFIG_URL = os.environ.get("OPENID_CONFIG_URL") or ""
 
@@ -183,10 +221,31 @@ TRACK_EXTERNAL_IDP_EXPIRY = (
 # DB Configs
 #####
 DOCUMENT_INDEX_NAME = "danswer_index"
-# Vespa is now the default document index store for both keyword and vector
-DOCUMENT_INDEX_TYPE = os.environ.get(
-    "DOCUMENT_INDEX_TYPE", DocumentIndexType.COMBINED.value
+
+# OpenSearch Configs
+OPENSEARCH_HOST = os.environ.get("OPENSEARCH_HOST") or "localhost"
+OPENSEARCH_REST_API_PORT = int(os.environ.get("OPENSEARCH_REST_API_PORT") or 9200)
+OPENSEARCH_ADMIN_USERNAME = os.environ.get("OPENSEARCH_ADMIN_USERNAME", "admin")
+OPENSEARCH_ADMIN_PASSWORD = os.environ.get("OPENSEARCH_ADMIN_PASSWORD", "")
+USING_AWS_MANAGED_OPENSEARCH = (
+    os.environ.get("USING_AWS_MANAGED_OPENSEARCH", "").lower() == "true"
 )
+
+# This is the "base" config for now, the idea is that at least for our dev
+# environments we always want to be dual indexing into both OpenSearch and Vespa
+# to stress test the new codepaths. Only enable this if there is some instance
+# of OpenSearch running for the relevant Onyx instance.
+ENABLE_OPENSEARCH_INDEXING_FOR_ONYX = (
+    os.environ.get("ENABLE_OPENSEARCH_INDEXING_FOR_ONYX", "").lower() == "true"
+)
+# Given that the "base" config above is true, this enables whether we want to
+# retrieve from OpenSearch or Vespa. We want to be able to quickly toggle this
+# in the event we see issues with OpenSearch retrieval in our dev environments.
+ENABLE_OPENSEARCH_RETRIEVAL_FOR_ONYX = (
+    ENABLE_OPENSEARCH_INDEXING_FOR_ONYX
+    and os.environ.get("ENABLE_OPENSEARCH_RETRIEVAL_FOR_ONYX", "").lower() == "true"
+)
+
 VESPA_HOST = os.environ.get("VESPA_HOST") or "localhost"
 # NOTE: this is used if and only if the vespa config server is accessible via a
 # different host than the main vespa application
@@ -198,10 +257,6 @@ VESPA_NUM_ATTEMPTS_ON_STARTUP = int(os.environ.get("NUM_RETRIES_ON_STARTUP") or 
 
 VESPA_CLOUD_URL = os.environ.get("VESPA_CLOUD_URL", "")
 
-# The default below is for dockerized deployment
-VESPA_DEPLOYMENT_ZIP = (
-    os.environ.get("VESPA_DEPLOYMENT_ZIP") or "/app/onyx/vespa-app.zip"
-)
 VESPA_CLOUD_CERT_PATH = os.environ.get("VESPA_CLOUD_CERT_PATH")
 VESPA_CLOUD_KEY_PATH = os.environ.get("VESPA_CLOUD_KEY_PATH")
 
@@ -310,63 +365,64 @@ CELERY_RESULT_EXPIRES = int(os.environ.get("CELERY_RESULT_EXPIRES", 86400))  # s
 
 # https://docs.celeryq.dev/en/stable/userguide/configuration.html#broker-pool-limit
 # Setting to None may help when there is a proxy in the way closing idle connections
-CELERY_BROKER_POOL_LIMIT_DEFAULT = 10
+_CELERY_BROKER_POOL_LIMIT_DEFAULT = 10
 try:
     CELERY_BROKER_POOL_LIMIT = int(
-        os.environ.get("CELERY_BROKER_POOL_LIMIT", CELERY_BROKER_POOL_LIMIT_DEFAULT)
+        os.environ.get("CELERY_BROKER_POOL_LIMIT", _CELERY_BROKER_POOL_LIMIT_DEFAULT)
     )
 except ValueError:
-    CELERY_BROKER_POOL_LIMIT = CELERY_BROKER_POOL_LIMIT_DEFAULT
+    CELERY_BROKER_POOL_LIMIT = _CELERY_BROKER_POOL_LIMIT_DEFAULT
 
-CELERY_WORKER_LIGHT_CONCURRENCY_DEFAULT = 24
+_CELERY_WORKER_LIGHT_CONCURRENCY_DEFAULT = 24
 try:
     CELERY_WORKER_LIGHT_CONCURRENCY = int(
         os.environ.get(
-            "CELERY_WORKER_LIGHT_CONCURRENCY", CELERY_WORKER_LIGHT_CONCURRENCY_DEFAULT
+            "CELERY_WORKER_LIGHT_CONCURRENCY",
+            _CELERY_WORKER_LIGHT_CONCURRENCY_DEFAULT,
         )
     )
 except ValueError:
-    CELERY_WORKER_LIGHT_CONCURRENCY = CELERY_WORKER_LIGHT_CONCURRENCY_DEFAULT
+    CELERY_WORKER_LIGHT_CONCURRENCY = _CELERY_WORKER_LIGHT_CONCURRENCY_DEFAULT
 
-CELERY_WORKER_LIGHT_PREFETCH_MULTIPLIER_DEFAULT = 8
+_CELERY_WORKER_LIGHT_PREFETCH_MULTIPLIER_DEFAULT = 8
 try:
     CELERY_WORKER_LIGHT_PREFETCH_MULTIPLIER = int(
         os.environ.get(
             "CELERY_WORKER_LIGHT_PREFETCH_MULTIPLIER",
-            CELERY_WORKER_LIGHT_PREFETCH_MULTIPLIER_DEFAULT,
+            _CELERY_WORKER_LIGHT_PREFETCH_MULTIPLIER_DEFAULT,
         )
     )
 except ValueError:
     CELERY_WORKER_LIGHT_PREFETCH_MULTIPLIER = (
-        CELERY_WORKER_LIGHT_PREFETCH_MULTIPLIER_DEFAULT
+        _CELERY_WORKER_LIGHT_PREFETCH_MULTIPLIER_DEFAULT
     )
 
-CELERY_WORKER_DOCPROCESSING_CONCURRENCY_DEFAULT = 6
+_CELERY_WORKER_DOCPROCESSING_CONCURRENCY_DEFAULT = 6
 try:
     env_value = os.environ.get("CELERY_WORKER_DOCPROCESSING_CONCURRENCY")
     if not env_value:
         env_value = os.environ.get("NUM_INDEXING_WORKERS")
 
     if not env_value:
-        env_value = str(CELERY_WORKER_DOCPROCESSING_CONCURRENCY_DEFAULT)
+        env_value = str(_CELERY_WORKER_DOCPROCESSING_CONCURRENCY_DEFAULT)
     CELERY_WORKER_DOCPROCESSING_CONCURRENCY = int(env_value)
 except ValueError:
     CELERY_WORKER_DOCPROCESSING_CONCURRENCY = (
-        CELERY_WORKER_DOCPROCESSING_CONCURRENCY_DEFAULT
+        _CELERY_WORKER_DOCPROCESSING_CONCURRENCY_DEFAULT
     )
 
-CELERY_WORKER_DOCFETCHING_CONCURRENCY_DEFAULT = 1
+_CELERY_WORKER_DOCFETCHING_CONCURRENCY_DEFAULT = 1
 try:
     env_value = os.environ.get("CELERY_WORKER_DOCFETCHING_CONCURRENCY")
     if not env_value:
         env_value = os.environ.get("NUM_DOCFETCHING_WORKERS")
 
     if not env_value:
-        env_value = str(CELERY_WORKER_DOCFETCHING_CONCURRENCY_DEFAULT)
+        env_value = str(_CELERY_WORKER_DOCFETCHING_CONCURRENCY_DEFAULT)
     CELERY_WORKER_DOCFETCHING_CONCURRENCY = int(env_value)
 except ValueError:
     CELERY_WORKER_DOCFETCHING_CONCURRENCY = (
-        CELERY_WORKER_DOCFETCHING_CONCURRENCY_DEFAULT
+        _CELERY_WORKER_DOCFETCHING_CONCURRENCY_DEFAULT
     )
 
 CELERY_WORKER_PRIMARY_CONCURRENCY = int(
@@ -377,7 +433,7 @@ CELERY_WORKER_PRIMARY_POOL_OVERFLOW = int(
     os.environ.get("CELERY_WORKER_PRIMARY_POOL_OVERFLOW") or 4
 )
 
-# Consolidated background worker (light, docprocessing, docfetching, heavy, kg_processing, monitoring, user_file_processing)
+# Consolidated background worker (light, docprocessing, docfetching, heavy, monitoring, user_file_processing)
 # separate workers' defaults: light=24, docprocessing=6, docfetching=1, heavy=4, kg=2, monitoring=1, user_file=2
 # Total would be 40, but we use a more conservative default of 20 for the consolidated worker
 CELERY_WORKER_BACKGROUND_CONCURRENCY = int(
@@ -387,10 +443,6 @@ CELERY_WORKER_BACKGROUND_CONCURRENCY = int(
 # Individual worker concurrency settings (used when USE_LIGHTWEIGHT_BACKGROUND_WORKER is False or on Kuberenetes deployments)
 CELERY_WORKER_HEAVY_CONCURRENCY = int(
     os.environ.get("CELERY_WORKER_HEAVY_CONCURRENCY") or 4
-)
-
-CELERY_WORKER_KG_PROCESSING_CONCURRENCY = int(
-    os.environ.get("CELERY_WORKER_KG_PROCESSING_CONCURRENCY") or 2
 )
 
 CELERY_WORKER_MONITORING_CONCURRENCY = int(
@@ -464,11 +516,6 @@ CONFLUENCE_CONNECTOR_LABELS_TO_SKIP = [
     if ignored_tag
 ]
 
-# Avoid to get archived pages
-CONFLUENCE_CONNECTOR_INDEX_ARCHIVED_PAGES = (
-    os.environ.get("CONFLUENCE_CONNECTOR_INDEX_ARCHIVED_PAGES", "").lower() == "true"
-)
-
 # Attachments exceeding this size will not be retrieved (in bytes)
 CONFLUENCE_CONNECTOR_ATTACHMENT_SIZE_THRESHOLD = int(
     os.environ.get("CONFLUENCE_CONNECTOR_ATTACHMENT_SIZE_THRESHOLD", 10 * 1024 * 1024)
@@ -528,8 +575,17 @@ CONFLUENCE_TIMEZONE_OFFSET = float(
     os.environ.get("CONFLUENCE_TIMEZONE_OFFSET", get_current_tz_offset())
 )
 
+CONFLUENCE_USE_ONYX_USERS_FOR_GROUP_SYNC = (
+    os.environ.get("CONFLUENCE_USE_ONYX_USERS_FOR_GROUP_SYNC", "").lower() == "true"
+)
+
 GOOGLE_DRIVE_CONNECTOR_SIZE_THRESHOLD = int(
     os.environ.get("GOOGLE_DRIVE_CONNECTOR_SIZE_THRESHOLD", 10 * 1024 * 1024)
+)
+
+# Default size threshold for Drupal Wiki attachments (10MB)
+DRUPAL_WIKI_ATTACHMENT_SIZE_THRESHOLD = int(
+    os.environ.get("DRUPAL_WIKI_ATTACHMENT_SIZE_THRESHOLD", 10 * 1024 * 1024)
 )
 
 # Default size threshold for SharePoint files (20MB)
@@ -550,6 +606,7 @@ JIRA_CONNECTOR_LABELS_TO_SKIP = [
 JIRA_CONNECTOR_MAX_TICKET_SIZE = int(
     os.environ.get("JIRA_CONNECTOR_MAX_TICKET_SIZE", 100 * 1024)
 )
+JIRA_SLIM_PAGE_SIZE = int(os.environ.get("JIRA_SLIM_PAGE_SIZE", 500))
 
 GONG_CONNECTOR_START_TIME = os.environ.get("GONG_CONNECTOR_START_TIME")
 
@@ -574,13 +631,15 @@ LINEAR_CLIENT_SECRET = os.getenv("LINEAR_CLIENT_SECRET")
 SLACK_NUM_THREADS = int(os.getenv("SLACK_NUM_THREADS") or 8)
 MAX_SLACK_QUERY_EXPANSIONS = int(os.environ.get("MAX_SLACK_QUERY_EXPANSIONS", "5"))
 
-DASK_JOB_CLIENT_ENABLED = (
-    os.environ.get("DASK_JOB_CLIENT_ENABLED", "").lower() == "true"
+# Slack federated search thread context settings
+# Batch size for fetching thread context (controls concurrent API calls per batch)
+SLACK_THREAD_CONTEXT_BATCH_SIZE = int(
+    os.environ.get("SLACK_THREAD_CONTEXT_BATCH_SIZE", "5")
 )
-EXPERIMENTAL_CHECKPOINTING_ENABLED = (
-    os.environ.get("EXPERIMENTAL_CHECKPOINTING_ENABLED", "").lower() == "true"
+# Maximum messages to fetch thread context for (top N by relevance get full context)
+MAX_SLACK_THREAD_CONTEXT_MESSAGES = int(
+    os.environ.get("MAX_SLACK_THREAD_CONTEXT_MESSAGES", "5")
 )
-
 
 # TestRail specific configs
 TESTRAIL_BASE_URL = os.environ.get("TESTRAIL_BASE_URL", "")
@@ -592,7 +651,6 @@ LEAVE_CONNECTOR_ACTIVE_ON_INITIALIZATION_FAILURE = (
     == "true"
 )
 
-PRUNING_DISABLED = -1
 DEFAULT_PRUNING_FREQ = 60 * 60 * 24  # Once a day
 
 ALLOW_SIMULTANEOUS_PRUNING = (
@@ -644,10 +702,6 @@ LARGE_CHUNK_RATIO = 4
 # Include the document level metadata in each chunk. If the metadata is too long, then it is thrown out
 # We don't want the metadata to overwhelm the actual contents of the chunk
 SKIP_METADATA_IN_CHUNK = os.environ.get("SKIP_METADATA_IN_CHUNK", "").lower() == "true"
-# Timeout to wait for job's last update before killing it, in hours
-CLEANUP_INDEXING_JOBS_TIMEOUT = int(
-    os.environ.get("CLEANUP_INDEXING_JOBS_TIMEOUT") or 3
-)
 
 # The indexer will warn in the logs whenver a document exceeds this threshold (in bytes)
 INDEXING_SIZE_WARNING_THRESHOLD = int(
@@ -663,14 +717,6 @@ INDEXING_TRACER_INTERVAL = int(os.environ.get("INDEXING_TRACER_INTERVAL") or 0)
 INDEXING_EMBEDDING_MODEL_NUM_THREADS = int(
     os.environ.get("INDEXING_EMBEDDING_MODEL_NUM_THREADS") or 8
 )
-
-# During an indexing attempt, specifies the number of batches which are allowed to
-# exception without aborting the attempt.
-INDEXING_EXCEPTION_LIMIT = int(os.environ.get("INDEXING_EXCEPTION_LIMIT") or 0)
-
-# Maximum number of user file connector credential pairs to index in a single batch
-# Setting this number too high may overload the indexing process
-USER_FILE_INDEXING_LIMIT = int(os.environ.get("USER_FILE_INDEXING_LIMIT") or 100)
 
 # Maximum file size in a document to be indexed
 MAX_DOCUMENT_CHARS = int(os.environ.get("MAX_DOCUMENT_CHARS") or 5_000_000)
@@ -688,6 +734,15 @@ AVERAGE_SUMMARY_EMBEDDINGS = (
 )
 
 MAX_TOKENS_FOR_FULL_INCLUSION = 4096
+
+# The intent was to have this be configurable per query, but I don't think any
+# codepath was actually configuring this, so for the migrated Vespa interface
+# we'll just use the default value, but also have it be configurable by env var.
+RECENCY_BIAS_MULTIPLIER = float(os.environ.get("RECENCY_BIAS_MULTIPLIER") or 1.0)
+
+# Should match the rerank-count value set in
+# backend/onyx/document_index/vespa/app_config/schemas/danswer_chunk.sd.jinja.
+RERANK_COUNT = int(os.environ.get("RERANK_COUNT") or 1000)
 
 
 #####
@@ -709,21 +764,13 @@ CODE_INTERPRETER_MAX_OUTPUT_LENGTH = int(
 # Miscellaneous
 #####
 JOB_TIMEOUT = 60 * 60 * 6  # 6 hours default
-# used to allow the background indexing jobs to use a different embedding
-# model server than the API server
-CURRENT_PROCESS_IS_AN_INDEXING_JOB = (
-    os.environ.get("CURRENT_PROCESS_IS_AN_INDEXING_JOB", "").lower() == "true"
-)
-# Sets LiteLLM to verbose logging
-LOG_ALL_MODEL_INTERACTIONS = (
-    os.environ.get("LOG_ALL_MODEL_INTERACTIONS", "").lower() == "true"
-)
 # Logs Onyx only model interactions like prompts, responses, messages etc.
 LOG_ONYX_MODEL_INTERACTIONS = (
     os.environ.get("LOG_ONYX_MODEL_INTERACTIONS", "").lower() == "true"
 )
-LOG_INDIVIDUAL_MODEL_TOKENS = (
-    os.environ.get("LOG_INDIVIDUAL_MODEL_TOKENS", "").lower() == "true"
+
+PROMPT_CACHE_CHAT_HISTORY = (
+    os.environ.get("PROMPT_CACHE_CHAT_HISTORY", "").lower() == "true"
 )
 # If set to `true` will enable additional logs about Vespa query performance
 # (time spent on finding the right docs + time spent fetching summaries from disk)
@@ -746,7 +793,27 @@ BRAINTRUST_PROJECT = os.environ.get("BRAINTRUST_PROJECT", "Onyx")
 # Braintrust API key - if provided, Braintrust tracing will be enabled
 BRAINTRUST_API_KEY = os.environ.get("BRAINTRUST_API_KEY") or ""
 # Maximum concurrency for Braintrust evaluations
-BRAINTRUST_MAX_CONCURRENCY = int(os.environ.get("BRAINTRUST_MAX_CONCURRENCY") or 5)
+# None means unlimited concurrency, otherwise specify a number
+_braintrust_concurrency = os.environ.get("BRAINTRUST_MAX_CONCURRENCY")
+BRAINTRUST_MAX_CONCURRENCY = (
+    int(_braintrust_concurrency) if _braintrust_concurrency else None
+)
+
+#####
+# Scheduled Evals Configuration
+#####
+# Comma-separated list of Braintrust dataset names to run on schedule
+SCHEDULED_EVAL_DATASET_NAMES = [
+    name.strip()
+    for name in os.environ.get("SCHEDULED_EVAL_DATASET_NAMES", "").split(",")
+    if name.strip()
+]
+# Email address to use for search permissions during scheduled evals
+SCHEDULED_EVAL_PERMISSIONS_EMAIL = os.environ.get(
+    "SCHEDULED_EVAL_PERMISSIONS_EMAIL", "roshan@onyx.app"
+)
+# Braintrust project name to use for scheduled evals
+SCHEDULED_EVAL_PROJECT = os.environ.get("SCHEDULED_EVAL_PROJECT", "st-dev")
 
 #####
 # Langfuse Configuration
@@ -754,10 +821,7 @@ BRAINTRUST_MAX_CONCURRENCY = int(os.environ.get("BRAINTRUST_MAX_CONCURRENCY") or
 # Langfuse API credentials - if provided, Langfuse tracing will be enabled
 LANGFUSE_SECRET_KEY = os.environ.get("LANGFUSE_SECRET_KEY") or ""
 LANGFUSE_PUBLIC_KEY = os.environ.get("LANGFUSE_PUBLIC_KEY") or ""
-
-TOKEN_BUDGET_GLOBALLY_ENABLED = (
-    os.environ.get("TOKEN_BUDGET_GLOBALLY_ENABLED", "").lower() == "true"
-)
+LANGFUSE_HOST = os.environ.get("LANGFUSE_HOST") or ""  # For self-hosted Langfuse
 
 # Defined custom query/answer conditions to validate the query and the LLM answer.
 # Format: list of strings
@@ -786,16 +850,16 @@ try:
 except json.JSONDecodeError:
     pass
 
-# LLM Model Update API endpoint
-LLM_MODEL_UPDATE_API_URL = os.environ.get("LLM_MODEL_UPDATE_API_URL")
+# Auto LLM Configuration - fetches model configs from GitHub for providers in Auto mode
+AUTO_LLM_CONFIG_URL = os.environ.get(
+    "AUTO_LLM_CONFIG_URL",
+    "https://raw.githubusercontent.com/onyx-dot-app/onyx/main/backend/onyx/llm/well_known_providers/recommended-models.json",
+)
 
-# Federated Search Configs
-MAX_FEDERATED_SECTIONS = int(
-    os.environ.get("MAX_FEDERATED_SECTIONS", "5")
-)  # max no. of federated sections to always keep
-MAX_FEDERATED_CHUNKS = int(
-    os.environ.get("MAX_FEDERATED_CHUNKS", "5")
-)  # max no. of chunks to retrieve per federated connector
+# How often to check for auto LLM model updates (in seconds)
+AUTO_LLM_UPDATE_INTERVAL_SECONDS = int(
+    os.environ.get("AUTO_LLM_UPDATE_INTERVAL_SECONDS", 1800)  # 30 minutes
+)
 
 #####
 # Enterprise Edition Configs
@@ -808,6 +872,11 @@ ENTERPRISE_EDITION_ENABLED = (
     os.environ.get("ENABLE_PAID_ENTERPRISE_EDITION_FEATURES", "").lower() == "true"
 )
 
+#####
+# Image Generation Configuration (DEPRECATED)
+# These environment variables will be deprecated soon.
+# To configure image generation, please visit the Image Generation page in the Admin Panel.
+#####
 # Azure Image Configurations
 AZURE_IMAGE_API_VERSION = os.environ.get("AZURE_IMAGE_API_VERSION") or os.environ.get(
     "AZURE_DALLE_API_VERSION"
@@ -824,11 +893,15 @@ AZURE_IMAGE_DEPLOYMENT_NAME = os.environ.get(
 
 # configurable image model
 IMAGE_MODEL_NAME = os.environ.get("IMAGE_MODEL_NAME", "gpt-image-1")
+IMAGE_MODEL_PROVIDER = os.environ.get("IMAGE_MODEL_PROVIDER", "openai")
 
 # Use managed Vespa (Vespa Cloud). If set, must also set VESPA_CLOUD_URL, VESPA_CLOUD_CERT_PATH and VESPA_CLOUD_KEY_PATH
 MANAGED_VESPA = os.environ.get("MANAGED_VESPA", "").lower() == "true"
 
 ENABLE_EMAIL_INVITES = os.environ.get("ENABLE_EMAIL_INVITES", "").lower() == "true"
+
+# Limit on number of users a free trial tenant can invite (cloud only)
+NUM_FREE_TRIAL_USER_INVITES = int(os.environ.get("NUM_FREE_TRIAL_USER_INVITES", "10"))
 
 # Security and authentication
 DATA_PLANE_SECRET = os.environ.get(
@@ -851,8 +924,6 @@ OAUTH_CONFLUENCE_CLOUD_CLIENT_ID = os.environ.get(
 OAUTH_CONFLUENCE_CLOUD_CLIENT_SECRET = os.environ.get(
     "OAUTH_CONFLUENCE_CLOUD_CLIENT_SECRET", ""
 )
-OAUTH_JIRA_CLOUD_CLIENT_ID = os.environ.get("OAUTH_JIRA_CLOUD_CLIENT_ID", "")
-OAUTH_JIRA_CLOUD_CLIENT_SECRET = os.environ.get("OAUTH_JIRA_CLOUD_CLIENT_SECRET", "")
 OAUTH_GOOGLE_DRIVE_CLIENT_ID = os.environ.get("OAUTH_GOOGLE_DRIVE_CLIENT_ID", "")
 OAUTH_GOOGLE_DRIVE_CLIENT_SECRET = os.environ.get(
     "OAUTH_GOOGLE_DRIVE_CLIENT_SECRET", ""
@@ -894,9 +965,20 @@ DEV_MODE = os.environ.get("DEV_MODE", "").lower() == "true"
 
 INTEGRATION_TESTS_MODE = os.environ.get("INTEGRATION_TESTS_MODE", "").lower() == "true"
 
-MOCK_CONNECTOR_FILE_PATH = os.environ.get("MOCK_CONNECTOR_FILE_PATH")
+#####
+# Captcha Configuration (for cloud signup protection)
+#####
+# Enable captcha verification for new user registration
+CAPTCHA_ENABLED = os.environ.get("CAPTCHA_ENABLED", "").lower() == "true"
 
-TEST_ENV = os.environ.get("TEST_ENV", "").lower() == "true"
+# Google reCAPTCHA secret key (server-side validation)
+RECAPTCHA_SECRET_KEY = os.environ.get("RECAPTCHA_SECRET_KEY", "")
+
+# Minimum score threshold for reCAPTCHA v3 (0.0-1.0, higher = more likely human)
+# 0.5 is the recommended default
+RECAPTCHA_SCORE_THRESHOLD = float(os.environ.get("RECAPTCHA_SCORE_THRESHOLD", "0.5"))
+
+MOCK_CONNECTOR_FILE_PATH = os.environ.get("MOCK_CONNECTOR_FILE_PATH")
 
 # Set to true to mock LLM responses for testing purposes
 MOCK_LLM_RESPONSE = (
@@ -922,15 +1004,6 @@ IMAGE_SUMMARIZATION_USER_PROMPT = os.environ.get(
     DEFAULT_IMAGE_SUMMARIZATION_USER_PROMPT,
 )
 
-IMAGE_ANALYSIS_SYSTEM_PROMPT = os.environ.get(
-    "IMAGE_ANALYSIS_SYSTEM_PROMPT",
-    DEFAULT_IMAGE_ANALYSIS_SYSTEM_PROMPT,
-)
-
-DISABLE_AUTO_AUTH_REFRESH = (
-    os.environ.get("DISABLE_AUTO_AUTH_REFRESH", "").lower() == "true"
-)
-
 # Knowledge Graph Read Only User Configuration
 DB_READONLY_USER: str = os.environ.get("DB_READONLY_USER", "db_readonly_user")
 DB_READONLY_PASSWORD: str = urllib.parse.quote_plus(
@@ -938,6 +1011,9 @@ DB_READONLY_PASSWORD: str = urllib.parse.quote_plus(
 )
 
 # File Store Configuration
+# Which backend to use for file storage: "s3" (S3/MinIO) or "postgres" (PostgreSQL Large Objects)
+FILE_STORE_BACKEND = os.environ.get("FILE_STORE_BACKEND", "s3")
+
 S3_FILE_STORE_BUCKET_NAME = (
     os.environ.get("S3_FILE_STORE_BUCKET_NAME") or "onyx-file-store-bucket"
 )
@@ -959,3 +1035,38 @@ S3_GENERATE_LOCAL_CHECKSUM = (
 # English: en, German:de, etc. See: https://docs.vespa.ai/en/linguistics.html
 VESPA_LANGUAGE_OVERRIDE = os.environ.get("VESPA_LANGUAGE_OVERRIDE")
 VESPA_RESOURCE_LIMITS_DISK = float(os.environ.get("VESPA_RESOURCE_LIMITS_DISK") or 0.95)
+
+
+#####
+# Default LLM API Keys (for cloud deployments)
+# These are Onyx-managed API keys provided to tenants by default
+#####
+OPENAI_DEFAULT_API_KEY = os.environ.get("OPENAI_DEFAULT_API_KEY")
+ANTHROPIC_DEFAULT_API_KEY = os.environ.get("ANTHROPIC_DEFAULT_API_KEY")
+COHERE_DEFAULT_API_KEY = os.environ.get("COHERE_DEFAULT_API_KEY")
+VERTEXAI_DEFAULT_CREDENTIALS = os.environ.get("VERTEXAI_DEFAULT_CREDENTIALS")
+VERTEXAI_DEFAULT_LOCATION = os.environ.get("VERTEXAI_DEFAULT_LOCATION", "global")
+OPENROUTER_DEFAULT_API_KEY = os.environ.get("OPENROUTER_DEFAULT_API_KEY")
+
+INSTANCE_TYPE = (
+    "managed"
+    if os.environ.get("IS_MANAGED_INSTANCE", "").lower() == "true"
+    else "cloud" if AUTH_TYPE == AuthType.CLOUD else "self_hosted"
+)
+
+
+## Discord Bot Configuration
+DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
+DISCORD_BOT_INVOKE_CHAR = os.environ.get("DISCORD_BOT_INVOKE_CHAR", "!")
+
+
+## Stripe Configuration
+# URL to fetch the Stripe publishable key from a public S3 bucket.
+# Publishable keys are safe to expose publicly - they can only initialize
+# Stripe.js and tokenize payment info, not make charges or access data.
+# Stripe.js and tokenize payment info, not make charges or access data.
+STRIPE_PUBLISHABLE_KEY_URL = (
+    "https://onyx-stripe-public.s3.amazonaws.com/publishable-key.txt"
+)
+# Override for local testing with Stripe test keys (pk_test_*)
+STRIPE_PUBLISHABLE_KEY_OVERRIDE = os.environ.get("STRIPE_PUBLISHABLE_KEY")

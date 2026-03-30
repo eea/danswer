@@ -109,6 +109,7 @@ class TenantRedis(redis.Redis):
             "unlock",
             "get",
             "set",
+            "setex",
             "delete",
             "exists",
             "incrby",
@@ -452,7 +453,7 @@ def redis_lock_dump(lock: RedisLock, r: Redis) -> None:
     ttl = r.ttl(name)
     locked = lock.locked()
     owned = lock.owned()
-    local_token: str | None = lock.local.token  # type: ignore
+    local_token: str | None = lock.local.token
 
     remote_token_raw = r.get(lock.name)
     if remote_token_raw:

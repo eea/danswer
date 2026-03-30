@@ -13,22 +13,34 @@ from onyx.configs.constants import DocumentSource
 from onyx.connectors.models import ConnectorCheckpoint
 from onyx.connectors.models import ConnectorFailure
 from onyx.connectors.models import Document
+from onyx.connectors.models import HierarchyNode
 from onyx.connectors.models import SlimDocument
 from onyx.indexing.indexing_heartbeat import IndexingHeartbeatInterface
 from onyx.utils.variable_functionality import fetch_ee_implementation_or_noop
 
 SecondsSinceUnixEpoch = float
 
-GenerateDocumentsOutput = Iterator[list[Document]]
-GenerateSlimDocumentOutput = Iterator[list[SlimDocument]]
+# Output types that can include HierarchyNode alongside Documents/SlimDocuments
+GenerateDocumentsOutput = Iterator[list[Document | HierarchyNode]]
+GenerateSlimDocumentOutput = Iterator[list[SlimDocument | HierarchyNode]]
 
 CT = TypeVar("CT", bound=ConnectorCheckpoint)
 
 
+class NormalizationResult(BaseModel):
+    """Result of URL normalization attempt.
+
+    Attributes:
+        normalized_url: The normalized URL string, or None if normalization failed
+        use_default: If True, fall back to default normalizer. If False, return None.
+    """
+
+    normalized_url: str | None
+    use_default: bool = False
+
+
 class BaseConnector(abc.ABC, Generic[CT]):
     REDIS_KEY_PREFIX = "da_connector_data:"
-    # Common image file extensions supported across connectors
-    IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 
     @abc.abstractmethod
     def load_credentials(self, credentials: dict[str, Any]) -> dict[str, Any] | None:
@@ -75,6 +87,15 @@ class BaseConnector(abc.ABC, Generic[CT]):
     def set_allow_images(self, value: bool) -> None:
         """Implement if the underlying connector wants to skip/allow image downloading
         based on the application level image analysis setting."""
+
+    @classmethod
+    def normalize_url(cls, url: str) -> "NormalizationResult":  # noqa: ARG003
+        """Normalize a URL to match the canonical Document.id format used during ingestion.
+
+        Connectors that use URLs as document IDs should override this method.
+        Returns NormalizationResult with use_default=True if not implemented.
+        """
+        return NormalizationResult(normalized_url=None, use_default=True)
 
     def build_dummy_checkpoint(self) -> CT:
         # TODO: find a way to make this work without type: ignore
@@ -220,7 +241,11 @@ class EventConnector(BaseConnector):
         raise NotImplementedError
 
 
-CheckpointOutput: TypeAlias = Generator[Document | ConnectorFailure, None, CT]
+CheckpointOutput: TypeAlias = Generator[
+    Document | HierarchyNode | ConnectorFailure, None, CT
+]
+
+HierarchyOutput: TypeAlias = Generator[HierarchyNode, None, None]
 
 
 class CheckpointedConnector(BaseConnector[CT]):
@@ -270,4 +295,14 @@ class CheckpointedConnectorWithPermSync(CheckpointedConnector[CT]):
         end: SecondsSinceUnixEpoch,
         checkpoint: CT,
     ) -> CheckpointOutput[CT]:
+        raise NotImplementedError
+
+
+class HierarchyConnector(BaseConnector):
+    @abc.abstractmethod
+    def load_hierarchy(
+        self,
+        start: SecondsSinceUnixEpoch,  # may be unused if the connector must load the full hierarchy each time
+        end: SecondsSinceUnixEpoch,
+    ) -> HierarchyOutput:
         raise NotImplementedError

@@ -1,13 +1,15 @@
 import os
 import time
+from collections.abc import Generator
 
 import pytest
 
 from onyx.access.models import ExternalAccess
+from onyx.connectors.models import HierarchyNode
 from onyx.connectors.teams.connector import TeamsConnector
+from onyx.utils.variable_functionality import global_version
 from tests.daily.connectors.teams.models import TeamsThread
-from tests.daily.connectors.utils import load_everything_from_checkpoint_connector
-from tests.daily.connectors.utils import to_documents
+from tests.daily.connectors.utils import load_all_from_connector
 
 
 TEAMS_THREAD = [
@@ -130,15 +132,11 @@ def test_loading_all_docs_from_teams_connector(
     expected_teams_threads: list[TeamsThread],
 ) -> None:
     docs = list(
-        to_documents(
-            iterator=iter(
-                load_everything_from_checkpoint_connector(
-                    connector=teams_connector,
-                    start=0.0,
-                    end=time.time(),
-                )
-            )
-        )
+        load_all_from_connector(
+            connector=teams_connector,
+            start=0.0,
+            end=time.time(),
+        ).documents
     )
     actual_teams_threads = [TeamsThread.from_doc(doc) for doc in docs]
     actual_teams_threads_map = _build_map(threads=actual_teams_threads)
@@ -162,7 +160,43 @@ def test_slim_docs_retrieval_from_teams_connector(
     ]
 
     for slim_doc in slim_docs:
+        if isinstance(slim_doc, HierarchyNode):
+            continue
         assert (
             slim_doc.external_access
         ), f"ExternalAccess should always be available, instead got {slim_doc=}"
         _assert_is_valid_external_access(external_access=slim_doc.external_access)
+
+
+@pytest.fixture(autouse=False)
+def set_ee_on() -> Generator[None, None, None]:
+    """Need EE to be enabled for perm sync tests to work since
+    perm syncing is an EE-only feature."""
+    global_version.set_ee()
+    yield
+    global_version._is_ee = False
+
+
+def test_load_from_checkpoint_with_perm_sync(
+    teams_connector: TeamsConnector,
+    set_ee_on: None,  # noqa: ARG001
+) -> None:
+    """Test that load_from_checkpoint_with_perm_sync returns documents with external_access.
+
+    This verifies the CheckpointedConnectorWithPermSync interface is properly implemented.
+    """
+    docs = load_all_from_connector(
+        connector=teams_connector,
+        start=0.0,
+        end=time.time(),
+        include_permissions=True,  # Uses load_from_checkpoint_with_perm_sync
+    ).documents
+
+    # We should have at least some documents
+    assert len(docs) > 0, "Expected to find at least one document"
+
+    for doc in docs:
+        assert (
+            doc.external_access is not None
+        ), f"Document {doc.id} should have external_access when using perm sync"
+        _assert_is_valid_external_access(external_access=doc.external_access)

@@ -1,3 +1,5 @@
+# NOTE: ruff and black disagree after applying this noqa, so we just set file-level.
+# ruff: noqa: ARG005
 import os
 from typing import Any
 from unittest.mock import MagicMock
@@ -5,10 +7,17 @@ from unittest.mock import Mock
 from unittest.mock import patch
 from uuid import uuid4
 
+from onyx.db.llm import update_default_provider
+from onyx.db.llm import upsert_llm_provider
+from onyx.server.manage.llm.models import LLMProviderUpsertRequest
+from onyx.server.manage.llm.models import ModelConfigurationUpsertRequest
+
 # Set environment variables to disable model server for testing
+os.environ["DISABLE_MODEL_SERVER"] = "true"
 os.environ["MODEL_SERVER_HOST"] = "disabled"
 os.environ["MODEL_SERVER_PORT"] = "9000"
 
+from sqlalchemy import inspect
 from sqlalchemy.orm import Session
 from slack_sdk.errors import SlackApiError
 
@@ -30,6 +39,7 @@ from onyx.onyxbot.slack.models import ChannelType
 from onyx.db.tools import get_builtin_tool
 from onyx.tools.built_in_tools import SearchTool
 from tests.external_dependency_unit.conftest import create_test_user
+from onyx.llm.constants import LlmProviderNames
 
 
 def _create_test_persona_with_slack_config(db_session: Session) -> Persona | None:
@@ -101,7 +111,7 @@ def _create_mock_slack_request(
 
 
 def _create_mock_slack_client(
-    channel_id: str = "C1234567890", slack_bot_id: int = 12345
+    channel_id: str = "C1234567890", slack_bot_id: int = 12345  # noqa: ARG001
 ) -> Mock:
     """Create a mock Slack client"""
     mock_client = Mock()
@@ -306,7 +316,7 @@ class TestSlackBotFederatedSearch:
         mock_get_query_embeddings.return_value = [[0.1] * 768]  # 768-dimensional vector
 
     def _setup_slack_api_mocks(
-        self, mock_search_messages: Mock, mock_conversations_info: Mock
+        self, mock_search_messages: Mock, mock_conversations_info: Mock  # noqa: ARG002
     ) -> None:
         """Setup Slack API mocks to return controlled data for testing filtering"""
         mock_search_response = Mock()
@@ -353,35 +363,36 @@ class TestSlackBotFederatedSearch:
         self, mock_query_slack: Mock, channel_name: str
     ) -> None:
         """Setup query_slack mock to capture filtering parameters"""
+        from onyx.context.search.federated.slack_search import SlackQueryResult
 
         def mock_query_slack_capture_params(
-            query_string: str,
-            original_query: str,
-            access_token: str,
-            limit: int | None = None,
+            query_string: str,  # noqa: ARG001
+            access_token: str,  # noqa: ARG001
+            limit: int | None = None,  # noqa: ARG001
             allowed_private_channel: str | None = None,
-            bot_token: str | None = None,
+            bot_token: str | None = None,  # noqa: ARG001
             include_dm: bool = False,
-            entities: dict | None = None,
-            available_channels: list | None = None,
-        ) -> list:
+            entities: dict | None = None,  # noqa: ARG001
+            available_channels: list | None = None,  # noqa: ARG001
+            channel_metadata_dict: dict | None = None,  # noqa: ARG001
+        ) -> SlackQueryResult:
             self._captured_filtering_params = {
                 "allowed_private_channel": allowed_private_channel,
                 "include_dm": include_dm,
                 "channel_name": channel_name,
             }
 
-            return []
+            return SlackQueryResult(messages=[], filtered_channels=[])
 
         mock_query_slack.side_effect = mock_query_slack_capture_params
 
     def _setup_channel_type_mock(
-        self, mock_get_channel_type_from_id: Mock, channel_name: str
+        self, mock_get_channel_type_from_id: Mock, channel_name: str  # noqa: ARG002
     ) -> None:
         """Setup get_channel_type_from_id mock to return correct channel types"""
 
         def mock_channel_type_response(
-            web_client: Mock, channel_id: str
+            web_client: Mock, channel_id: str  # noqa: ARG001
         ) -> ChannelType:
             if channel_id == "C1234567890":  # general - public
                 return ChannelType.PUBLIC_CHANNEL
@@ -399,9 +410,13 @@ class TestSlackBotFederatedSearch:
     def _setup_llm_provider(self, db_session: Session) -> None:
         """Create a default LLM provider in the database for testing with real API key"""
         # Delete any existing default LLM provider to ensure clean state
+        # Use SQL-level delete to properly trigger ON DELETE CASCADE
+        # (ORM-level delete tries to set foreign keys to NULL instead)
+        from sqlalchemy import delete
+
         existing_providers = db_session.query(LLMProvider).all()
         for provider in existing_providers:
-            db_session.delete(provider)
+            db_session.execute(delete(LLMProvider).where(LLMProvider.id == provider.id))
         db_session.commit()
 
         api_key = os.getenv("OPENAI_API_KEY")
@@ -410,17 +425,26 @@ class TestSlackBotFederatedSearch:
                 "OPENAI_API_KEY environment variable not set - test requires real API key"
             )
 
-        llm_provider = LLMProvider(
-            name=f"test-llm-provider-{uuid4().hex[:8]}",
-            provider="openai",
-            api_key=api_key,
-            default_model_name="gpt-4o",
-            fast_default_model_name="gpt-4o-mini",
-            is_default_provider=True,
-            is_public=True,
+        provider_view = upsert_llm_provider(
+            LLMProviderUpsertRequest(
+                name=f"test-llm-provider-{uuid4().hex[:8]}",
+                provider=LlmProviderNames.OPENAI,
+                api_key=api_key,
+                default_model_name="gpt-4o",
+                is_public=True,
+                model_configurations=[
+                    ModelConfigurationUpsertRequest(
+                        name="gpt-4o",
+                        is_visible=True,
+                        max_input_tokens=None,
+                        display_name="gpt-4o",
+                    ),
+                ],
+            ),
+            db_session=db_session,
         )
-        db_session.add(llm_provider)
-        db_session.commit()
+
+        update_default_provider(provider_view.id, db_session)
 
     def _teardown_common_mocks(self, patches: list) -> None:
         """Stop all patches"""
@@ -432,7 +456,10 @@ class TestSlackBotFederatedSearch:
         "onyx.document_index.vespa.index.VespaIndex.hybrid_retrieval", return_value=[]
     )
     def test_slack_bot_public_channel_filtering(
-        self, mock_vespa: Mock, mock_gpu_status: Mock, db_session: Session
+        self,
+        mock_vespa: Mock,  # noqa: ARG002
+        mock_gpu_status: Mock,  # noqa: ARG002
+        db_session: Session,
     ) -> None:
         """Test that slack bot in public channel sees only public channel messages"""
         self._setup_llm_provider(db_session)
@@ -487,7 +514,10 @@ class TestSlackBotFederatedSearch:
         "onyx.document_index.vespa.index.VespaIndex.hybrid_retrieval", return_value=[]
     )
     def test_slack_bot_private_channel_filtering(
-        self, mock_vespa: Mock, mock_gpu_status: Mock, db_session: Session
+        self,
+        mock_vespa: Mock,  # noqa: ARG002
+        mock_gpu_status: Mock,  # noqa: ARG002
+        db_session: Session,
     ) -> None:
         """Test that slack bot in private channel sees private + public channel messages"""
         self._setup_llm_provider(db_session)
@@ -542,7 +572,10 @@ class TestSlackBotFederatedSearch:
         "onyx.document_index.vespa.index.VespaIndex.hybrid_retrieval", return_value=[]
     )
     def test_slack_bot_dm_filtering(
-        self, mock_vespa: Mock, mock_gpu_status: Mock, db_session: Session
+        self,
+        mock_vespa: Mock,  # noqa: ARG002
+        mock_gpu_status: Mock,  # noqa: ARG002
+        db_session: Session,
     ) -> None:
         """Test that slack bot in DM sees all messages (no filtering)"""
         self._setup_llm_provider(db_session)
@@ -609,7 +642,9 @@ def test_missing_scope_resilience(
     # Track which channel types were attempted
     attempted_types: list[str] = []
 
-    def mock_conversations_list(types: str | None = None, **kwargs: Any) -> MagicMock:
+    def mock_conversations_list(
+        types: str | None = None, **kwargs: Any  # noqa: ARG001
+    ) -> MagicMock:
         if types:
             attempted_types.append(types)
 
@@ -697,7 +732,9 @@ def test_multiple_missing_scopes_resilience(
     # Track attempts
     attempted_types: list[str] = []
 
-    def mock_conversations_list(types: str | None = None, **kwargs: Any) -> MagicMock:
+    def mock_conversations_list(
+        types: str | None = None, **kwargs: Any  # noqa: ARG001
+    ) -> MagicMock:
         if types:
             attempted_types.append(types)
 
@@ -760,3 +797,76 @@ def test_multiple_missing_scopes_resilience(
     # Should still return available channels
     assert len(result) == 1, f"Expected 1 channel, got {len(result)}"
     assert result["C1234567890"]["name"] == "general"
+
+
+def test_slack_channel_config_eager_loads_persona(db_session: Session) -> None:
+    """Test that fetch_slack_channel_config_for_channel_or_default eagerly loads persona.
+
+    This prevents lazy loading failures when the session context changes later
+    in the request handling flow (e.g., in handle_regular_answer).
+    """
+    from onyx.db.slack_channel_config import (
+        fetch_slack_channel_config_for_channel_or_default,
+    )
+
+    unique_id = str(uuid4())[:8]
+
+    # Create a persona (using same fields as _create_test_persona_with_slack_config)
+    persona = Persona(
+        name=f"test_eager_load_persona_{unique_id}",
+        description="Test persona for eager loading test",
+        chunks_above=0,
+        chunks_below=0,
+        llm_relevance_filter=True,
+        llm_filter_extraction=True,
+        recency_bias=RecencyBiasSetting.AUTO,
+        system_prompt="You are a helpful assistant.",
+        task_prompt="Answer the user's question.",
+    )
+    db_session.add(persona)
+    db_session.flush()
+
+    # Create a slack bot
+    slack_bot = SlackBot(
+        name=f"Test Bot {unique_id}",
+        bot_token=f"xoxb-test-{unique_id}",
+        app_token=f"xapp-test-{unique_id}",
+        enabled=True,
+    )
+    db_session.add(slack_bot)
+    db_session.flush()
+
+    # Create slack channel config with persona
+    channel_name = f"test-channel-{unique_id}"
+    slack_channel_config = SlackChannelConfig(
+        slack_bot_id=slack_bot.id,
+        persona_id=persona.id,
+        channel_config={"channel_name": channel_name, "disabled": False},
+        enable_auto_filters=False,
+        is_default=False,
+    )
+    db_session.add(slack_channel_config)
+    db_session.commit()
+
+    # Fetch the config using the function under test
+    fetched_config = fetch_slack_channel_config_for_channel_or_default(
+        db_session=db_session,
+        slack_bot_id=slack_bot.id,
+        channel_name=channel_name,
+    )
+
+    assert fetched_config is not None, "Should find the channel config"
+
+    # Check that persona relationship is already loaded (not pending lazy load)
+    insp = inspect(fetched_config)
+    assert insp is not None, "Should be able to inspect the config"
+    assert "persona" not in insp.unloaded, (
+        "Persona should be eagerly loaded, not pending lazy load. "
+        "This is required to prevent fallback to default persona when "
+        "session context changes in handle_regular_answer."
+    )
+
+    # Verify the persona is correct
+    assert fetched_config.persona is not None, "Persona should not be None"
+    assert fetched_config.persona.id == persona.id, "Should load the correct persona"
+    assert fetched_config.persona.name == persona.name

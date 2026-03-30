@@ -1,4 +1,3 @@
-import re
 import time
 from typing import cast
 
@@ -53,21 +52,11 @@ def replace_invalid_doc_id_characters(text: str) -> str:
     return text.replace("'", "_")
 
 
-def remove_invalid_unicode_chars(text: str) -> str:
-    """Vespa does not take in unicode chars that aren't valid for XML.
-    This removes them."""
-    _illegal_xml_chars_RE: re.Pattern = re.compile(
-        "[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufdd0-\ufdef\ufffe\uffff]"
-    )
-    return _illegal_xml_chars_RE.sub("", text)
-
-
 def get_vespa_http_client(no_timeout: bool = False, http2: bool = True) -> httpx.Client:
     """
-    Configure and return an HTTP client for communicating with Vespa,
+    Configures and returns an HTTP client for communicating with Vespa,
     including authentication if needed.
     """
-
     return httpx.Client(
         cert=(
             cast(tuple[str, str], (VESPA_CLOUD_CERT_PATH, VESPA_CLOUD_KEY_PATH))
@@ -87,17 +76,21 @@ def wait_for_vespa_with_timeout(wait_interval: int = 5, wait_limit: int = 60) ->
     time_start = time.monotonic()
     logger.info("Vespa: Readiness probe starting.")
     while True:
+        url = f"{VESPA_APP_CONTAINER_URL}/state/v1/health"
         try:
             client = get_vespa_http_client()
-            response = client.get(f"{VESPA_APP_CONTAINER_URL}/state/v1/health")
+            response = client.get(url)
             response.raise_for_status()
 
             response_dict = response.json()
             if response_dict["status"]["code"] == "up":
                 logger.info("Vespa: Readiness probe succeeded. Continuing...")
                 return True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(
+                f"Vespa: Readiness probe failed trying to connect to {url}. "
+                f"Exception: {e}"
+            )
 
         time_elapsed = time.monotonic() - time_start
         if time_elapsed > wait_limit:

@@ -28,7 +28,16 @@ import { Page, expect, APIResponse } from "@playwright/test";
  * **Tool Providers:**
  * - `createWebSearchProvider(type, name)` - Creates and activates a web search provider
  * - `deleteWebSearchProvider(id)` - Deletes a web search provider
- * - `createImageGenProvider(name)` - Creates an OpenAI LLM provider for image generation
+ * - `createImageGenerationConfig(id, model, provider, isDefault)` - Creates an image generation config (enables image gen tool)
+ * - `deleteImageGenerationConfig(id)` - Deletes an image generation config
+ *
+ * **Chat Sessions:**
+ * - `createChatSession(description, personaId?)` - Creates a chat session with a description
+ * - `deleteChatSession(chatId)` - Deletes a chat session
+ *
+ * **Projects:**
+ * - `createProject(name)` - Creates a project with a name
+ * - `deleteProject(projectId)` - Deletes a project
  *
  * **Usage Example:**
  * ```typescript
@@ -42,7 +51,7 @@ import { Page, expect, APIResponse } from "@playwright/test";
  * @param page - Playwright Page instance with authenticated session
  */
 export class OnyxApiClient {
-  private baseUrl = "http://localhost:3000/api";
+  private baseUrl = `${process.env.BASE_URL || "http://localhost:3000"}/api`;
 
   constructor(private page: Page) {}
 
@@ -370,7 +379,6 @@ export class OnyxApiClient {
           provider: "openai",
           api_key: "test-key",
           default_model_name: "gpt-4o",
-          fast_default_model_name: "gpt-4o-mini",
           is_public: false,
           groups: [groupId],
           personas: [],
@@ -385,6 +393,43 @@ export class OnyxApiClient {
 
     this.log(
       `Created restricted LLM provider: ${providerName} (ID: ${responseData.id}, Group: ${groupId})`
+    );
+    return responseData.id;
+  }
+
+  async listLlmProviders(): Promise<
+    Array<{
+      id: number;
+      is_public?: boolean;
+    }>
+  > {
+    const response = await this.get("/llm/provider");
+    return await this.handleResponse(response, "Failed to list LLM providers");
+  }
+
+  async createPublicProvider(providerName: string): Promise<number> {
+    const response = await this.page.request.put(
+      `${this.baseUrl}/admin/llm/provider?is_creation=true`,
+      {
+        data: {
+          name: providerName,
+          provider: "openai",
+          api_key: "test-key",
+          default_model_name: "gpt-4o",
+          is_public: true,
+          groups: [],
+          personas: [],
+        },
+      }
+    );
+
+    const responseData = await this.handleResponse<{ id: number }>(
+      response,
+      "Failed to create public provider"
+    );
+
+    this.log(
+      `Created public LLM provider: ${providerName} (ID: ${responseData.id})`
     );
     return responseData.id;
   }
@@ -492,6 +537,17 @@ export class OnyxApiClient {
       this.log(`Deleted assistant ${assistantId}`);
     }
     return success;
+  }
+
+  async getAssistant(assistantId: number): Promise<{
+    id: number;
+    tools: Array<{ id: number; mcp_server_id?: number | null }>;
+  }> {
+    const response = await this.get(`/persona/${assistantId}`);
+    return await this.handleResponse(
+      response,
+      `Failed to fetch assistant ${assistantId}`
+    );
   }
 
   async listMcpServers(): Promise<any[]> {
@@ -602,17 +658,20 @@ export class OnyxApiClient {
    * Create and activate a web search provider for testing.
    * Uses a dummy API key that won't actually work, but allows the tool to be available.
    *
-   * @param providerType - Type of provider: "exa", "serper", or "google_pse"
+   * @param providerType - Type of provider: "exa", "serper", "google_pse", "searxng"
    * @param name - Optional name for the provider (defaults to "Test Provider")
    * @returns The created provider ID
    */
   async createWebSearchProvider(
-    providerType: "exa" | "serper" | "google_pse" = "exa",
+    providerType: "exa" | "serper" | "google_pse" | "searxng" = "exa",
     name: string = "Test Provider"
   ): Promise<number> {
     const config: Record<string, string> = {};
     if (providerType === "google_pse") {
       config.search_engine_id = "test-engine-id";
+    }
+    if (providerType === "searxng") {
+      config.searxng_base_url = "https://test-searxng.example.com";
     }
 
     const response = await this.post("/admin/web-search/search-providers", {
@@ -649,40 +708,308 @@ export class OnyxApiClient {
   }
 
   /**
-   * Create an OpenAI LLM provider to enable image generation.
-   * Image generation requires an OpenAI provider with an API key.
+   * Creates an image generation configuration for testing.
+   * This enables the image generation tool in assistants.
    *
-   * @param name - Optional name for the provider (defaults to "Test Image Gen Provider")
-   * @returns The provider ID
-   * @throws Error if the provider creation fails
+   * API: POST /api/admin/image-generation/config
+   * Schema (ImageGenerationConfigCreate):
+   *   - image_provider_id: string (required) - unique key
+   *   - model_name: string (required) - e.g., "dall-e-3"
+   *   - provider: string - e.g., "openai"
+   *   - api_key: string
+   *   - is_default: boolean
+   *
+   * @param imageProviderId - Unique identifier for the image generation config
+   * @param modelName - Model name (defaults to "dall-e-3")
+   * @param provider - Provider name (defaults to "openai")
+   * @param isDefault - Whether this should be the default config (defaults to true)
+   * @returns The image_provider_id
    */
-  async createImageGenProvider(
-    name: string = "Test Image Gen Provider"
-  ): Promise<number> {
-    const response = await this.page.request.put(
-      `${this.baseUrl}/admin/llm/provider?is_creation=true`,
-      {
-        data: {
-          name,
-          provider: "openai",
-          api_key: "test-image-gen-key",
-          default_model_name: "gpt-4o",
-          fast_default_model_name: "gpt-4o-mini",
-          is_public: true,
-          groups: [],
-          personas: [],
-        },
-      }
+  async createImageGenerationConfig(
+    imageProviderId: string,
+    modelName: string = "dall-e-3",
+    provider: string = "openai",
+    isDefault: boolean = true
+  ): Promise<string> {
+    const response = await this.post("/admin/image-generation/config", {
+      image_provider_id: imageProviderId,
+      model_name: modelName,
+      provider: provider,
+      api_key: "test-api-key", // Dummy key - enables tool visibility
+      is_default: isDefault,
+    });
+
+    await this.handleResponse(
+      response,
+      "Failed to create image generation config"
     );
 
-    const responseData = await this.handleResponse<{ id: number }>(
-      response,
-      "Failed to create image generation provider"
+    this.log(`Created image generation config: ${imageProviderId}`);
+    return imageProviderId;
+  }
+
+  /**
+   * Deletes an image generation configuration.
+   *
+   * @param imageProviderId - The image_provider_id to delete
+   */
+  async deleteImageGenerationConfig(imageProviderId: string): Promise<void> {
+    const response = await this.delete(
+      `/admin/image-generation/config/${imageProviderId}`
     );
+
+    await this.handleResponseSoft(
+      response,
+      `Failed to delete image generation config ${imageProviderId}`
+    );
+
+    this.log(`Deleted image generation config: ${imageProviderId}`);
+  }
+
+  // === Discord Bot Methods ===
+
+  /**
+   * Creates a Discord guild configuration.
+   * Returns the guild config with registration key (shown once).
+   *
+   * @returns The created guild config with id and registration_key
+   */
+  async createDiscordGuild(): Promise<{
+    id: number;
+    registration_key: string;
+    guild_name: string | null;
+  }> {
+    const response = await this.post("/manage/admin/discord-bot/guilds");
+
+    const guild = await this.handleResponse<{
+      id: number;
+      registration_key: string;
+      guild_name: string | null;
+    }>(response, "Failed to create Discord guild config");
 
     this.log(
-      `Created image generation provider: ${name} (ID: ${responseData.id})`
+      `Created Discord guild config: id=${guild.id}, registration_key=${guild.registration_key}`
     );
-    return responseData.id;
+    return guild;
+  }
+
+  /**
+   * Lists all Discord guild configurations.
+   *
+   * @returns Array of guild configs
+   */
+  async listDiscordGuilds(): Promise<
+    Array<{
+      id: number;
+      guild_id: string | null;
+      guild_name: string | null;
+      enabled: boolean;
+    }>
+  > {
+    const response = await this.get("/manage/admin/discord-bot/guilds");
+    return await this.handleResponse(response, "Failed to list Discord guilds");
+  }
+
+  /**
+   * Gets a specific Discord guild configuration.
+   *
+   * @param guildId - The internal guild config ID
+   * @returns The guild config or null if not found
+   */
+  async getDiscordGuild(guildId: number): Promise<{
+    id: number;
+    guild_id: string | null;
+    guild_name: string | null;
+    enabled: boolean;
+    default_persona_id: number | null;
+  } | null> {
+    const response = await this.get(
+      `/manage/admin/discord-bot/guilds/${guildId}`
+    );
+    if (response.status() === 404) {
+      return null;
+    }
+    return await this.handleResponse(
+      response,
+      `Failed to get Discord guild ${guildId}`
+    );
+  }
+
+  /**
+   * Updates a Discord guild configuration.
+   *
+   * @param guildId - The internal guild config ID
+   * @param updates - The fields to update
+   * @returns The updated guild config
+   */
+  async updateDiscordGuild(
+    guildId: number,
+    updates: { enabled?: boolean; default_persona_id?: number | null }
+  ): Promise<{
+    id: number;
+    guild_id: string | null;
+    guild_name: string | null;
+    enabled: boolean;
+  }> {
+    const response = await this.page.request.patch(
+      `${this.baseUrl}/manage/admin/discord-bot/guilds/${guildId}`,
+      { data: updates }
+    );
+    return await this.handleResponse(
+      response,
+      `Failed to update Discord guild ${guildId}`
+    );
+  }
+
+  /**
+   * Deletes a Discord guild configuration.
+   *
+   * @param guildId - The internal guild config ID
+   */
+  async deleteDiscordGuild(guildId: number): Promise<void> {
+    const response = await this.delete(
+      `/manage/admin/discord-bot/guilds/${guildId}`
+    );
+
+    await this.handleResponseSoft(
+      response,
+      `Failed to delete Discord guild ${guildId}`
+    );
+
+    this.log(`Deleted Discord guild config: ${guildId}`);
+  }
+
+  /**
+   * Lists channels for a Discord guild configuration.
+   *
+   * @param guildConfigId - The internal guild config ID
+   * @returns Array of channel configs
+   */
+  async listDiscordChannels(guildConfigId: number): Promise<
+    Array<{
+      id: number;
+      channel_id: string;
+      channel_name: string;
+      channel_type: string;
+      enabled: boolean;
+    }>
+  > {
+    const response = await this.get(
+      `/manage/admin/discord-bot/guilds/${guildConfigId}/channels`
+    );
+    return await this.handleResponse(
+      response,
+      `Failed to list channels for guild ${guildConfigId}`
+    );
+  }
+
+  /**
+   * Updates a Discord channel configuration.
+   *
+   * @param guildConfigId - The internal guild config ID
+   * @param channelConfigId - The internal channel config ID
+   * @param updates - The fields to update
+   * @returns The updated channel config
+   */
+  async updateDiscordChannel(
+    guildConfigId: number,
+    channelConfigId: number,
+    updates: {
+      enabled?: boolean;
+      thread_only_mode?: boolean;
+      require_bot_invocation?: boolean;
+      persona_override_id?: number | null;
+    }
+  ): Promise<{
+    id: number;
+    channel_id: string;
+    channel_name: string;
+    enabled: boolean;
+  }> {
+    const response = await this.page.request.patch(
+      `${this.baseUrl}/manage/admin/discord-bot/guilds/${guildConfigId}/channels/${channelConfigId}`,
+      { data: updates }
+    );
+    return await this.handleResponse(
+      response,
+      `Failed to update channel ${channelConfigId}`
+    );
+  }
+
+  // === Chat Session Methods ===
+
+  /**
+   * Creates a chat session with a specific description.
+   *
+   * @param description - The description/title for the chat session
+   * @param personaId - The persona/assistant ID to use (defaults to 0)
+   * @returns The chat session ID
+   * @throws Error if the chat session creation fails
+   */
+  async createChatSession(
+    description: string,
+    personaId: number = 0
+  ): Promise<string> {
+    const response = await this.post("/chat/create-chat-session", {
+      persona_id: personaId,
+      description,
+    });
+    const data = await this.handleResponse<{ chat_session_id: string }>(
+      response,
+      "Failed to create chat session"
+    );
+    this.log(
+      `Created chat session: ${description} (ID: ${data.chat_session_id})`
+    );
+    return data.chat_session_id;
+  }
+
+  /**
+   * Deletes a chat session.
+   *
+   * @param chatId - The chat session ID to delete
+   */
+  async deleteChatSession(chatId: string): Promise<void> {
+    const response = await this.delete(`/chat/delete-chat-session/${chatId}`);
+    await this.handleResponseSoft(
+      response,
+      `Failed to delete chat session ${chatId}`
+    );
+    this.log(`Deleted chat session: ${chatId}`);
+  }
+
+  // === Project Methods ===
+
+  /**
+   * Creates a project with a specific name.
+   *
+   * @param name - The name for the project
+   * @returns The project ID
+   * @throws Error if the project creation fails
+   */
+  async createProject(name: string): Promise<number> {
+    const response = await this.post(
+      `/user/projects/create?name=${encodeURIComponent(name)}`
+    );
+    const data = await this.handleResponse<{ id: number }>(
+      response,
+      "Failed to create project"
+    );
+    this.log(`Created project: ${name} (ID: ${data.id})`);
+    return data.id;
+  }
+
+  /**
+   * Deletes a project.
+   *
+   * @param projectId - The project ID to delete
+   */
+  async deleteProject(projectId: number): Promise<void> {
+    const response = await this.delete(`/user/projects/${projectId}`);
+    await this.handleResponseSoft(
+      response,
+      `Failed to delete project ${projectId}`
+    );
+    this.log(`Deleted project: ${projectId}`);
   }
 }

@@ -1,11 +1,11 @@
-"use client";
-
 import React from "react";
-import Text from "@/refresh-components/texts/Text";
 import { cn } from "@/lib/utils";
-import { SvgProps } from "@/icons";
+import type { IconProps } from "@opal/types";
 import Truncated from "@/refresh-components/texts/Truncated";
 import Link from "next/link";
+import type { Route } from "next";
+import { Section } from "@/layouts/general-layouts";
+import { WithoutStyles } from "@/types";
 
 const buttonClassNames = {
   main: {
@@ -20,33 +20,53 @@ const buttonClassNames = {
     normal: "line-item-button-danger",
     emphasized: "line-item-button-danger-emphasized",
   },
+  action: {
+    normal: "line-item-button-action",
+    emphasized: "line-item-button-action-emphasized",
+  },
+  muted: {
+    normal: "line-item-button-muted",
+    emphasized: "line-item-button-muted-emphasized",
+  },
 } as const;
 
 const textClassNames = {
   main: "line-item-text-main",
   strikethrough: "line-item-text-strikethrough",
   danger: "line-item-text-danger",
+  action: "line-item-text-action",
+  muted: "line-item-text-muted",
 } as const;
 
 const iconClassNames = {
   main: "line-item-icon-main",
   strikethrough: "line-item-icon-strikethrough",
   danger: "line-item-icon-danger",
+  action: "line-item-icon-action",
+  muted: "line-item-icon-muted",
 } as const;
 
-export interface LineItemProps extends React.HTMLAttributes<HTMLButtonElement> {
+export interface LineItemProps
+  extends Omit<
+    WithoutStyles<React.HTMLAttributes<HTMLButtonElement>>,
+    "children"
+  > {
   // line-item variants
   strikethrough?: boolean;
   danger?: boolean;
+  action?: boolean;
+  muted?: boolean;
 
   // modifier (makes the background more pronounced when selected).
   emphasized?: boolean;
 
   selected?: boolean;
-  icon?: React.FunctionComponent<SvgProps>;
+  icon?: React.FunctionComponent<IconProps>;
   description?: string;
   rightChildren?: React.ReactNode;
   href?: string;
+  ref?: React.Ref<HTMLButtonElement>;
+  children: React.ReactNode;
 }
 
 /**
@@ -77,7 +97,7 @@ export interface LineItemProps extends React.HTMLAttributes<HTMLButtonElement> {
  * </LineItem>
  *
  * // With right content
- * <LineItem icon={SvgKey} rightChildren={<Text text03>⌘K</Text>}>
+ * <LineItem icon={SvgKey} rightChildren={<Text as="p" text03>⌘K</Text>}>
  *   Keyboard Shortcuts
  * </LineItem>
  *
@@ -88,90 +108,92 @@ export interface LineItemProps extends React.HTMLAttributes<HTMLButtonElement> {
  * <LineItem icon={SvgArchive} strikethrough>
  *   Archived Feature
  * </LineItem>
+ *
+ * // Muted variant (less prominent items)
+ * <LineItem icon={SvgFolder} muted>
+ *   Secondary Item
+ * </LineItem>
  * ```
  *
  * @remarks
- * - Variants are mutually exclusive: only one of `strikethrough` or `danger` should be used
+ * - Variants are mutually exclusive: only one of `strikethrough`, `danger`, `action`, or `muted` should be used
  * - The `selected` prop modifies text/icon colors for `main` and `danger` variants
  * - The `emphasized` prop adds background colors when combined with `selected`
  * - The component automatically adds a `data-selected="true"` attribute for custom styling
  */
-const LineItem = React.forwardRef<HTMLButtonElement, LineItemProps>(
-  (
-    {
-      selected,
-      strikethrough,
-      danger,
-      emphasized,
-      icon: Icon,
-      description,
-      className,
-      children,
-      rightChildren,
-      href,
-      ...props
-    },
-    ref
-  ) => {
-    // Determine variant (mutually exclusive, with priority order)
-    const variant = strikethrough
-      ? "strikethrough"
-      : danger
-        ? "danger"
-        : "main";
+export default function LineItem({
+  selected,
+  strikethrough,
+  danger,
+  action,
+  muted,
+  emphasized,
+  icon: Icon,
+  description,
+  children,
+  rightChildren,
+  href,
+  ref,
+  ...props
+}: LineItemProps) {
+  // Determine variant (mutually exclusive, with priority order: strikethrough > danger > action > muted > main)
+  const variant = strikethrough
+    ? "strikethrough"
+    : danger
+      ? "danger"
+      : action
+        ? "action"
+        : muted
+          ? "muted"
+          : "main";
 
-    const emphasisKey = emphasized ? "emphasized" : "normal";
+  const emphasisKey = emphasized ? "emphasized" : "normal";
 
-    const content = (
-      <button
-        ref={ref}
-        className={cn(
-          "flex flex-col w-full justify-center items-start p-2 rounded-08 group/LineItem",
-          buttonClassNames[variant][emphasisKey],
-          className
-        )}
-        type="button"
-        data-selected={selected}
-        {...props}
-      >
-        <div className="flex flex-row items-center justify-start w-full gap-2">
-          {Icon && (
-            <div className="h-[1rem] min-w-[1rem]">
-              <Icon
-                className={cn("h-[1rem] w-[1rem]", iconClassNames[variant])}
-              />
-            </div>
+  const content = (
+    <button
+      ref={ref}
+      className={cn(
+        "flex flex-row w-full items-start p-2 rounded-08 group/LineItem gap-2",
+        !!description ? "items-start" : "items-center",
+        buttonClassNames[variant][emphasisKey]
+      )}
+      type="button"
+      data-selected={selected}
+      {...props}
+    >
+      {Icon && (
+        <div
+          className={cn(
+            "flex flex-col justify-center items-center h-[1rem] min-w-[1rem]",
+            !!description && "mt-0.5"
           )}
+        >
+          <Icon className={cn("h-[1rem] w-[1rem]", iconClassNames[variant])} />
+        </div>
+      )}
+      <Section alignItems="start" gap={0}>
+        <Section flexDirection="row" gap={0.5}>
           <Truncated
             mainUiMuted
-            text04
             className={cn("text-left w-full", textClassNames[variant])}
           >
             {children}
           </Truncated>
-          {rightChildren}
-        </div>
+          {rightChildren && (
+            <Section alignItems="end" width="fit">
+              {rightChildren}
+            </Section>
+          )}
+        </Section>
         {description && (
-          <div className="flex flex-row">
-            {Icon && (
-              <>
-                <div className="w-[1rem]" />
-                <div className="w-2" />
-              </>
-            )}
-
-            <Text secondaryBody text03>
-              {description}
-            </Text>
-          </div>
+          <Truncated secondaryBody text03 className="text-left w-full">
+            {description}
+          </Truncated>
         )}
-      </button>
-    );
+      </Section>
+    </button>
+  );
 
-    if (!href) return content;
-    return <Link href={href}>{content}</Link>;
-  }
-);
-LineItem.displayName = "LineItem";
-
-export default LineItem;
+  if (!href) return content;
+  return <Link href={href as Route}>{content}</Link>;
+}

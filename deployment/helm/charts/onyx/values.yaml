@@ -19,6 +19,8 @@ global:
   storageClass: "nfs-client"
   # Add Helm keep annotation to PVCs managed by this chart
   pvcRetain: true
+  # Host for all Onyx components
+  host: "0.0.0.0"
 
 postgresql:
   enabled: true
@@ -95,6 +97,18 @@ postgresql:
         cpu: 500m
         memory: 512Mi
 
+  # CloudNativePG configuration (upstream choice)
+  # IMPORTANT: This nameOverride is required for the CloudNativePG operator to find itself.
+  nameOverride: cloudnative-pg
+  cluster:
+    instances: 1
+    storage:
+      storageClass: ""
+      size: 10Gi
+    enableSuperuserAccess: true
+    superuserSecret:
+      name: onyx-postgresql  # keep in sync with auth.postgresql
+
 vespa:
   name: da-vespa-0
   service:
@@ -158,6 +172,52 @@ vespa:
         cpu: 2000m
         memory: 4Gi
 
+opensearch:
+  enabled: false
+  # These values are passed to the opensearch subchart.
+  # See https://github.com/opensearch-project/helm-charts/blob/main/charts/opensearch/values.yaml
+
+  singleNode: true  # Forces replicas=1, sets discovery.type=single-node
+
+  # Determines service DNS: onyx-opensearch-master.<namespace>.svc.cluster.local
+  clusterName: "onyx-opensearch"
+  nodeGroup: "master"
+  masterService: "onyx-opensearch-master"
+
+  replicas: 1
+
+  image:
+    repository: "opensearchproject/opensearch"
+    tag: ""  # Empty uses chart's appVersion (3.4.0).
+
+  # The security plugin requires OPENSEARCH_INITIAL_ADMIN_PASSWORD for
+  # OpenSearch 2.12+.
+  # See https://docs.opensearch.org/latest/install-and-configure/install-opensearch/helm/#prerequisites
+  extraEnvs:
+    - name: OPENSEARCH_INITIAL_ADMIN_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: onyx-opensearch  # Must match auth.opensearch.secretName.
+          key: opensearch_admin_password  # Must match auth.opensearch.secretKeys value.
+
+  resources:
+    requests:
+      cpu: 2000m
+      memory: 4Gi
+    limits:
+      cpu: 4000m
+      memory: 8Gi
+
+  persistence:
+    enabled: true
+    size: 30Gi
+    storageClass: ""
+
+  # Java heap should be ~50% of memory limit.
+  # See https://opster.com/guides/opensearch/opensearch-basics/opensearch-heap-size-usage-and-jvm-garbage-collection/
+  # Xms is the starting size, Xmx is the maximum size. These should be the same.
+  opensearchJavaOpts: "-Xmx4g -Xms4g"
+
 persistent:
   storageClassName: ""
 
@@ -194,6 +254,15 @@ inferenceCapability:
     limits:
       cpu: 4000m
       memory: 10Gi
+  # Optional health probes
+  # Example:
+  # readinessProbe:
+  #   httpGet:
+  #     path: /health
+  #     port: model-server
+  startupProbe: {}
+  readinessProbe: {}
+  livenessProbe: {}
   podSecurityContext: {}
   securityContext:
     privileged: false
@@ -206,6 +275,15 @@ inferenceCapability:
   nodeSelector: {}
   tolerations: []
   affinity: {}
+  # Deployment strategy - use Recreate or RollingUpdate with maxSurge: 0 to terminate old pod first
+  # This prevents pending pods when cluster resources are constrained
+  strategy: {}
+  # Example for RollingUpdate that terminates old pod first:
+  # strategy:
+  #   type: RollingUpdate
+  #   rollingUpdate:
+  #     maxSurge: 0
+  #     maxUnavailable: 1
   volumes:
     - name: cache
       emptyDir: {}
@@ -232,7 +310,7 @@ indexCapability:
   deploymentLabels:
     app: indexing-model-server
   podLabels:
-    app: indexing-model-server
+    scope: onyx-backend
   indexingOnly: "True"
   podAnnotations: {}
   containerPorts:
@@ -245,6 +323,15 @@ indexCapability:
     limits:
       cpu: 6000m
       memory: 6Gi
+  # Optional health probes
+  # Example:
+  # readinessProbe:
+  #   httpGet:
+  #     path: /health
+  #     port: model-server
+  startupProbe: {}
+  readinessProbe: {}
+  livenessProbe: {}
   podSecurityContext: {}
   securityContext:
     privileged: false
@@ -257,6 +344,15 @@ indexCapability:
   nodeSelector: {}
   tolerations: []
   affinity: {}
+  # Deployment strategy - use Recreate or RollingUpdate with maxSurge: 0 to terminate old pod first
+  # This prevents pending pods when cluster resources are constrained
+  strategy: {}
+  # Example for RollingUpdate that terminates old pod first:
+  # strategy:
+  #   type: RollingUpdate
+  #   rollingUpdate:
+  #     maxSurge: 0
+  #     maxUnavailable: 1
   volumes:
     - name: cache
       emptyDir: {}
@@ -273,6 +369,15 @@ indexCapability:
       mountPath: /tmp
 config:
   envConfigMapName: env-configmap
+
+tooling:
+  pgInto:
+    # -- Mounts a small helper script into app pods that opens psql using the pod's POSTGRES_* env vars.
+    enabled: false
+    # -- Where to place the helper inside the container.
+    mountPath: /usr/local/bin/pginto
+    # -- Which client binary to call; change if your image uses a non-default path.
+    psqlBinary: psql
 
 serviceAccount:
   # Specifies whether a service account should be created
@@ -329,13 +434,54 @@ nginx:
       #   hosts:
       #     - onyx.example.com
 
+  # Controller configuration for Ingress-Nginx subchart (upstream)
+  controller:
+    containerPort:
+      http: 1024
+
+    # NOTE: When onyx-nginx-conf changes, nginx pods need to restart.
+    # The ingress-nginx subchart doesn't auto-detect our custom ConfigMap changes.
+    # Workaround: Helm upgrade will restart if the following annotation value changes.
+    podAnnotations:
+      onyx.app/nginx-config-version: "1"
+
+    # Propagate DOMAIN into nginx so server_name continues to use the same env var
+    extraEnvs:
+      - name: DOMAIN
+        value: localhost
+
+    config:
+      # Expose DOMAIN to the nginx config and pull in our custom snippets
+      main-snippet: |
+        env DOMAIN;
+      http-snippet: |
+        include /etc/nginx/custom-snippets/upstreams.conf;
+        include /etc/nginx/custom-snippets/server.conf;
+
+    # Mount the existing nginx ConfigMap that holds the upstream and server snippets
+    extraVolumes:
+      - name: nginx-config
+        configMap:
+          name: onyx-nginx-conf
+    extraVolumeMounts:
+      - name: nginx-config
+        mountPath: /etc/nginx/custom-snippets
+        readOnly: true
+
+    service:
+      type: LoadBalancer
+      ports:
+        http: 80
+      targetPorts:
+        http: http
+
 webserver:
   replicaCount: 1
   deploymentLabels:
     app: web-server
   podAnnotations: {}
   podLabels:
-    app: web-server
+    scope: onyx-frontend
   podSecurityContext:
     fsGroup: 2000
 
@@ -362,6 +508,16 @@ webserver:
     limits:
       cpu: 1000m
       memory: 1Gi
+
+  # Optional health probes
+  # Example:
+  # readinessProbe:
+  #   httpGet:
+  #     path: /api/health
+  #     port: http
+  startupProbe: {}
+  readinessProbe: {}
+  livenessProbe: {}
 
   autoscaling:
     enabled: false
@@ -413,7 +569,6 @@ api:
   podAnnotations: {}
   podLabels:
     scope: onyx-backend
-    app: api-server
 
   containerPorts:
     server: 8080
@@ -442,6 +597,16 @@ api:
     limits:
       cpu: 1000m
       memory: 3Gi
+
+  # Optional health probes
+  # Example:
+  # readinessProbe:
+  #   httpGet:
+  #     path: /health
+  #     port: api-server-port
+  startupProbe: {}
+  readinessProbe: {}
+  livenessProbe: {}
 
   autoscaling:
     enabled: false
@@ -529,7 +694,6 @@ celery_beat:
   podAnnotations: {}
   podLabels:
     scope: onyx-backend-celery
-    app: celery-beat
   deploymentLabels:
     app: celery-beat
   persistence:
@@ -584,7 +748,6 @@ celery_worker_heavy:
   podAnnotations: {}
   podLabels:
     scope: onyx-backend-celery
-    app: celery-worker-heavy
   deploymentLabels:
     app: celery-worker-heavy
   resources:
@@ -631,7 +794,6 @@ celery_worker_docprocessing:
   podAnnotations: {}
   podLabels:
     scope: onyx-backend-celery
-    app: celery-worker-docprocessing
   deploymentLabels:
     app: celery-worker-docprocessing
   resources:
@@ -678,7 +840,6 @@ celery_worker_light:
   podAnnotations: {}
   podLabels:
     scope: onyx-backend-celery
-    app: celery-worker-light
   deploymentLabels:
     app: celery-worker-light
   resources:
@@ -725,7 +886,6 @@ celery_worker_monitoring:
   podAnnotations: {}
   podLabels:
     scope: onyx-backend-celery
-    app: celery-worker-monitoring
   deploymentLabels:
     app: celery-worker-monitoring
   resources:
@@ -772,7 +932,6 @@ celery_worker_primary:
   podAnnotations: {}
   podLabels:
     scope: onyx-backend-celery
-    app: celery-worker-primary
   deploymentLabels:
     app: celery-worker-primary
   resources:
@@ -782,53 +941,6 @@ celery_worker_primary:
     limits:
       cpu: 1000m
       memory: 4Gi
-  volumes:
-    - name: logs
-      emptyDir: {}
-    - name: tmp
-      emptyDir: {}
-    - name: cache
-      emptyDir: {}
-  volumeMounts:
-    - name: logs
-      mountPath: /var/log/onyx
-    - name: tmp
-      mountPath: /tmp
-    - name: cache
-      mountPath: /.cache
-  nodeSelector: {}
-  tolerations: []
-  affinity: {}
-
-celery_worker_user_files_indexing:
-  replicaCount: 1
-  autoscaling:
-    enabled: false
-    minReplicas: 1
-    maxReplicas: 10
-    targetCPUUtilizationPercentage: 80
-    targetMemoryUtilizationPercentage: 80
-    # KEDA specific configurations (only used when autoscaling.engine is set to 'keda')
-    pollingInterval: 30  # seconds
-    cooldownPeriod: 300  # seconds
-    idleReplicaCount: 1  # minimum replicas when idle
-    failureThreshold: 3  # number of failures before fallback
-    fallbackReplicas: 1  # replicas to maintain on failure
-    # Custom triggers for advanced KEDA configurations
-    customTriggers: []
-  podAnnotations: {}
-  podLabels:
-    scope: onyx-backend-celery
-    app: celery-worker-user-files-indexing
-  deploymentLabels:
-    app: celery-worker-user-files-indexing
-  resources:
-    requests:
-      cpu: 500m
-      memory: 512Mi
-    limits:
-      cpu: 2000m
-      memory: 2Gi
   volumes:
     - name: logs
       emptyDir: {}
@@ -866,7 +978,6 @@ celery_worker_user_file_processing:
   podAnnotations: {}
   podLabels:
     scope: onyx-backend-celery
-    app: celery-worker-user-file-processing
   deploymentLabels:
     app: celery-worker-user-file-processing
   resources:
@@ -894,13 +1005,61 @@ celery_worker_user_file_processing:
   tolerations: []
   affinity: {}
 
+# Discord bot for Onyx
+# The bot offloads message processing to scalable API pods via HTTP requests.
+discordbot:
+  enabled: false  # Disabled by default - requires bot token configuration
+  # Bot token can be provided directly or via a Kubernetes secret
+  # Option 1: Direct token (not recommended for production)
+  botToken: ""
+  # Option 2: Reference a Kubernetes secret (recommended)
+  botTokenSecretName: ""  # Name of the secret containing the bot token
+  botTokenSecretKey: "token"  # Key within the secret (default: "token")
+  # Command prefix for bot commands (default: "!")
+  invokeChar: "!"
+  image:
+    repository: onyxdotapp/onyx-backend
+    tag: ""  # Overrides the image tag whose default is the chart appVersion.
+  podAnnotations: {}
+  podLabels:
+    scope: onyx-backend
+  deploymentLabels:
+    app: discord-bot
+  podSecurityContext:
+    {}
+  securityContext:
+    {}
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+  volumes:
+    - name: logs
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
+    - name: cache
+      emptyDir: {}
+  volumeMounts:
+    - name: logs
+      mountPath: /var/log/onyx
+    - name: tmp
+      mountPath: /tmp
+    - name: cache
+      mountPath: /.cache
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
 slackbot:
   enabled: true
   replicaCount: 1
   podAnnotations: {}
   podLabels:
     scope: onyx-backend
-    app: slack-bot
   deploymentLabels:
     app: slack-bot
   podSecurityContext:
@@ -937,6 +1096,54 @@ slackbot:
   tolerations: []
   affinity: {}
 
+# Onyx Model Context Protocol (MCP) Server
+# Allows LLMs to use Onyx like invoking tools or accessing resources
+mcpServer:
+  enabled: false  # Disabled by default
+  replicaCount: 1
+  image:
+    repository: onyxdotapp/onyx-backend
+    tag: ""  # Overrides the image tag whose default is the chart appVersion.
+  # CORS origins for MCP clients (comma-separated)
+  # Example: "https://claude.ai,https://app.cursor.sh"
+  corsOrigins: ""
+  podAnnotations: {}
+  podLabels:
+    scope: onyx-backend
+  deploymentLabels:
+    app: mcp-server
+  containerPorts:
+    server: 8090
+  service:
+    type: ClusterIP
+    servicePort: 8090
+    targetPort: mcp-server-port
+    portName: mcp-server-port
+  podSecurityContext: {}
+  securityContext: {}
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  livenessProbe:
+    initialDelaySeconds: 10
+    periodSeconds: 30
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe:
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  volumes: []
+  volumeMounts: []
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
 celery_worker_docfetching:
   replicaCount: 1
   autoscaling:
@@ -956,7 +1163,6 @@ celery_worker_docfetching:
   podAnnotations: {}
   podLabels:
     scope: onyx-backend-celery
-    app: celery-worker-docfetching
   deploymentLabels:
     app: celery-worker-docfetching
   resources:
@@ -1011,6 +1217,10 @@ redis:
       capabilities:
         drop:
         - ALL
+    # Use existing secret for Redis password
+    redisSecret:
+      secretName: onyx-redis
+      secretKey: redis_password
   service:
     port: 6379
   securityContext:
@@ -1022,6 +1232,23 @@ redis:
       - ALL
   podSecurityContext:
     fsGroup: 2000
+  # Redis configuration (upstream)
+  externalConfig:
+    enabled: true
+    data: |
+      appendonly no
+      save ""
+      maxmemory 400mb
+      maxmemory-policy allkeys-lru
+      timeout 0
+      tcp-keepalive 300
+  storageSpec:
+    volumeClaimTemplate:
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
 
 minio:
   enabled: true
@@ -1044,6 +1271,101 @@ minio:
   nodeSelector: {}
   tolerations: []
   affinity: {}
+
+# Code Interpreter - Python code execution service (beta feature)
+codeInterpreter:
+  enabled: false  # Disabled by default (beta feature)
+
+  replicaCount: 1
+
+  image:
+    repository: onyxdotapp/code-interpreter
+    pullPolicy: Always
+    tag: ""  # Empty uses chart appVersion
+
+  # Service configuration
+  service:
+    type: ClusterIP
+    port: 8000
+    targetPort: 8000
+
+  # Execution limits
+  codeInterpreter:
+    maxExecTimeoutMs: 60000
+    maxOutputBytes: "1000000"
+    cpuTimeLimitSec: 5
+    memoryLimitMb: 256
+    host: "0.0.0.0"
+    port: 8000
+
+    # Kubernetes executor configuration (creates pods for code execution)
+    kubernetesExecutor:
+      namespace: ""  # Empty = same namespace as release
+      image: ""  # Empty = default sandbox image
+      serviceAccount: ""
+      podResources:
+        limits:
+          cpu: "1"
+          memory: "256Mi"
+        requests:
+          cpu: "100m"
+          memory: "64Mi"
+
+  # API container resources
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 1000m
+      memory: 512Mi
+
+  # RBAC for pod management (required for kubernetes executor)
+  rbac:
+    create: true
+
+  # Security context
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+
+  securityContext:
+    capabilities:
+      drop:
+        - ALL
+    readOnlyRootFilesystem: false
+    runAsNonRoot: true
+    runAsUser: 1000
+    allowPrivilegeEscalation: false
+
+  # Health probes
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 10
+    periodSeconds: 10
+
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 5
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  # Optional features
+  ingress:
+    enabled: false
+  networkPolicy:
+    enabled: false
+  serviceAccount:
+    create: true
+    automount: true
 
 ingress:
   enabled: false
@@ -1150,6 +1472,29 @@ auth:
     values:
       db_readonly_user: ""
       db_readonly_password: ""
+  opensearch:
+    # Enable or disable this secret entirely. Will remove from env var
+    # configurations and remove any created secrets.
+    # Set to true when opensearch.enabled is true.
+    enabled: false
+    # Overwrite the default secret name, ignored if existingSecret is defined.
+    secretName: 'onyx-opensearch'
+    # Use a secret specified elsewhere.
+    existingSecret: ""
+    # This defines the env var to secret map, key is always upper-cased as an
+    # env var.
+    secretKeys:
+      OPENSEARCH_ADMIN_USERNAME: opensearch_admin_username
+      OPENSEARCH_ADMIN_PASSWORD: opensearch_admin_password
+    # Secrets values IF existingSecret is empty. Key here must match the value
+    # in secretKeys to be used. Values will be base64 encoded in the k8s
+    # cluster.
+    # Password must meet OpenSearch complexity requirements:
+    # min 8 chars, uppercase, lowercase, digit, and special character.
+    # CHANGE THIS FOR PRODUCTION.
+    values:
+      opensearch_admin_username: "admin"
+      opensearch_admin_password: "OnyxDev1!"
 
 configMap:
   # Change this for production uses unless Onyx is only accessible behind VPN
@@ -1175,18 +1520,12 @@ configMap:
   S3_FILE_STORE_BUCKET_NAME: ""
   # Gen AI Settings
   GEN_AI_MAX_TOKENS: ""
-  QA_TIMEOUT: "60"
+  LLM_SOCKET_READ_TIMEOUT: "60"
   MAX_CHUNKS_FED_TO_CHAT: ""
-  DISABLE_LLM_DOC_RELEVANCE: ""
-  DISABLE_LLM_CHOOSE_SEARCH: ""
-  DISABLE_LLM_QUERY_REPHRASE: ""
   # Query Options
   DOC_TIME_DECAY: ""
   HYBRID_ALPHA: ""
   EDIT_KEYWORD_QUERY: ""
-  MULTILINGUAL_QUERY_EXPANSION: ""
-  LANGUAGE_HINT: ""
-  LANGUAGE_CHAT_NAMING_HINT: ""
   # Don't change the NLP models unless you know what you're doing
   EMBEDDING_BATCH_SIZE: ""
   DOCUMENT_ENCODER_MODEL: ""
@@ -1223,6 +1562,8 @@ configMap:
   ONYX_BOT_DISPLAY_ERROR_MSGS: ""
   ONYX_BOT_RESPOND_EVERY_CHANNEL: ""
   NOTIFY_SLACKBOT_NO_ANSWER: ""
+  DISCORD_BOT_TOKEN: ""
+  DISCORD_BOT_INVOKE_CHAR: ""
   # Logging
   # Optional Telemetry, please keep it on (nothing sensitive is collected)? <3
   DISABLE_TELEMETRY: ""

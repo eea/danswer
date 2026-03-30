@@ -1,15 +1,15 @@
 "use client";
 
 import { useContext, useState } from "react";
-import { Modal } from "@/components/Modal";
+import Modal from "@/refresh-components/Modal";
 import Button from "@/refresh-components/buttons/Button";
-import { SourceIcon } from "@/components/SourceIcon";
 import { ValidSources } from "@/lib/types";
-import { SettingsContext } from "@/components/settings/SettingsProvider";
+import { SettingsContext } from "@/providers/SettingsProvider";
 import { getSourceMetadata } from "@/lib/sources";
-import { useRouter } from "next/navigation";
-import { useFederatedOAuthStatus } from "@/lib/hooks/useFederatedOAuthStatus";
-import Text from "@/refresh-components/texts/Text";
+import useFederatedOAuthStatus from "@/hooks/useFederatedOAuthStatus";
+import { SvgLink } from "@opal/icons";
+import { Card } from "@/refresh-components/cards";
+import { LineItemLayout } from "@/layouts/general-layouts";
 
 export interface FederatedConnectorOAuthStatus {
   federated_connector_id: number;
@@ -54,16 +54,26 @@ function useFederatedOauthModal() {
     if (typeof window !== "undefined") {
       const newSkipCount = oAuthModalState.skipCount + 1;
 
-      // If we've reached the max skip count, show the "No problem!" modal first
       if (newSkipCount >= MAX_SKIP_COUNT) {
-        // Don't hide immediately - let the "No problem!" modal show
+        // Permanently hide the modal after max skips
+        const skipData = {
+          skipCount: newSkipCount,
+          hideUntil: 0,
+          permanentlyHidden: true,
+        };
+
+        localStorage.setItem(
+          "federatedOAuthModalSkipData",
+          JSON.stringify(skipData)
+        );
+
         setOAuthModalState({
-          hidden: false,
+          hidden: true,
           skipCount: newSkipCount,
         });
       } else {
-        // For first skip, hide after a delay to show "No problem!" modal
-        const oneHourFromNow = Date.now() + 60 * 60 * 1000; // 1 hour in milliseconds
+        // Hide for 1 hour after first skip
+        const oneHourFromNow = Date.now() + 60 * 60 * 1000;
 
         const skipData = {
           skipCount: newSkipCount,
@@ -84,50 +94,19 @@ function useFederatedOauthModal() {
     }
   };
 
-  // Handle the final dismissal of the "No problem!" modal
-  const handleOAuthModalFinalDismiss = () => {
-    if (typeof window !== "undefined") {
-      const oneHourFromNow = Date.now() + 60 * 60 * 1000; // 1 hour in milliseconds
-
-      const skipData = {
-        skipCount: oAuthModalState.skipCount,
-        hideUntil: oneHourFromNow,
-        permanentlyHidden: false,
-      };
-
-      localStorage.setItem(
-        "federatedOAuthModalSkipData",
-        JSON.stringify(skipData)
-      );
-
-      setOAuthModalState({
-        hidden: true,
-        skipCount: oAuthModalState.skipCount,
-      });
-    }
-  };
-
   return {
     oAuthModalState,
     handleOAuthModalSkip,
-    handleOAuthModalFinalDismiss,
   };
 }
 
-export function FederatedOAuthModal() {
+export default function FederatedOAuthModal() {
   const settings = useContext(SettingsContext);
-  const router = useRouter();
 
   const {
-    oAuthModalState: { skipCount, hidden },
+    oAuthModalState: { hidden },
     handleOAuthModalSkip,
-    handleOAuthModalFinalDismiss,
   } = useFederatedOauthModal();
-
-  const onSkip =
-    skipCount >= MAX_SKIP_COUNT
-      ? handleOAuthModalFinalDismiss
-      : handleOAuthModalSkip;
 
   const { connectors: federatedConnectors, hasUnauthenticatedConnectors } =
     useFederatedOAuthStatus();
@@ -138,89 +117,48 @@ export function FederatedOAuthModal() {
     return null;
   }
 
-  const handleAuthorize = (authorizeUrl: string) => {
-    // Redirect to OAuth URL in the same window
-    router.push(authorizeUrl);
-  };
-
   const applicationName =
     settings?.enterpriseSettings?.application_name || "Onyx";
 
-  if (skipCount >= MAX_SKIP_COUNT) {
-    return (
-      <Modal
-        onOutsideClick={() => {}}
-        hideCloseButton={true}
-        width="w-full max-w-xl"
-      >
-        <div className="space-y-4 mt-4">
-          <div className="text-center">
-            <Text headingH3>Heads Up!</Text>
-            <Text>
-              You can always connect your apps later by going to the{" "}
-              <strong>User Settings</strong> menu (click your profile icon) and
-              selecting <strong>Connectors</strong>.
-            </Text>
-          </div>
-
-          <div className="flex justify-center pt-2">
-            <Button onClick={onSkip}>Got it</Button>
-          </div>
-        </div>
-      </Modal>
-    );
-  }
-
   return (
-    <Modal hideCloseButton={true} width="w-full max-w-xl">
-      <div className="space-y-4 mt-4">
-        <Text>
-          Improve answer quality by letting {applicationName} search all your
-          connected data.
-        </Text>
-
-        <div className="space-y-3">
+    <Modal open>
+      <Modal.Content width="sm" height="sm">
+        <Modal.Header
+          icon={SvgLink}
+          title="Connect Your Apps"
+          description={`Improve answer quality by letting ${applicationName} search all your connected data.`}
+        />
+        <Modal.Body>
           {needsAuth.map((connector) => {
             const sourceMetadata = getSourceMetadata(
               connector.source as ValidSources
             );
 
             return (
-              <div
-                key={connector.federated_connector_id}
-                className="flex items-center justify-between p-3 rounded-lg border border-border"
-              >
-                <div className="flex items-center gap-3">
-                  <SourceIcon
-                    sourceType={sourceMetadata.internalName}
-                    iconSize={20}
-                  />
-                  <span className="font-medium">
-                    {sourceMetadata.displayName}
-                  </span>
-                </div>
-                <Button
-                  onClick={() => {
-                    if (connector.authorize_url) {
-                      handleAuthorize(connector.authorize_url);
-                    }
-                  }}
-                  disabled={!connector.authorize_url}
-                >
-                  Connect
-                </Button>
-              </div>
+              <Card key={connector.federated_connector_id}>
+                <LineItemLayout
+                  icon={sourceMetadata.icon}
+                  title={sourceMetadata.displayName}
+                  description={sourceMetadata.category}
+                  rightChildren={
+                    <Button
+                      secondary
+                      target="_blank"
+                      href={connector.authorize_url}
+                    >
+                      Connect
+                    </Button>
+                  }
+                  center
+                />
+              </Card>
             );
           })}
-        </div>
-
-        {/* Add visual separation and center modal actions */}
-        <div className="pt-4 mt-2">
-          <div className="flex justify-center gap-3">
-            <Button onClick={onSkip}>Skip for now</Button>
-          </div>
-        </div>
-      </div>
+        </Modal.Body>
+        <Modal.Footer>
+          <Button onClick={handleOAuthModalSkip}>Skip for now</Button>
+        </Modal.Footer>
+      </Modal.Content>
     </Modal>
   );
 }

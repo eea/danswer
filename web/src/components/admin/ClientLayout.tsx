@@ -2,7 +2,7 @@
 
 import AdminSidebar from "@/sections/sidebar/AdminSidebar";
 import { usePathname } from "next/navigation";
-import { useSettingsContext } from "@/components/settings/SettingsProvider";
+import { useSettingsContext } from "@/providers/SettingsProvider";
 import { ApplicationStatus } from "@/app/admin/settings/interfaces";
 import Button from "@/refresh-components/buttons/Button";
 
@@ -28,7 +28,7 @@ export function ClientLayout({
     pathname.startsWith("/admin/embeddings");
 
   return (
-    <div className="h-screen w-screen flex overflow-y-hidden">
+    <div className="h-screen w-screen flex overflow-hidden">
       {settings.settings.application_status ===
         ApplicationStatus.PAYMENT_REMINDER && (
         <div className="fixed top-2 left-1/2 transform -translate-x-1/2 bg-amber-400 dark:bg-amber-500 text-gray-900 dark:text-gray-100 p-4 rounded-lg shadow-lg z-50 max-w-md text-center">
@@ -43,14 +43,14 @@ export function ClientLayout({
       )}
 
       {hasCustomSidebar ? (
-        <div className="overflow-y-scroll w-full h-full flex">{children}</div>
+        <div className="flex-1 min-w-0 min-h-0 overflow-y-auto">{children}</div>
       ) : (
         <>
           <AdminSidebar
             enableCloudSS={enableCloud}
             enableEnterpriseSS={enableEnterprise}
           />
-          <div className="overflow-y-scroll w-full h-full flex pt-10 pb-4 px-4 md:px-12">
+          <div className="flex flex-1 flex-col min-w-0 min-h-0 overflow-y-auto py-10 px-4 md:px-12">
             {children}
           </div>
         </>

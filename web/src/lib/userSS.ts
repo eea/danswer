@@ -10,6 +10,8 @@ export interface AuthTypeMetadata {
   requiresVerification: boolean;
   anonymousUserEnabled: boolean | null;
   passwordMinLength: number;
+  hasUsers: boolean;
+  oauthEnabled: boolean;
 }
 
 export const getAuthTypeMetadataSS = async (): Promise<AuthTypeMetadata> => {
@@ -23,26 +25,30 @@ export const getAuthTypeMetadataSS = async (): Promise<AuthTypeMetadata> => {
     requires_verification: boolean;
     anonymous_user_enabled: boolean | null;
     password_min_length: number;
+    has_users: boolean;
+    oauth_enabled: boolean;
   } = await res.json();
 
   let authType: AuthType;
 
   // Override fastapi users auth so we can use both
   if (NEXT_PUBLIC_CLOUD_ENABLED) {
-    authType = "cloud";
+    authType = AuthType.CLOUD;
   } else {
     authType = data.auth_type as AuthType;
   }
 
   // for SAML / OIDC, we auto-redirect the user to the IdP when the user visits
   // Onyx in an un-authenticated state
-  if (authType === "oidc" || authType === "saml") {
+  if (authType === AuthType.OIDC || authType === AuthType.SAML) {
     return {
       authType,
       autoRedirect: true,
       requiresVerification: data.requires_verification,
       anonymousUserEnabled: data.anonymous_user_enabled,
       passwordMinLength: data.password_min_length,
+      hasUsers: data.has_users,
+      oauthEnabled: data.oauth_enabled,
     };
   }
   return {
@@ -51,45 +57,29 @@ export const getAuthTypeMetadataSS = async (): Promise<AuthTypeMetadata> => {
     requiresVerification: data.requires_verification,
     anonymousUserEnabled: data.anonymous_user_enabled,
     passwordMinLength: data.password_min_length,
+    hasUsers: data.has_users,
+    oauthEnabled: data.oauth_enabled,
   };
 };
 
-export const getAuthDisabledSS = async (): Promise<boolean> => {
-  return (await getAuthTypeMetadataSS()).authType === "disabled";
-};
-
 const getOIDCAuthUrlSS = async (nextUrl: string | null): Promise<string> => {
-  const url = UrlBuilder.fromInternalUrl("/auth/oidc/authorize");
+  const url = UrlBuilder.fromClientUrl("/api/auth/oidc/authorize");
   if (nextUrl) {
     url.addParam("next", nextUrl);
   }
+  url.addParam("redirect", true);
 
-  const res = await fetch(url.toString());
-  if (!res.ok) {
-    throw new Error("Failed to fetch data");
-  }
-
-  const data: { authorization_url: string } = await res.json();
-  return data.authorization_url;
+  return url.toString();
 };
 
 const getGoogleOAuthUrlSS = async (nextUrl: string | null): Promise<string> => {
-  const url = UrlBuilder.fromInternalUrl("/auth/oauth/authorize");
+  const url = UrlBuilder.fromClientUrl("/api/auth/oauth/authorize");
   if (nextUrl) {
     url.addParam("next", nextUrl);
   }
+  url.addParam("redirect", true);
 
-  const res = await fetch(url.toString(), {
-    headers: {
-      cookie: processCookies(await cookies()),
-    },
-  });
-  if (!res.ok) {
-    throw new Error("Failed to fetch data");
-  }
-
-  const data: { authorization_url: string } = await res.json();
-  return data.authorization_url;
+  return url.toString();
 };
 
 const getSAMLAuthUrlSS = async (nextUrl: string | null): Promise<string> => {
@@ -114,20 +104,18 @@ export const getAuthUrlSS = async (
   // Returns the auth url for the given auth type
 
   switch (authType) {
-    case "disabled":
+    case AuthType.BASIC:
       return "";
-    case "basic":
-      return "";
-    case "google_oauth": {
+    case AuthType.GOOGLE_OAUTH: {
       return await getGoogleOAuthUrlSS(nextUrl);
     }
-    case "cloud": {
+    case AuthType.CLOUD: {
       return await getGoogleOAuthUrlSS(nextUrl);
     }
-    case "saml": {
+    case AuthType.SAML: {
       return await getSAMLAuthUrlSS(nextUrl);
     }
-    case "oidc": {
+    case AuthType.OIDC: {
       return await getOIDCAuthUrlSS(nextUrl);
     }
   }
@@ -152,9 +140,7 @@ export const logoutSS = async (
   headers: Headers
 ): Promise<Response | null> => {
   switch (authType) {
-    case "disabled":
-      return null;
-    case "saml": {
+    case AuthType.SAML: {
       return await logoutSAMLSS(headers);
     }
     default: {
@@ -165,14 +151,13 @@ export const logoutSS = async (
 
 export const getCurrentUserSS = async (): Promise<User | null> => {
   try {
+    const cookieString = processCookies(await cookies());
+
     const response = await fetch(buildUrl("/me"), {
       credentials: "include",
       next: { revalidate: 0 },
       headers: {
-        cookie: (await cookies())
-          .getAll()
-          .map((cookie) => `${cookie.name}=${cookie.value}`)
-          .join("; "),
+        cookie: cookieString,
       },
     });
 
@@ -189,8 +174,23 @@ export const getCurrentUserSS = async (): Promise<User | null> => {
 };
 
 export const processCookies = (cookies: ReadonlyRequestCookies): string => {
-  return cookies
+  let cookieString = cookies
     .getAll()
     .map((cookie) => `${cookie.name}=${cookie.value}`)
     .join("; ");
+
+  // Inject debug auth cookie for local development against remote backend (only if not already present)
+  if (process.env.DEBUG_AUTH_COOKIE && process.env.NODE_ENV === "development") {
+    const hasAuthCookie = cookieString
+      .split(/;\s*/)
+      .some((c) => c.startsWith("fastapiusersauth="));
+    if (!hasAuthCookie) {
+      const debugCookie = `fastapiusersauth=${process.env.DEBUG_AUTH_COOKIE}`;
+      cookieString = cookieString
+        ? `${cookieString}; ${debugCookie}`
+        : debugCookie;
+    }
+  }
+
+  return cookieString;
 };

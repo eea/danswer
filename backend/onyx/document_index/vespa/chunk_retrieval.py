@@ -41,7 +41,6 @@ from onyx.document_index.vespa_constants import MAX_OR_CONDITIONS
 from onyx.document_index.vespa_constants import METADATA
 from onyx.document_index.vespa_constants import METADATA_SUFFIX
 from onyx.document_index.vespa_constants import PRIMARY_OWNERS
-from onyx.document_index.vespa_constants import RECENCY_BIAS
 from onyx.document_index.vespa_constants import SEARCH_ENDPOINT
 from onyx.document_index.vespa_constants import SECONDARY_OWNERS
 from onyx.document_index.vespa_constants import SECTION_CONTINUATION
@@ -142,7 +141,6 @@ def _vespa_hit_to_inference_chunk(
         title=fields.get(TITLE),
         semantic_identifier=fields[SEMANTIC_IDENTIFIER],
         boost=fields.get(BOOST, 1),
-        recency_bias=fields.get("matchfeatures", {}).get(RECENCY_BIAS, 1.0),
         score=None if null_score else hit.get("relevance", 0),
         hidden=fields.get(HIDDEN, False),
         primary_owners=fields.get(PRIMARY_OWNERS),
@@ -163,6 +161,7 @@ def get_chunks_via_visit_api(
     filters: IndexFilters,
     field_names: list[str] | None = None,
     get_large_chunks: bool = False,
+    short_tensor_format: bool = False,
 ) -> list[dict]:
     # Constructing the URL for the Visit API
     # NOTE: visit API uses the same URL as the document API, but with different params
@@ -182,7 +181,7 @@ def get_chunks_via_visit_api(
 
     if MULTI_TENANT:
         tenant_id_fieldset_entry = f"{TENANT_ID}"
-        if tenant_id_fieldset_entry not in field_set_list:
+        if field_set_list and tenant_id_fieldset_entry not in field_set_list:
             field_set_list.append(tenant_id_fieldset_entry)
 
     if field_set_list:
@@ -215,6 +214,10 @@ def get_chunks_via_visit_api(
         "wantedDocumentCount": 1_000,
         "fieldSet": field_set,
     }
+    # Vespa can supply tensors in various different formats. This explicitly
+    # asks to retrieve tensor data in "short-value" format.
+    if short_tensor_format:
+        params["format.tensors"] = "short-value"
 
     document_chunks: list[dict] = []
     while True:

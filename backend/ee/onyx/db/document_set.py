@@ -54,7 +54,7 @@ def delete_document_set_privacy__no_commit(
 def fetch_document_sets(
     user_id: UUID | None,
     db_session: Session,
-    include_outdated: bool = True,  # Parameter only for versioned implementation, unused
+    include_outdated: bool = True,  # Parameter only for versioned implementation, unused  # noqa: ARG001
 ) -> list[tuple[DocumentSet, list[ConnectorCredentialPair]]]:
     assert user_id is not None
 
@@ -118,6 +118,6 @@ def fetch_document_sets(
             .all()
         )
 
-        document_set_with_cc_pairs.append((document_set, cc_pairs))  # type: ignore
+        document_set_with_cc_pairs.append((document_set, cc_pairs))
 
     return document_set_with_cc_pairs

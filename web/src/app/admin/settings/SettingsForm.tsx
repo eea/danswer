@@ -7,14 +7,15 @@ import Button from "@/refresh-components/buttons/Button";
 import { Settings } from "./interfaces";
 import { useRouter } from "next/navigation";
 import React, { useContext, useState, useEffect } from "react";
-import { SettingsContext } from "@/components/settings/SettingsProvider";
+import { SettingsContext } from "@/providers/SettingsProvider";
 import { usePaidEnterpriseFeaturesEnabled } from "@/components/settings/usePaidEnterpriseFeaturesEnabled";
-import { Modal } from "@/components/Modal";
+import Modal from "@/refresh-components/Modal";
 import { NEXT_PUBLIC_CLOUD_ENABLED } from "@/lib/constants";
 import { AnonymousUserPath } from "./AnonymousUserPath";
 import LLMSelector from "@/components/llm/LLMSelector";
 import { useVisionProviders } from "./hooks/useVisionProviders";
 import InputTextArea from "@/refresh-components/inputs/InputTextArea";
+import { SvgAlertTriangle } from "@opal/icons";
 
 export function Checkbox({
   label,
@@ -219,7 +220,7 @@ export function SettingsForm() {
   }
 
   return (
-    <div className="flex flex-col pb-8">
+    <>
       {popup}
       <Title className="mb-4">Workspace Settings</Title>
       <label className="flex flex-col text-sm mb-4">
@@ -283,7 +284,7 @@ export function SettingsForm() {
 
       <Checkbox
         label="Deep Research"
-        sublabel="If set, users will be able to use Deep Research."
+        sublabel="Enables a button to run deep research - a more complex and time intensive flow. Note: this costs >10x more in tokens to normal questions."
         checked={settings.deep_research_enabled ?? true}
         onChange={(e) =>
           handleToggleSettingsField("deep_research_enabled", e.target.checked)
@@ -306,23 +307,26 @@ export function SettingsForm() {
         <AnonymousUserPath setPopup={setPopup} />
       )}
       {showConfirmModal && (
-        <Modal
-          width="max-w-3xl w-full"
-          onOutsideClick={() => setShowConfirmModal(false)}
-        >
-          <div className="flex flex-col gap-4">
-            <h2 className="text-xl font-bold">Enable Anonymous Users</h2>
-            <p>
-              Are you sure you want to enable anonymous users? This will allow
-              anyone to use Onyx without signing in.
-            </p>
-            <div className="flex justify-end gap-2">
+        <Modal open onOpenChange={() => setShowConfirmModal(false)}>
+          <Modal.Content>
+            <Modal.Header
+              icon={SvgAlertTriangle}
+              title="Enable Anonymous Users"
+              onClose={() => setShowConfirmModal(false)}
+            />
+            <Modal.Body>
+              <p>
+                Are you sure you want to enable anonymous users? This will allow
+                anyone to use Onyx without signing in.
+              </p>
+            </Modal.Body>
+            <Modal.Footer>
               <Button secondary onClick={() => setShowConfirmModal(false)}>
                 Cancel
               </Button>
               <Button onClick={handleConfirmAnonymousUsers}>Confirm</Button>
-            </div>
-          </div>
+            </Modal.Footer>
+          </Modal.Content>
         </Modal>
       )}
       {isEnterpriseEnabled && (
@@ -437,6 +441,6 @@ export function SettingsForm() {
           </div>
         </div>
       </div>
-    </div>
+    </>
   );
 }

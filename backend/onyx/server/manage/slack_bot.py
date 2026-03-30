@@ -30,7 +30,7 @@ from onyx.server.manage.validate_tokens import validate_app_token
 from onyx.server.manage.validate_tokens import validate_bot_token
 from onyx.server.manage.validate_tokens import validate_user_token
 from onyx.utils.logger import setup_logger
-from onyx.utils.telemetry import create_milestone_and_report
+from onyx.utils.telemetry import mt_cloud_telemetry
 from shared_configs.contextvars import get_current_tenant_id
 
 SLACK_API_CHANNELS_PER_PAGE = 100
@@ -114,7 +114,7 @@ def _form_channel_config(
 def create_slack_channel_config(
     slack_channel_config_creation_request: SlackChannelConfigCreationRequest,
     db_session: Session = Depends(get_session),
-    _: User | None = Depends(current_admin_user),
+    _: User = Depends(current_admin_user),
 ) -> SlackChannelConfig:
     channel_config = _form_channel_config(
         db_session=db_session,
@@ -155,7 +155,7 @@ def patch_slack_channel_config(
     slack_channel_config_id: int,
     slack_channel_config_creation_request: SlackChannelConfigCreationRequest,
     db_session: Session = Depends(get_session),
-    _: User | None = Depends(current_admin_user),
+    _: User = Depends(current_admin_user),
 ) -> SlackChannelConfig:
     channel_config = _form_channel_config(
         db_session=db_session,
@@ -217,7 +217,7 @@ def patch_slack_channel_config(
 def delete_slack_channel_config(
     slack_channel_config_id: int,
     db_session: Session = Depends(get_session),
-    user: User | None = Depends(current_admin_user),
+    user: User = Depends(current_admin_user),
 ) -> None:
     remove_slack_channel_config(
         db_session=db_session,
@@ -229,7 +229,7 @@ def delete_slack_channel_config(
 @router.get("/admin/slack-app/channel")
 def list_slack_channel_configs(
     db_session: Session = Depends(get_session),
-    _: User | None = Depends(current_admin_user),
+    _: User = Depends(current_admin_user),
 ) -> list[SlackChannelConfig]:
     slack_channel_config_models = fetch_slack_channel_configs(db_session=db_session)
     return [
@@ -242,7 +242,7 @@ def list_slack_channel_configs(
 def create_bot(
     slack_bot_creation_request: SlackBotCreationRequest,
     db_session: Session = Depends(get_session),
-    _: User | None = Depends(current_admin_user),
+    _: User = Depends(current_admin_user),
 ) -> SlackBot:
     tenant_id = get_current_tenant_id()
 
@@ -274,12 +274,10 @@ def create_bot(
         is_default=True,
     )
 
-    create_milestone_and_report(
-        user=None,
-        distinct_id=tenant_id or "N/A",
-        event_type=MilestoneRecordType.CREATED_ONYX_BOT,
-        properties=None,
-        db_session=db_session,
+    mt_cloud_telemetry(
+        tenant_id=tenant_id,
+        distinct_id=tenant_id,
+        event=MilestoneRecordType.CREATED_ONYX_BOT,
     )
 
     return SlackBot.from_model(slack_bot_model)
@@ -290,7 +288,7 @@ def patch_bot(
     slack_bot_id: int,
     slack_bot_creation_request: SlackBotCreationRequest,
     db_session: Session = Depends(get_session),
-    _: User | None = Depends(current_admin_user),
+    _: User = Depends(current_admin_user),
 ) -> SlackBot:
     validate_bot_token(slack_bot_creation_request.bot_token)
     validate_app_token(slack_bot_creation_request.app_token)
@@ -311,7 +309,7 @@ def patch_bot(
 def delete_bot(
     slack_bot_id: int,
     db_session: Session = Depends(get_session),
-    _: User | None = Depends(current_admin_user),
+    _: User = Depends(current_admin_user),
 ) -> None:
     remove_slack_bot(
         db_session=db_session,
@@ -323,7 +321,7 @@ def delete_bot(
 def get_bot_by_id(
     slack_bot_id: int,
     db_session: Session = Depends(get_session),
-    _: User | None = Depends(current_admin_user),
+    _: User = Depends(current_admin_user),
 ) -> SlackBot:
     slack_bot_model = fetch_slack_bot(
         db_session=db_session,
@@ -335,7 +333,7 @@ def get_bot_by_id(
 @router.get("/admin/slack-app/bots")
 def list_bots(
     db_session: Session = Depends(get_session),
-    _: User | None = Depends(current_admin_user),
+    _: User = Depends(current_admin_user),
 ) -> list[SlackBot]:
     slack_bot_models = fetch_slack_bots(db_session=db_session)
     return [
@@ -347,7 +345,7 @@ def list_bots(
 def list_bot_configs(
     bot_id: int,
     db_session: Session = Depends(get_session),
-    _: User | None = Depends(current_admin_user),
+    _: User = Depends(current_admin_user),
 ) -> list[SlackChannelConfig]:
     slack_bot_config_models = fetch_slack_channel_configs(
         db_session=db_session, slack_bot_id=bot_id

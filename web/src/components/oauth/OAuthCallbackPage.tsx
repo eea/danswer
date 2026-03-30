@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import type { Route } from "next";
 import { CheckmarkIcon, TriangleAlertIcon } from "@/components/icons/icons";
 import CardSection from "@/components/admin/CardSection";
 import Button from "@/refresh-components/buttons/Button";
@@ -68,8 +69,8 @@ export default function OAuthCallbackPage({ config }: OAuthCallbackPageProps) {
     }, 1000);
 
     const timer = setTimeout(() => {
-      const target = redirectPath || config.defaultRedirectPath || "/chat";
-      router.push(target);
+      const target = redirectPath || config.defaultRedirectPath || "/app";
+      router.push(target as Route);
     }, delayMs);
 
     return () => {
@@ -162,7 +163,7 @@ export default function OAuthCallbackPage({ config }: OAuthCallbackPageProps) {
           responseData.redirect_url ||
             searchParams?.get("return_path") ||
             config.defaultRedirectPath ||
-            "/chat"
+            "/app"
         );
         setStatusMessage(config.successMessage || "Success!");
 
@@ -256,8 +257,8 @@ export default function OAuthCallbackPage({ config }: OAuthCallbackPageProps) {
                   <Button
                     onClick={() => {
                       const target =
-                        redirectPath || config.defaultRedirectPath || "/chat";
-                      router.push(target);
+                        redirectPath || config.defaultRedirectPath || "/app";
+                      router.push(target as Route);
                     }}
                     className="w-full"
                   >

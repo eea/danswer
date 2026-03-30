@@ -1,15 +1,15 @@
 "use client";
 import { use } from "react";
 
-import { GroupsIcon } from "@/components/icons/icons";
 import { GroupDisplay } from "./GroupDisplay";
 import { useSpecificUserGroup } from "./hook";
 import { ThreeDotsLoader } from "@/components/Loading";
-import { useConnectorStatus, useUsers } from "@/lib/hooks";
+import { useConnectorStatus } from "@/lib/hooks";
 import { useRouter } from "next/navigation";
-import { BackButton } from "@/components/BackButton";
+import useUsers from "@/hooks/useUsers";
+import BackButton from "@/refresh-components/buttons/BackButton";
 import { AdminPageTitle } from "@/components/admin/Title";
-
+import { SvgUsers } from "@opal/icons";
 const Page = (props: { params: Promise<{ groupId: string }> }) => {
   const params = use(props.params);
   const router = useRouter();
@@ -52,13 +52,10 @@ const Page = (props: { params: Promise<{ groupId: string }> }) => {
   }
 
   return (
-    <div className="mx-auto container">
+    <>
       <BackButton />
 
-      <AdminPageTitle
-        title={userGroup.name || "Unknown"}
-        icon={<GroupsIcon size={32} />}
-      />
+      <AdminPageTitle title={userGroup.name || "Unknown"} icon={SvgUsers} />
 
       {userGroup ? (
         <GroupDisplay
@@ -70,7 +67,7 @@ const Page = (props: { params: Promise<{ groupId: string }> }) => {
       ) : (
         <div>Unable to fetch User Group :(</div>
       )}
-    </div>
+    </>
   );
 };
 

@@ -56,6 +56,13 @@ class IndexingMode(str, PyEnum):
     REINDEX = "reindex"
 
 
+class ProcessingMode(str, PyEnum):
+    """Determines how documents are processed after fetching."""
+
+    REGULAR = "REGULAR"  # Full pipeline: chunk → embed → Vespa
+    FILE_SYSTEM = "FILE_SYSTEM"  # Write to file system only
+
+
 class SyncType(str, PyEnum):
     DOCUMENT_SET = "document_set"
     USER_GROUP = "user_group"
@@ -86,6 +93,7 @@ class MCPAuthenticationType(str, PyEnum):
     NONE = "NONE"
     API_TOKEN = "API_TOKEN"
     OAUTH = "OAUTH"
+    PT_OAUTH = "PT_OAUTH"  # Pass-Through OAuth
 
 
 class MCPTransport(str, PyEnum):
@@ -99,6 +107,14 @@ class MCPTransport(str, PyEnum):
 class MCPAuthenticationPerformer(str, PyEnum):
     ADMIN = "ADMIN"
     PER_USER = "PER_USER"
+
+
+class MCPServerStatus(str, PyEnum):
+    CREATED = "CREATED"  # Server created, needs auth configuration
+    AWAITING_AUTH = "AWAITING_AUTH"  # Auth configured, pending user authentication
+    FETCHING_TOOLS = "FETCHING_TOOLS"  # Auth complete, fetching tools
+    CONNECTED = "CONNECTED"  # Fully configured and connected
+    DISCONNECTED = "DISCONNECTED"  # Server disconnected, but not deleted
 
 
 # Consistent with Celery task statuses
@@ -185,3 +201,92 @@ class SwitchoverType(str, PyEnum):
     REINDEX = "reindex"
     ACTIVE_ONLY = "active_only"
     INSTANT = "instant"
+
+
+class OpenSearchDocumentMigrationStatus(str, PyEnum):
+    """Status for Vespa to OpenSearch migration per document."""
+
+    PENDING = "pending"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    PERMANENTLY_FAILED = "permanently_failed"
+
+
+class OpenSearchTenantMigrationStatus(str, PyEnum):
+    """Status for tenant-level OpenSearch migration."""
+
+    PENDING = "pending"
+    COMPLETED = "completed"
+
+
+# Onyx Build Mode Enums
+class BuildSessionStatus(str, PyEnum):
+    ACTIVE = "active"
+    IDLE = "idle"
+
+
+class SandboxStatus(str, PyEnum):
+    PROVISIONING = "provisioning"
+    RUNNING = "running"
+    SLEEPING = "sleeping"  # Pod terminated, snapshots saved to S3
+    TERMINATED = "terminated"
+    FAILED = "failed"
+
+    def is_active(self) -> bool:
+        """Check if sandbox is in an active state (running)."""
+        return self == SandboxStatus.RUNNING
+
+    def is_terminal(self) -> bool:
+        """Check if sandbox is in a terminal state."""
+        return self in (SandboxStatus.TERMINATED, SandboxStatus.FAILED)
+
+    def is_sleeping(self) -> bool:
+        """Check if sandbox is sleeping (pod terminated but can be restored)."""
+        return self == SandboxStatus.SLEEPING
+
+
+class ArtifactType(str, PyEnum):
+    WEB_APP = "web_app"
+    PPTX = "pptx"
+    DOCX = "docx"
+    IMAGE = "image"
+    MARKDOWN = "markdown"
+    EXCEL = "excel"
+
+
+class HierarchyNodeType(str, PyEnum):
+    """Types of hierarchy nodes across different sources"""
+
+    # Generic
+    FOLDER = "folder"
+
+    # Root-level type
+    SOURCE = "source"  # Root node for a source (e.g., "Google Drive")
+
+    # Google Drive
+    SHARED_DRIVE = "shared_drive"
+    MY_DRIVE = "my_drive"
+
+    # Confluence
+    SPACE = "space"
+    PAGE = "page"  # Confluence pages can be both hierarchy nodes AND documents
+
+    # Jira
+    PROJECT = "project"
+
+    # Notion
+    DATABASE = "database"
+    WORKSPACE = "workspace"
+
+    # Sharepoint
+    SITE = "site"
+    DRIVE = "drive"  # Document library within a site
+
+    # Slack
+    CHANNEL = "channel"
+
+
+class LLMModelFlowType(str, PyEnum):
+    CHAT = "chat"
+    VISION = "vision"
+    EMBEDDINGS = "embeddings"

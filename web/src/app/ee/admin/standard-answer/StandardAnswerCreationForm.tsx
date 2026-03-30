@@ -6,6 +6,7 @@ import CardSection from "@/components/admin/CardSection";
 import Button from "@/refresh-components/buttons/Button";
 import { Form, Formik } from "formik";
 import { useRouter } from "next/navigation";
+import type { Route } from "next";
 import * as Yup from "yup";
 import {
   createStandardAnswer,
@@ -94,7 +95,7 @@ export const StandardAnswerCreationForm = ({
             }
             formikHelpers.setSubmitting(false);
             if (response.ok) {
-              router.push(`/admin/standard-answer?u=${Date.now()}`);
+              router.push(`/ee/admin/standard-answer?u=${Date.now()}` as Route);
             } else {
               const responseJson = await response.json();
               const errorMsg = responseJson.detail || responseJson.message;
@@ -123,7 +124,6 @@ export const StandardAnswerCreationForm = ({
                   label="Any of these keywords, separated by spaces"
                   tooltip="A question must match these keywords in order to trigger the answer."
                   placeholder="ticket problem issue"
-                  autoCompleteDisabled={true}
                 />
               ) : (
                 <TextFormField
@@ -131,7 +131,6 @@ export const StandardAnswerCreationForm = ({
                   label="All of these keywords, in any order, separated by spaces"
                   tooltip="A question must match these keywords in order to trigger the answer."
                   placeholder="it ticket"
-                  autoCompleteDisabled={true}
                 />
               )}
               <BooleanFormField

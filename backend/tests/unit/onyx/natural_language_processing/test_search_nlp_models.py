@@ -8,6 +8,7 @@ import pytest
 from httpx import AsyncClient
 from litellm.exceptions import RateLimitError
 
+from onyx.llm.constants import LlmProviderNames
 from onyx.natural_language_processing.search_nlp_models import CloudEmbedding
 from shared_configs.enums import EmbeddingProvider
 from shared_configs.enums import EmbedTextType
@@ -45,7 +46,7 @@ async def test_cloud_embedding_explicit_close() -> None:
 
 @pytest.mark.asyncio
 async def test_openai_embedding(
-    mock_http_client: AsyncMock, sample_embeddings: List[List[float]]
+    mock_http_client: AsyncMock, sample_embeddings: List[List[float]]  # noqa: ARG001
 ) -> None:
     with patch("openai.AsyncOpenAI") as mock_openai:
         mock_client = AsyncMock()
@@ -70,7 +71,9 @@ async def test_rate_limit_handling() -> None:
         "onyx.natural_language_processing.search_nlp_models.CloudEmbedding.embed"
     ) as mock_embed:
         mock_embed.side_effect = RateLimitError(
-            "Rate limit exceeded", llm_provider="openai", model="fake-model"
+            "Rate limit exceeded",
+            llm_provider=LlmProviderNames.OPENAI,
+            model="fake-model",
         )
 
         embedding = CloudEmbedding("fake-key", EmbeddingProvider.OPENAI)

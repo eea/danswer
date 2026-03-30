@@ -25,8 +25,11 @@ class WebSearchProviderType(str, Enum):
     GOOGLE_PSE = "google_pse"
     SERPER = "serper"
     EXA = "exa"
+    SEARXNG = "searxng"
+    BRAVE = "brave"
 
 
 class WebContentProviderType(str, Enum):
     ONYX_WEB_CRAWLER = "onyx_web_crawler"
     FIRECRAWL = "firecrawl"
+    EXA = "exa"

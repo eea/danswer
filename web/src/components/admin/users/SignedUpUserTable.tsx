@@ -1,3 +1,5 @@
+"use client";
+
 import {
   type User,
   UserRole,
@@ -26,31 +28,18 @@ import InputSelect from "@/refresh-components/inputs/InputSelect";
 import {
   Select,
   SelectContent,
-  SelectItem,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
 import Button from "@/refresh-components/buttons/Button";
-import { useUser } from "@/components/user/UserProvider";
+import { useUser } from "@/providers/UserProvider";
 import { LeaveOrganizationButton } from "./buttons/LeaveOrganizationButton";
 import { NEXT_PUBLIC_CLOUD_ENABLED } from "@/lib/constants";
 import ResetPasswordModal from "./ResetPasswordModal";
-import {
-  MoreHorizontal,
-  LogOut,
-  UserMinus,
-  UserX,
-  KeyRound,
-} from "lucide-react";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+import { LogOut, UserMinus } from "lucide-react";
+import Popover from "@/refresh-components/Popover";
 import IconButton from "@/refresh-components/buttons/IconButton";
-import SvgMoreHorizontal from "@/icons/more-horizontal";
-import SvgKey from "@/icons/key";
-
+import { SvgKey, SvgMoreHorizontal } from "@opal/icons";
 const ITEMS_PER_PAGE = 10;
 const PAGES_PER_BATCH = 2;
 
@@ -89,6 +78,7 @@ export default function SignedUpUserTable({
 
   const [selectedRoles, setSelectedRoles] = useState<UserRole[]>([]);
   const [resetPasswordUser, setResetPasswordUser] = useState<User | null>(null);
+  const invitedEmails = invitedUsers.map((user) => user.email.toLowerCase());
 
   const {
     currentPageData: pageOfUsers,
@@ -267,10 +257,10 @@ export default function SignedUpUserTable({
 
     return (
       <Popover>
-        <PopoverTrigger asChild>
+        <Popover.Trigger asChild>
           <IconButton secondary icon={SvgMoreHorizontal} />
-        </PopoverTrigger>
-        <PopoverContent className="w-48">
+        </Popover.Trigger>
+        <Popover.Content>
           <div className="grid gap-1">
             {NEXT_PUBLIC_CLOUD_ENABLED && user.id === currentUser?.id ? (
               <LeaveOrganizationButton
@@ -317,7 +307,7 @@ export default function SignedUpUserTable({
               </Button>
             )}
           </div>
-        </PopoverContent>
+        </Popover.Content>
       </Popover>
     );
   };
@@ -327,7 +317,7 @@ export default function SignedUpUserTable({
       return (
         <InviteUserButton
           user={user}
-          invited={invitedUsers.map((u) => u.email).includes(user.email)}
+          invited={invitedEmails.includes(user.email.toLowerCase())}
           setPopup={setPopup}
           mutate={[refresh, invitedUsersMutate]}
         />

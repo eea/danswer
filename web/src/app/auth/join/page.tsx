@@ -11,6 +11,7 @@ import EmailPasswordForm from "../login/EmailPasswordForm";
 import SignInButton from "@/app/auth/login/SignInButton";
 import AuthFlowContainer from "@/components/auth/AuthFlowContainer";
 import AuthErrorDisplay from "@/components/auth/AuthErrorDisplay";
+import { AuthType } from "@/lib/constants";
 
 const Page = async (props: {
   searchParams?: Promise<{ [key: string]: string | string[] | undefined }>;
@@ -42,23 +43,18 @@ const Page = async (props: {
     console.log(`Some fetch failed for the login page - ${e}`);
   }
 
-  // simply take the user to the home page if Auth is disabled
-  if (authTypeMetadata?.authType === "disabled") {
-    return redirect("/chat");
-  }
-
   // if user is already logged in, take them to the main app page
   if (currentUser && currentUser.is_active && !currentUser.is_anonymous_user) {
     if (!authTypeMetadata?.requiresVerification || currentUser.is_verified) {
-      return redirect("/chat");
+      return redirect("/app");
     }
     return redirect("/auth/waiting-on-verification");
   }
-  const cloud = authTypeMetadata?.authType === "cloud";
+  const cloud = authTypeMetadata?.authType === AuthType.CLOUD;
 
   // only enable this page if basic login is enabled
-  if (authTypeMetadata?.authType !== "basic" && !cloud) {
-    return redirect("/chat");
+  if (authTypeMetadata?.authType !== AuthType.BASIC && !cloud) {
+    return redirect("/app");
   }
 
   let authUrl: string | null = null;
@@ -81,7 +77,7 @@ const Page = async (props: {
 
           {cloud && authUrl && (
             <div className="w-full justify-center">
-              <SignInButton authorizeUrl={authUrl} authType="cloud" />
+              <SignInButton authorizeUrl={authUrl} authType={AuthType.CLOUD} />
               <div className="flex items-center w-full my-4">
                 <div className="flex-grow border-t border-background-300"></div>
                 <span className="px-4 text-text-500">or</span>

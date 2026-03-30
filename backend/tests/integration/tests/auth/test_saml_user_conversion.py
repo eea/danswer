@@ -13,7 +13,7 @@ from tests.integration.common_utils.test_models import DATestUser
     os.environ.get("ENABLE_PAID_ENTERPRISE_EDITION_FEATURES", "").lower() != "true",
     reason="SAML tests are enterprise only",
 )
-def test_saml_user_conversion(reset: None) -> None:
+def test_saml_user_conversion(reset: None) -> None:  # noqa: ARG001
     """
     Test that SAML login correctly converts users with non-authenticated roles
     (SLACK_USER or EXT_PERM_USER) to authenticated roles (BASIC).
@@ -28,7 +28,7 @@ def test_saml_user_conversion(reset: None) -> None:
     are properly converted to authenticated roles during SAML login.
     """
     # Create an admin user (first user created is automatically an admin)
-    admin_user: DATestUser = UserManager.create(email="admin@onyx-test.com")
+    admin_user: DATestUser = UserManager.create(email="admin@example.com")
 
     # Create a regular user that we'll convert to EXT_PERM_USER
     test_user_email = "ext_perm_user@example.com"

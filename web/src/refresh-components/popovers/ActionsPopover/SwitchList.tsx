@@ -2,15 +2,13 @@
 
 import React, { useMemo, useState } from "react";
 import IconButton from "@/refresh-components/buttons/IconButton";
-import SvgChevronLeft from "@/icons/chevron-left";
 import InputTypeIn from "@/refresh-components/inputs/InputTypeIn";
-import SvgPlug from "@/icons/plug";
-import SvgUnplug from "@/icons/unplug";
-import { PopoverMenu } from "@/components/ui/popover";
+import { PopoverMenu } from "@/refresh-components/Popover";
 import LineItem from "@/refresh-components/buttons/LineItem";
-import { SvgProps } from "@/icons";
+import type { IconProps } from "@opal/types";
 import SimpleTooltip from "@/refresh-components/SimpleTooltip";
 import Switch from "@/refresh-components/inputs/Switch";
+import { SvgChevronLeft, SvgPlug, SvgUnplug } from "@opal/icons";
 
 export interface SwitchListItem {
   id: string;
@@ -19,6 +17,8 @@ export interface SwitchListItem {
   leading?: React.ReactNode;
   isEnabled: boolean;
   onToggle: () => void;
+  disabled?: boolean;
+  disabledTooltip?: string;
 }
 
 export interface SwitchListProps {
@@ -56,7 +56,7 @@ export default function SwitchList({
   }, [items, searchTerm]);
 
   return (
-    <PopoverMenu medium footer={footer}>
+    <PopoverMenu footer={footer}>
       {[
         <div className="flex items-center gap-1" key="search">
           <IconButton
@@ -69,7 +69,7 @@ export default function SwitchList({
             }}
           />
           <InputTypeIn
-            internal
+            variant="internal"
             placeholder={searchPlaceholder}
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
@@ -86,17 +86,20 @@ export default function SwitchList({
         </LineItem>,
 
         ...filteredItems.map((item) => {
+          const tooltip = item.disabled
+            ? item.disabledTooltip
+            : item.description;
           return (
             <SimpleTooltip
               key={item.id}
-              tooltip={item.description}
+              tooltip={tooltip}
               className="max-w-[30rem]"
             >
               <LineItem
                 icon={
                   item.leading
                     ? ((() =>
-                        item.leading) as React.FunctionComponent<SvgProps>)
+                        item.leading) as React.FunctionComponent<IconProps>)
                     : undefined
                 }
                 rightChildren={
@@ -104,6 +107,7 @@ export default function SwitchList({
                     checked={item.isEnabled}
                     onCheckedChange={item.onToggle}
                     aria-label={`Toggle ${item.label}`}
+                    disabled={item.disabled}
                   />
                 }
               >

@@ -75,13 +75,25 @@
  * ```
  */
 
-import React, { useCallback, useContext, useMemo, useRef, useId } from "react";
+import React, {
+  useCallback,
+  useContext,
+  useMemo,
+  useRef,
+  useId,
+  useEffect,
+} from "react";
+import {
+  useFloating,
+  autoUpdate,
+  flip,
+  offset,
+  shift,
+  size,
+} from "@floating-ui/react-dom";
 import { cn, noProp } from "@/lib/utils";
 import InputTypeIn from "../InputTypeIn";
 import { FieldContext } from "../../form/FieldContext";
-import SvgChevronDown from "@/icons/chevron-down";
-import SvgChevronUp from "@/icons/chevron-up";
-import Text from "../../texts/Text";
 import IconButton from "@/refresh-components/buttons/IconButton";
 import { FieldMessage } from "../../messages/FieldMessage";
 
@@ -92,7 +104,6 @@ import {
   useOptionFiltering,
 } from "./hooks";
 import { useClickOutside } from "@/hooks/useClickOutside";
-import { useDropdownPosition } from "@/hooks/useDropdownPosition";
 import { useValidation } from "./utils/validation";
 import { buildAriaAttributes } from "./utils/aria";
 
@@ -101,6 +112,8 @@ import { ComboBoxDropdown } from "./components/ComboBoxDropdown";
 
 // Types
 import { InputComboBoxProps, ComboBoxOption } from "./types";
+import { SvgChevronDown, SvgChevronUp } from "@opal/icons";
+import { WithoutStyles } from "@/types";
 
 const InputComboBox = ({
   value,
@@ -116,9 +129,9 @@ const InputComboBox = ({
   leftSearchIcon = false,
   rightSection,
   separatorLabel = "Other options",
-  className,
+  showOtherOptions = false,
   ...rest
-}: InputComboBoxProps) => {
+}: WithoutStyles<InputComboBoxProps>) => {
   const inputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const fieldContext = useContext(FieldContext);
@@ -140,14 +153,44 @@ const InputComboBox = ({
   // Filtering Hook
   const { matchedOptions, unmatchedOptions, hasSearchTerm } =
     useOptionFiltering({ options, inputValue });
+  const visibleUnmatchedOptions =
+    hasSearchTerm && showOtherOptions ? unmatchedOptions : [];
 
-  // Combined list for keyboard navigation
+  // Whether to show the create option (only when no partial matches)
+  const showCreateOption =
+    !strict &&
+    hasSearchTerm &&
+    inputValue.trim() !== "" &&
+    matchedOptions.length === 0;
+
+  // Combined list for keyboard navigation (includes create option when shown)
   const allVisibleOptions = useMemo(() => {
-    return [...matchedOptions, ...unmatchedOptions];
-  }, [matchedOptions, unmatchedOptions]);
+    const baseOptions = [...matchedOptions, ...visibleUnmatchedOptions];
+    if (showCreateOption) {
+      // Prepend a synthetic option for the "create new" item
+      return [{ value: inputValue, label: inputValue }, ...baseOptions];
+    }
+    return baseOptions;
+  }, [matchedOptions, visibleUnmatchedOptions, showCreateOption, inputValue]);
 
-  // Position Hook
-  const { dropdownPosition, containerRef } = useDropdownPosition({ isOpen });
+  // Floating UI for dropdown positioning
+  const { refs, floatingStyles } = useFloating({
+    open: isOpen,
+    placement: "bottom-start",
+    middleware: [
+      offset(4),
+      flip(),
+      shift({ padding: 8 }),
+      size({
+        apply({ rects, elements }) {
+          Object.assign(elements.floating.style, {
+            width: `${rects.reference.width}px`,
+          });
+        },
+      }),
+    ],
+    whileElementsMounted: autoUpdate,
+  });
 
   // Check if an option is an exact match
   const isExactMatch = useCallback(
@@ -172,6 +215,29 @@ const InputComboBox = ({
     onValidationError,
   });
 
+  // Sync highlightedIndex with exact match when typing (not keyboard nav)
+  useEffect(() => {
+    // Skip if keyboard navigating or dropdown closed
+    if (isKeyboardNav || !isOpen) return;
+    if (!inputValue.trim()) return;
+
+    const exactMatchIndex = allVisibleOptions.findIndex(
+      (opt) =>
+        opt.value.toLowerCase() === inputValue.trim().toLowerCase() ||
+        opt.label.toLowerCase() === inputValue.trim().toLowerCase()
+    );
+
+    if (exactMatchIndex >= 0) {
+      setHighlightedIndex(exactMatchIndex);
+    }
+  }, [
+    inputValue,
+    allVisibleOptions,
+    isKeyboardNav,
+    isOpen,
+    setHighlightedIndex,
+  ]);
+
   // Event Handlers
   const handleInputChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -187,8 +253,8 @@ const InputComboBox = ({
         setIsOpen(true);
       }
 
-      // Reset highlighted index to -1 when filtering changes (no initial highlight)
-      setHighlightedIndex(-1);
+      // Auto-highlight first match when typing
+      setHighlightedIndex(0);
       setIsKeyboardNav(false); // Reset keyboard navigation mode when typing
     },
     [
@@ -300,8 +366,8 @@ const InputComboBox = ({
   }, [isOpen, inputValue, value, options, hasOptions]);
 
   return (
-    <div ref={containerRef} className={cn("relative w-full", className)}>
-      <div className="relative">
+    <div ref={refs.setReference} className="relative w-full">
+      <>
         <InputTypeIn
           ref={inputRef}
           placeholder={placeholder}
@@ -309,8 +375,7 @@ const InputComboBox = ({
           onChange={handleInputChange}
           onFocus={handleFocus}
           onKeyDown={handleKeyDown}
-          disabled={disabled}
-          error={!isValid}
+          variant={disabled ? "disabled" : !isValid ? "error" : undefined}
           leftSearchIcon={leftSearchIcon}
           showClearButton={false}
           rightSection={
@@ -350,11 +415,12 @@ const InputComboBox = ({
           ref={dropdownRef}
           isOpen={isOpen}
           disabled={disabled}
-          dropdownPosition={dropdownPosition}
+          floatingStyles={floatingStyles}
+          setFloatingRef={refs.setFloating}
           fieldId={fieldId}
           placeholder={placeholder}
           matchedOptions={matchedOptions}
-          unmatchedOptions={unmatchedOptions}
+          unmatchedOptions={visibleUnmatchedOptions}
           hasSearchTerm={hasSearchTerm}
           separatorLabel={separatorLabel}
           value={value}
@@ -370,8 +436,11 @@ const InputComboBox = ({
             }
           }}
           isExactMatch={isExactMatch}
+          inputValue={inputValue}
+          allowCreate={!strict}
+          showCreateOption={showCreateOption}
         />
-      </div>
+      </>
 
       {/* Error message - only show internal error messages when not using external isError */}
       {!isValid && errorMessage && externalIsError === undefined && (

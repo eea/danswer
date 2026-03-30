@@ -9,8 +9,7 @@ import {
 } from "./types";
 import { WellKnownLLMProviderDescriptor } from "@/app/admin/configuration/llm/interfaces";
 import { updateUserPersonalization } from "@/lib/userSettings";
-import { useUser } from "@/components/user/UserProvider";
-import { useChatContext } from "@/refresh-components/contexts/ChatContext";
+import { useUser } from "@/providers/UserProvider";
 import { MinimalPersonaSnapshot } from "@/app/admin/assistants/interfaces";
 import { useLLMProviders } from "@/lib/hooks/useLLMProviders";
 
@@ -18,14 +17,20 @@ export function useOnboardingState(liveAssistant?: MinimalPersonaSnapshot): {
   state: OnboardingState;
   llmDescriptors: WellKnownLLMProviderDescriptor[];
   actions: OnboardingActions;
+  isLoading: boolean;
 } {
   const [state, dispatch] = useReducer(onboardingReducer, initialState);
   const { user, refreshUser } = useUser();
-  const { llmProviders, refreshLlmProviders } = useChatContext();
+  // Use the SWR hook for LLM providers - no persona ID for the general providers list
+  const {
+    llmProviders,
+    isLoading: isLoadingProviders,
+    refetch: refreshLlmProviders,
+  } = useLLMProviders();
   const { refetch: refreshPersonaProviders } = useLLMProviders(
     liveAssistant?.id
   );
-  const hasLlmProviders = llmProviders?.length > 0;
+  const hasLlmProviders = (llmProviders?.length ?? 0) > 0;
   const userName = user?.personalization?.name;
   const [llmDescriptors, setLlmDescriptors] = useState<
     WellKnownLLMProviderDescriptor[]
@@ -53,47 +58,59 @@ export function useOnboardingState(liveAssistant?: MinimalPersonaSnapshot): {
     fetchLlmDescriptors();
   }, []);
 
-  // If there are any configured LLM providers already present, skip to the final step
+  // Navigate to the earliest incomplete step in the onboarding flow.
+  // Step order: Welcome -> Name -> LlmSetup -> Complete
+  // We check steps in order and stop at the first incomplete one.
   useEffect(() => {
-    if (hasLlmProviders) {
-      if (userName) {
-        dispatch({
-          type: OnboardingActionType.UPDATE_DATA,
-          payload: { userName },
-        });
-      }
-      dispatch({
-        type: OnboardingActionType.UPDATE_DATA,
-        payload: { llmProviders: llmProviders.map((p) => p.provider) },
-      });
-      dispatch({
-        type: OnboardingActionType.GO_TO_STEP,
-        step: OnboardingStep.Complete,
-      });
+    // Don't run logic until data has loaded
+    if (isLoadingProviders) {
       return;
     }
-    if (userName && state.currentStep === OnboardingStep.Welcome) {
+
+    // Pre-populate state with existing data
+    if (userName) {
       dispatch({
         type: OnboardingActionType.UPDATE_DATA,
         payload: { userName },
       });
-      if (hasLlmProviders) {
-        dispatch({
-          type: OnboardingActionType.SET_BUTTON_ACTIVE,
-          isButtonActive: true,
-        });
-      } else {
-        dispatch({
-          type: OnboardingActionType.SET_BUTTON_ACTIVE,
-          isButtonActive: false,
-        });
-      }
+    }
+    if (hasLlmProviders) {
+      dispatch({
+        type: OnboardingActionType.UPDATE_DATA,
+        payload: { llmProviders: (llmProviders ?? []).map((p) => p.provider) },
+      });
+    }
+
+    // Determine the earliest incomplete step
+    // Name step is incomplete if userName is not set
+    if (!userName) {
+      // Stay at Welcome/Name step (no dispatch needed, this is the initial state)
+      return;
+    }
+
+    // LlmSetup step is incomplete if no LLM providers are configured
+    if (!hasLlmProviders) {
+      dispatch({
+        type: OnboardingActionType.SET_BUTTON_ACTIVE,
+        isButtonActive: false,
+      });
       dispatch({
         type: OnboardingActionType.GO_TO_STEP,
         step: OnboardingStep.LlmSetup,
       });
+      return;
     }
-  }, [llmProviders]);
+
+    // All steps complete - go to Complete step
+    dispatch({
+      type: OnboardingActionType.SET_BUTTON_ACTIVE,
+      isButtonActive: true,
+    });
+    dispatch({
+      type: OnboardingActionType.GO_TO_STEP,
+      step: OnboardingStep.Complete,
+    });
+  }, [llmProviders, isLoadingProviders]);
 
   const nextStep = useCallback(() => {
     dispatch({
@@ -234,5 +251,6 @@ export function useOnboardingState(liveAssistant?: MinimalPersonaSnapshot): {
       setError,
       reset,
     },
+    isLoading: isLoadingProviders || !!liveAssistant,
   };
 }

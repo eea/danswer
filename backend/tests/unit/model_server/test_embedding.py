@@ -8,7 +8,6 @@ from unittest.mock import patch
 import pytest
 
 from model_server.encoders import embed_text
-from model_server.encoders import local_rerank
 from model_server.encoders import process_embed_request
 from shared_configs.enums import EmbedTextType
 from shared_configs.model_server_models import EmbedRequest
@@ -50,25 +49,8 @@ async def test_embed_text_local_model() -> None:
 
 
 @pytest.mark.asyncio
-async def test_local_rerank() -> None:
-    with patch("model_server.encoders.get_local_reranking_model") as mock_get_model:
-        mock_model = MagicMock()
-        mock_array = MagicMock()
-        mock_array.tolist.return_value = [0.8, 0.6]
-        mock_model.predict.return_value = mock_array
-        mock_get_model.return_value = mock_model
-
-        result = await local_rerank(
-            query="test query", docs=["doc1", "doc2"], model_name="fake-rerank-model"
-        )
-
-        assert result == [0.8, 0.6]
-        mock_model.predict.assert_called_once()
-
-
-@pytest.mark.asyncio
 async def test_concurrent_embeddings() -> None:
-    def mock_encode(*args: Any, **kwargs: Any) -> List[List[float]]:
+    def mock_encode(*args: Any, **kwargs: Any) -> List[List[float]]:  # noqa: ARG001
         time.sleep(5)
         return [[0.1, 0.2, 0.3]]
 

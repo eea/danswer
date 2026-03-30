@@ -1,7 +1,10 @@
+"use client";
+
 import { useState, useEffect, useRef } from "react";
 import { User } from "@/lib/types";
 import { NO_AUTH_USER_ID } from "@/lib/extension/constants";
 import { AuthTypeMetadata } from "@/lib/userSS";
+import { AuthType } from "@/lib/constants";
 
 // Refresh token every 10 minutes (600000ms)
 // This is shorter than the session expiry time to ensure tokens stay valid
@@ -23,8 +26,8 @@ export function useTokenRefresh(
     if (
       !user ||
       user.id === NO_AUTH_USER_ID ||
-      authTypeMetadata.authType === "oidc" ||
-      authTypeMetadata.authType === "saml"
+      authTypeMetadata.authType === AuthType.OIDC ||
+      authTypeMetadata.authType === AuthType.SAML
     )
       return;
 

@@ -871,7 +871,7 @@ def cloud_monitor_celery_queues(
 
 
 @shared_task(name=OnyxCeleryTask.MONITOR_CELERY_QUEUES, ignore_result=True, bind=True)
-def monitor_celery_queues(self: Task, *, tenant_id: str) -> None:
+def monitor_celery_queues(self: Task, *, tenant_id: str) -> None:  # noqa: ARG001
     return monitor_celery_queues_helper(self)
 
 
@@ -886,9 +886,7 @@ def monitor_celery_queues_helper(
         OnyxCeleryQueues.CONNECTOR_DOC_FETCHING, r_celery
     )
     n_docprocessing = celery_get_queue_length(OnyxCeleryQueues.DOCPROCESSING, r_celery)
-    n_user_files_indexing = celery_get_queue_length(
-        OnyxCeleryQueues.USER_FILES_INDEXING, r_celery
-    )
+
     n_user_file_processing = celery_get_queue_length(
         OnyxCeleryQueues.USER_FILE_PROCESSING, r_celery
     )
@@ -924,7 +922,6 @@ def monitor_celery_queues_helper(
         f"docfetching_prefetched={len(n_docfetching_prefetched)} "
         f"docprocessing={n_docprocessing} "
         f"docprocessing_prefetched={len(n_docprocessing_prefetched)} "
-        f"user_files_indexing={n_user_files_indexing} "
         f"user_file_processing={n_user_file_processing} "
         f"user_file_project_sync={n_user_file_project_sync} "
         f"user_file_delete={n_user_file_delete} "
@@ -955,7 +952,7 @@ def _get_cmdline_for_process(process: psutil.Process) -> str | None:
     queue=OnyxCeleryQueues.MONITORING,
     bind=True,
 )
-def monitor_process_memory(self: Task, *, tenant_id: str) -> None:
+def monitor_process_memory(self: Task, *, tenant_id: str) -> None:  # noqa: ARG001
     """
     Task to monitor memory usage of supervisor-managed processes.
     This periodically checks the memory usage of processes and logs information

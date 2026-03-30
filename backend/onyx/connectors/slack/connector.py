@@ -15,6 +15,7 @@ from http.client import RemoteDisconnected
 from typing import Any
 from typing import cast
 from urllib.error import URLError
+from urllib.parse import urlparse
 
 from pydantic import BaseModel
 from redis import Redis
@@ -41,6 +42,7 @@ from onyx.connectors.interfaces import CheckpointOutput
 from onyx.connectors.interfaces import CredentialsConnector
 from onyx.connectors.interfaces import CredentialsProviderInterface
 from onyx.connectors.interfaces import GenerateSlimDocumentOutput
+from onyx.connectors.interfaces import NormalizationResult
 from onyx.connectors.interfaces import SecondsSinceUnixEpoch
 from onyx.connectors.interfaces import SlimConnectorWithPermSync
 from onyx.connectors.models import BasicExpertInfo
@@ -50,6 +52,7 @@ from onyx.connectors.models import ConnectorMissingCredentialError
 from onyx.connectors.models import Document
 from onyx.connectors.models import DocumentFailure
 from onyx.connectors.models import EntityFailure
+from onyx.connectors.models import HierarchyNode
 from onyx.connectors.models import SlimDocument
 from onyx.connectors.models import TextSection
 from onyx.connectors.slack.access import get_channel_access
@@ -64,6 +67,7 @@ from onyx.connectors.slack.utils import (
 from onyx.connectors.slack.utils import get_message_link
 from onyx.connectors.slack.utils import make_paginated_slack_api_call
 from onyx.connectors.slack.utils import SlackTextCleaner
+from onyx.db.enums import HierarchyNodeType
 from onyx.indexing.indexing_heartbeat import IndexingHeartbeatInterface
 from onyx.redis.redis_pool import get_redis_client
 from onyx.utils.logger import setup_logger
@@ -232,6 +236,8 @@ def thread_to_doc(
         "\n", " "
     )
 
+    channel_name = channel["name"]
+
     return Document(
         id=_build_doc_id(channel_id=channel_id, thread_ts=thread[0]["ts"]),
         sections=[
@@ -245,8 +251,16 @@ def thread_to_doc(
         semantic_identifier=doc_sem_id,
         doc_updated_at=get_latest_message_time(thread),
         primary_owners=valid_experts,
-        metadata={"Channel": channel["name"]},
+        doc_metadata={
+            "hierarchy": {
+                "source_path": [channel_name],
+                "channel_name": channel_name,
+                "channel_id": channel_id,
+            }
+        },
+        metadata={"Channel": channel_name},
         external_access=channel_access,
+        parent_hierarchy_raw_node_id=channel_id,
     )
 
 
@@ -294,6 +308,18 @@ def default_msg_filter(message: MessageType) -> SlackMessageFilterReason | None:
     return None
 
 
+def _bot_inclusive_msg_filter(
+    message: MessageType,
+) -> SlackMessageFilterReason | None:
+    """Like default_msg_filter but allows bot/app messages through.
+    Only filters out disallowed subtypes (channel_join, channel_leave, etc.).
+    """
+    if message.get("subtype", "") in _DISALLOWED_MSG_SUBTYPES:
+        return SlackMessageFilterReason.DISALLOWED
+
+    return None
+
+
 def filter_channels(
     all_channels: list[ChannelType],
     channels_to_connect: list[str] | None,
@@ -328,6 +354,34 @@ def filter_channels(
     return [
         channel for channel in all_channels if channel["name"] in channels_to_connect
     ]
+
+
+def _channel_to_hierarchy_node(
+    channel: ChannelType,
+    channel_access: ExternalAccess | None,
+    workspace_url: str | None = None,
+) -> HierarchyNode:
+    """Convert a Slack channel to a HierarchyNode.
+
+    Args:
+        channel: The Slack channel object
+        channel_access: External access permissions for the channel
+        workspace_url: The workspace URL (e.g., https://myworkspace.slack.com)
+
+    Returns:
+        A HierarchyNode representing the channel
+    """
+    # Link format: https://{workspace}.slack.com/archives/{channel_id}
+    link = f"{workspace_url}/archives/{channel['id']}" if workspace_url else None
+
+    return HierarchyNode(
+        raw_node_id=channel["id"],
+        raw_parent_id=None,  # Direct child of SOURCE
+        display_name=f"#{channel['name']}",
+        link=link,
+        node_type=HierarchyNodeType.CHANNEL,
+        external_access=channel_access,
+    )
 
 
 def _get_channel_by_id(client: WebClient, channel_id: str) -> ChannelType:
@@ -461,6 +515,7 @@ def _get_all_doc_ids(
         [MessageType], SlackMessageFilterReason | None
     ] = default_msg_filter,
     callback: IndexingHeartbeatInterface | None = None,
+    workspace_url: str | None = None,
 ) -> GenerateSlimDocumentOutput:
     """
     Get all document ids in the workspace, channel by channel
@@ -483,6 +538,10 @@ def _get_all_doc_ids(
             channel=channel,
             user_cache=user_cache,
         )
+
+        # Yield the channel as a HierarchyNode first (before any documents)
+        yield [_channel_to_hierarchy_node(channel, external_access, workspace_url)]
+
         channel_message_batches = get_channel_messages(
             client=client,
             channel=channel,
@@ -490,7 +549,7 @@ def _get_all_doc_ids(
         )
 
         for message_batch in channel_message_batches:
-            slim_doc_batch: list[SlimDocument] = []
+            slim_doc_batch: list[SlimDocument | HierarchyNode] = []
             for message in message_batch:
                 filter_reason = msg_filter_func(message)
                 if filter_reason:
@@ -607,12 +666,18 @@ class SlackConnector(
         # if specified, will treat the specified channel strings as
         # regexes, and will only index channels that fully match the regexes
         channel_regex_enabled: bool = False,
+        # if True, messages from bots/apps will be indexed instead of filtered out
+        include_bot_messages: bool = False,
         batch_size: int = INDEX_BATCH_SIZE,
         num_threads: int = SLACK_NUM_THREADS,
         use_redis: bool = True,
     ) -> None:
         self.channels = channels
         self.channel_regex_enabled = channel_regex_enabled
+        self.include_bot_messages = include_bot_messages
+        self.msg_filter_func = (
+            _bot_inclusive_msg_filter if include_bot_messages else default_msg_filter
+        )
         self.batch_size = batch_size
         self.num_threads = num_threads
         self.client: WebClient | None = None
@@ -623,8 +688,47 @@ class SlackConnector(
         self.credentials_provider: CredentialsProviderInterface | None = None
         self.credential_prefix: str | None = None
         self.use_redis: bool = use_redis
+        # Workspace URL for building channel links (e.g., https://myworkspace.slack.com)
+        self._workspace_url: str | None = None
         # self.delay_lock: str | None = None  # the redis key for the shared lock
         # self.delay_key: str | None = None  # the redis key for the shared delay
+
+    @classmethod
+    @override
+    def normalize_url(cls, url: str) -> NormalizationResult:
+        """Normalize a Slack URL to extract channel_id__thread_ts format."""
+        parsed = urlparse(url)
+        if "slack.com" not in parsed.netloc.lower():
+            return NormalizationResult(normalized_url=None, use_default=False)
+
+        # Slack document IDs are format: channel_id__thread_ts
+        # Extract from URL pattern: .../archives/{channel_id}/p{timestamp}
+        path_parts = parsed.path.split("/")
+        if "archives" not in path_parts:
+            return NormalizationResult(normalized_url=None, use_default=False)
+
+        archives_idx = path_parts.index("archives")
+        if archives_idx + 1 >= len(path_parts):
+            return NormalizationResult(normalized_url=None, use_default=False)
+
+        channel_id = path_parts[archives_idx + 1]
+        if archives_idx + 2 >= len(path_parts):
+            return NormalizationResult(normalized_url=None, use_default=False)
+
+        thread_part = path_parts[archives_idx + 2]
+        if not thread_part.startswith("p"):
+            return NormalizationResult(normalized_url=None, use_default=False)
+
+        # Convert p1234567890123456 to 1234567890.123456 format
+        timestamp_str = thread_part[1:]  # Remove 'p' prefix
+        if len(timestamp_str) == 16:
+            # Insert dot at position 10 to match canonical format
+            thread_ts = f"{timestamp_str[:10]}.{timestamp_str[10:]}"
+        else:
+            thread_ts = timestamp_str
+
+        normalized = f"{channel_id}__{thread_ts}"
+        return NormalizationResult(normalized_url=normalized, use_default=False)
 
     @staticmethod
     def make_credential_prefix(key: str) -> str:
@@ -732,10 +836,18 @@ class SlackConnector(
         self.text_cleaner = SlackTextCleaner(client=self.client)
         self.credentials_provider = credentials_provider
 
+        # Extract workspace URL from auth_test response for building channel links
+        try:
+            auth_response = self.client.auth_test()
+            self._workspace_url = auth_response.get("url")
+        except Exception as e:
+            logger.warning(f"Failed to get workspace URL from auth_test: {e}")
+            self._workspace_url = None
+
     def retrieve_all_slim_docs_perm_sync(
         self,
-        start: SecondsSinceUnixEpoch | None = None,
-        end: SecondsSinceUnixEpoch | None = None,
+        start: SecondsSinceUnixEpoch | None = None,  # noqa: ARG002
+        end: SecondsSinceUnixEpoch | None = None,  # noqa: ARG002
         callback: IndexingHeartbeatInterface | None = None,
     ) -> GenerateSlimDocumentOutput:
         if self.client is None:
@@ -745,7 +857,9 @@ class SlackConnector(
             client=self.client,
             channels=self.channels,
             channel_name_regex_enabled=self.channel_regex_enabled,
+            msg_filter_func=self.msg_filter_func,
             callback=callback,
+            workspace_url=self._workspace_url,
         )
 
     def _load_from_checkpoint(
@@ -839,6 +953,13 @@ class SlackConnector(
             if channel_message_ts:
                 # Set oldest to the checkpoint timestamp to resume from where we left off
                 oldest = channel_message_ts
+            else:
+                # First time processing this channel - yield its hierarchy node
+                yield _channel_to_hierarchy_node(
+                    channel,
+                    checkpoint.current_channel_access,
+                    self._workspace_url,
+                )
 
             logger.debug(
                 f"Getting messages for channel {channel} within range {oldest} - {latest}"
@@ -882,6 +1003,7 @@ class SlackConnector(
                             user_cache=self.user_cache,
                             seen_thread_ts=seen_thread_ts,
                             channel_access=checkpoint.current_channel_access,
+                            msg_filter_func=self.msg_filter_func,
                         )
                     )
 

@@ -1,5 +1,8 @@
-import { SEARCH_PARAM_NAMES } from "@/app/chat/services/searchParams";
+"use client";
+
+import { SEARCH_PARAM_NAMES } from "@/app/app/services/searchParams";
 import { useRouter, useSearchParams } from "next/navigation";
+import type { Route } from "next";
 import { useCallback } from "react";
 
 interface UseAppRouterProps {
@@ -30,9 +33,9 @@ export function useAppRouter() {
         finalParams.push(`${SEARCH_PARAM_NAMES.PERSONA_ID}=${assistantId}`);
 
       const finalString = finalParams.join("&");
-      const finalUrl = `/chat?${finalString}`;
+      const finalUrl = `/app?${finalString}`;
 
-      router.push(finalUrl);
+      router.push(finalUrl as Route);
     },
     [router]
   );

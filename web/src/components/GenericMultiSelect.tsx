@@ -1,10 +1,9 @@
 import { FormikProps, ErrorMessage } from "formik";
 import Text from "@/refresh-components/texts/Text";
 import Button from "@/refresh-components/buttons/Button";
-import { SearchMultiSelectDropdown } from "@/components/Dropdown";
-import { cn } from "@/lib/utils";
-import SvgX from "@/icons/x";
-
+import InputComboBox from "@/refresh-components/inputs/InputComboBox/InputComboBox";
+import { Disabled } from "@/refresh-components/Disabled";
+import { SvgX } from "@opal/icons";
 export type GenericMultiSelectFormType<T extends string> = {
   [K in T]: number[];
 };
@@ -48,7 +47,9 @@ export function GenericMultiSelect<
   if (isLoading) {
     return (
       <div className="flex flex-col gap-2 w-full">
-        <Text mainUiAction>{label}</Text>
+        <Text as="p" mainUiAction>
+          {label}
+        </Text>
         <div className="animate-pulse bg-background-neutral-02 h-10 w-full rounded-08" />
       </div>
     );
@@ -57,8 +58,10 @@ export function GenericMultiSelect<
   if (error) {
     return (
       <div className="flex flex-col gap-2 w-full">
-        <Text mainUiAction>{label}</Text>
-        <Text text03 className="text-action-danger-05">
+        <Text as="p" mainUiAction>
+          {label}
+        </Text>
+        <Text as="p" text03 className="text-action-danger-05">
           Failed to load {label.toLowerCase()}. Please try again.
         </Text>
       </div>
@@ -68,8 +71,12 @@ export function GenericMultiSelect<
   if (!items || items.length === 0) {
     return (
       <div className="flex flex-col gap-2 w-full">
-        <Text mainUiAction>{label}</Text>
-        <Text text03>{emptyMessage}</Text>
+        <Text as="p" mainUiAction>
+          {label}
+        </Text>
+        <Text as="p" text03>
+          {emptyMessage}
+        </Text>
       </div>
     );
   }
@@ -77,15 +84,11 @@ export function GenericMultiSelect<
   const selectedIds = (formikProps.values[fieldName] as number[]) || [];
   const selectedItems = items.filter((item) => selectedIds.includes(item.id));
 
-  const handleSelect = (option: { name: string; value: string | number }) => {
+  const handleSelect = (itemId: number) => {
     if (disabled) return;
     const currentIds = (formikProps.values[fieldName] as number[]) || [];
-    const numValue =
-      typeof option.value === "string"
-        ? parseInt(option.value, 10)
-        : option.value;
-    if (!currentIds.includes(numValue)) {
-      formikProps.setFieldValue(fieldName, [...currentIds, numValue]);
+    if (!currentIds.includes(itemId)) {
+      formikProps.setFieldValue(fieldName, [...currentIds, itemId]);
     }
   };
 
@@ -100,21 +103,39 @@ export function GenericMultiSelect<
 
   return (
     <div className="flex flex-col gap-2 w-full">
-      <Text mainUiAction>{label}</Text>
+      <Text as="p" mainUiAction>
+        {label}
+      </Text>
 
-      {subtext && <Text text03>{disabled ? disabledMessage : subtext}</Text>}
+      {subtext && (
+        <Text as="p" text03>
+          {disabled ? disabledMessage : subtext}
+        </Text>
+      )}
 
-      <div className={cn(disabled && "opacity-50 pointer-events-none")}>
-        <SearchMultiSelectDropdown
-          options={items
-            .filter((item) => !selectedIds.includes(item.id))
-            .map((item) => ({
-              name: item.name,
-              value: item.id,
-            }))}
-          onSelect={handleSelect}
-        />
-      </div>
+      <Disabled disabled={disabled}>
+        <div>
+          <InputComboBox
+            placeholder="Search..."
+            value=""
+            onChange={() => {}}
+            onValueChange={(selectedValue) => {
+              const numValue = parseInt(selectedValue, 10);
+              if (!isNaN(numValue)) {
+                handleSelect(numValue);
+              }
+            }}
+            options={items
+              .filter((item) => !selectedIds.includes(item.id))
+              .map((item) => ({
+                label: item.name,
+                value: String(item.id),
+              }))}
+            strict
+            leftSearchIcon
+          />
+        </div>
+      </Disabled>
 
       {selectedItems.length > 0 && (
         <div className="flex flex-wrap gap-2">
@@ -135,7 +156,7 @@ export function GenericMultiSelect<
 
       <ErrorMessage name={fieldName} component="div">
         {(msg) => (
-          <Text text03 className="text-action-danger-05">
+          <Text as="p" text03 className="text-action-danger-05">
             {msg}
           </Text>
         )}

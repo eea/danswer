@@ -1,5 +1,9 @@
 # editors
-.vscode
+.vscode/*
+!/.vscode/env_template.txt
+!/.vscode/env.web_template.txt
+!/.vscode/launch.json
+!/.vscode/tasks.template.jsonc
 .zed
 .cursor
 
@@ -21,6 +25,7 @@ backend/tests/regression/search_quality/*.json
 backend/onyx/evals/data/
 backend/onyx/evals/one_off/*.json
 *.log
+*.csv
 
 # secret files
 .env
@@ -35,10 +40,6 @@ settings.json
 /backend/tests/regression/answer_quality/search_test_config.yaml
 *.egg-info
 
-# Claude
-AGENTS.md
-CLAUDE.md
-
 # Local .terraform directories
 **/.terraform/*
 
@@ -49,5 +50,10 @@ CLAUDE.md
 # Local .terraform.lock.hcl file
 .terraform.lock.hcl
 
+node_modules
+
 # MCP configs
 .playwright-mcp
+
+# plans
+plans/

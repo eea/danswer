@@ -38,10 +38,10 @@ from onyx.configs.app_configs import APP_HOST
 from onyx.configs.app_configs import APP_PORT
 from onyx.configs.app_configs import AUTH_RATE_LIMITING_ENABLED
 from onyx.configs.app_configs import AUTH_TYPE
-from onyx.configs.app_configs import DISABLE_GENERATIVE_AI
 from onyx.configs.app_configs import LOG_ENDPOINT_LATENCY
 from onyx.configs.app_configs import OAUTH_CLIENT_ID
 from onyx.configs.app_configs import OAUTH_CLIENT_SECRET
+from onyx.configs.app_configs import OAUTH_ENABLED
 from onyx.configs.app_configs import OIDC_SCOPE_OVERRIDE
 from onyx.configs.app_configs import OPENID_CONFIG_URL
 from onyx.configs.app_configs import POSTGRES_API_SERVER_POOL_OVERFLOW
@@ -64,10 +64,13 @@ from onyx.server.documents.connector import router as connector_router
 from onyx.server.documents.credential import router as credential_router
 from onyx.server.documents.document import router as document_router
 from onyx.server.documents.standard_oauth import router as standard_oauth_router
+from onyx.server.features.build.api.api import nextjs_assets_router
+from onyx.server.features.build.api.api import router as build_router
 from onyx.server.features.default_assistant.api import (
     router as default_assistant_router,
 )
 from onyx.server.features.document_set.api import router as document_set_router
+from onyx.server.features.hierarchy.api import router as hierarchy_router
 from onyx.server.features.input_prompt.api import (
     admin_router as admin_input_prompt_router,
 )
@@ -82,7 +85,9 @@ from onyx.server.features.oauth_config.api import (
 )
 from onyx.server.features.oauth_config.api import router as oauth_config_router
 from onyx.server.features.password.api import router as password_router
+from onyx.server.features.persona.api import admin_agents_router
 from onyx.server.features.persona.api import admin_router as admin_persona_router
+from onyx.server.features.persona.api import agents_router
 from onyx.server.features.persona.api import basic_router as persona_router
 from onyx.server.features.projects.api import router as projects_router
 from onyx.server.features.tool.api import admin_router as admin_tool_router
@@ -90,15 +95,15 @@ from onyx.server.features.tool.api import router as tool_router
 from onyx.server.features.user_oauth_token.api import router as user_oauth_token_router
 from onyx.server.features.web_search.api import router as web_search_router
 from onyx.server.federated.api import router as federated_router
-from onyx.server.gpts.api import router as gpts_router
 from onyx.server.kg.api import admin_router as kg_admin_router
-from onyx.server.long_term_logs.long_term_logs_api import (
-    router as long_term_logs_router,
-)
 from onyx.server.manage.administrative import router as admin_router
+from onyx.server.manage.discord_bot.api import router as discord_bot_router
 from onyx.server.manage.embedding.api import admin_router as embedding_admin_router
 from onyx.server.manage.embedding.api import basic_router as embedding_router
 from onyx.server.manage.get_state import router as state_router
+from onyx.server.manage.image_generation.api import (
+    admin_router as image_generation_admin_router,
+)
 from onyx.server.manage.llm.api import admin_router as llm_admin_router
 from onyx.server.manage.llm.api import basic_router as llm_router
 from onyx.server.manage.search_settings import router as search_settings_router
@@ -112,12 +117,8 @@ from onyx.server.middleware.rate_limiting import close_auth_limiter
 from onyx.server.middleware.rate_limiting import get_auth_rate_limiters
 from onyx.server.middleware.rate_limiting import setup_auth_limiter
 from onyx.server.onyx_api.ingestion import router as onyx_api_router
-from onyx.server.openai_assistants_api.full_openai_assistants_api import (
-    get_full_openai_assistants_api_router,
-)
 from onyx.server.pat.api import router as pat_router
 from onyx.server.query_and_chat.chat_backend import router as chat_router
-from onyx.server.query_and_chat.chat_backend_v0 import router as chat_v0_router
 from onyx.server.query_and_chat.query_backend import (
     admin_router as admin_query_router,
 )
@@ -131,8 +132,7 @@ from onyx.server.token_rate_limits.api import (
 from onyx.server.utils import BasicAuthenticationError
 from onyx.setup import setup_multitenant_onyx
 from onyx.setup import setup_onyx
-from onyx.tracing.braintrust_tracing import setup_braintrust_if_creds_available
-from onyx.tracing.langfuse_tracing import setup_langfuse_if_creds_available
+from onyx.tracing.setup import setup_tracing
 from onyx.utils.logger import setup_logger
 from onyx.utils.logger import setup_uvicorn_logger
 from onyx.utils.middleware import add_onyx_request_id_middleware
@@ -246,7 +246,7 @@ def include_auth_router_with_prefix(
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:  # noqa: ARG001
     # Set recursion limit
     if SYSTEM_RECURSION_LIMIT is not None:
         sys.setrecursionlimit(SYSTEM_RECURSION_LIMIT)
@@ -275,12 +275,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET:
         logger.notice("Both OAuth Client ID and Secret are configured.")
 
-    if DISABLE_GENERATIVE_AI:
-        logger.notice("Generative AI Q&A disabled")
-
     # Initialize tracing if credentials are provided
-    setup_braintrust_if_creds_available()
-    setup_langfuse_if_creds_available()
+    setup_tracing()
 
     # fill up Postgres connection pools
     await warm_up_connections()
@@ -370,7 +366,6 @@ def get_application(lifespan_override: Lifespan | None = None) -> FastAPI:
 
     include_router_with_global_prefix_prepended(application, password_router)
     include_router_with_global_prefix_prepended(application, chat_router)
-    include_router_with_global_prefix_prepended(application, chat_v0_router)
     include_router_with_global_prefix_prepended(application, query_router)
     include_router_with_global_prefix_prepended(application, document_router)
     include_router_with_global_prefix_prepended(application, user_router)
@@ -382,13 +377,19 @@ def get_application(lifespan_override: Lifespan | None = None) -> FastAPI:
     include_router_with_global_prefix_prepended(application, admin_input_prompt_router)
     include_router_with_global_prefix_prepended(application, cc_pair_router)
     include_router_with_global_prefix_prepended(application, projects_router)
+    include_router_with_global_prefix_prepended(application, build_router)
+    include_router_with_global_prefix_prepended(application, nextjs_assets_router)
     include_router_with_global_prefix_prepended(application, document_set_router)
+    include_router_with_global_prefix_prepended(application, hierarchy_router)
     include_router_with_global_prefix_prepended(application, search_settings_router)
     include_router_with_global_prefix_prepended(
         application, slack_bot_management_router
     )
+    include_router_with_global_prefix_prepended(application, discord_bot_router)
     include_router_with_global_prefix_prepended(application, persona_router)
     include_router_with_global_prefix_prepended(application, admin_persona_router)
+    include_router_with_global_prefix_prepended(application, agents_router)
+    include_router_with_global_prefix_prepended(application, admin_agents_router)
     include_router_with_global_prefix_prepended(application, default_assistant_router)
     include_router_with_global_prefix_prepended(application, notification_router)
     include_router_with_global_prefix_prepended(application, tool_router)
@@ -398,12 +399,14 @@ def get_application(lifespan_override: Lifespan | None = None) -> FastAPI:
     include_router_with_global_prefix_prepended(application, user_oauth_token_router)
     include_router_with_global_prefix_prepended(application, state_router)
     include_router_with_global_prefix_prepended(application, onyx_api_router)
-    include_router_with_global_prefix_prepended(application, gpts_router)
     include_router_with_global_prefix_prepended(application, settings_router)
     include_router_with_global_prefix_prepended(application, settings_admin_router)
     include_router_with_global_prefix_prepended(application, llm_admin_router)
     include_router_with_global_prefix_prepended(application, kg_admin_router)
     include_router_with_global_prefix_prepended(application, llm_router)
+    include_router_with_global_prefix_prepended(
+        application, image_generation_admin_router
+    )
     include_router_with_global_prefix_prepended(application, embedding_admin_router)
     include_router_with_global_prefix_prepended(application, embedding_router)
     include_router_with_global_prefix_prepended(application, web_search_router)
@@ -411,10 +414,6 @@ def get_application(lifespan_override: Lifespan | None = None) -> FastAPI:
     include_router_with_global_prefix_prepended(
         application, token_rate_limit_settings_router
     )
-    include_router_with_global_prefix_prepended(
-        application, get_full_openai_assistants_api_router()
-    )
-    include_router_with_global_prefix_prepended(application, long_term_logs_router)
     include_router_with_global_prefix_prepended(application, api_key_router)
     include_router_with_global_prefix_prepended(application, standard_oauth_router)
     include_router_with_global_prefix_prepended(application, federated_router)
@@ -457,14 +456,14 @@ def get_application(lifespan_override: Lifespan | None = None) -> FastAPI:
             prefix="/users",
         )
 
-    if AUTH_TYPE == AuthType.GOOGLE_OAUTH:
-        # For Google OAuth, refresh tokens are requested by:
-        # 1. Adding the right scopes
-        # 2. Properly configuring OAuth in Google Cloud Console to allow offline access
+    # Register Google OAuth when AUTH_TYPE is GOOGLE_OAUTH, or when
+    # AUTH_TYPE is BASIC and OAuth credentials are configured
+    if AUTH_TYPE == AuthType.GOOGLE_OAUTH or (
+        AUTH_TYPE == AuthType.BASIC and OAUTH_ENABLED
+    ):
         oauth_client = GoogleOAuth2(
             OAUTH_CLIENT_ID,
             OAUTH_CLIENT_SECRET,
-            # Use standard scopes that include profile and email
             scopes=["openid", "email", "profile"],
         )
         include_auth_router_with_prefix(
@@ -475,18 +474,18 @@ def get_application(lifespan_override: Lifespan | None = None) -> FastAPI:
                 USER_AUTH_SECRET,
                 associate_by_email=True,
                 is_verified_by_default=True,
-                # Points the user back to the login page
                 redirect_url=f"{WEB_DOMAIN}/auth/oauth/callback",
             ),
             prefix="/auth/oauth",
         )
 
-        # Need basic auth router for `logout` endpoint
-        include_auth_router_with_prefix(
-            application,
-            fastapi_users.get_logout_router(auth_backend),
-            prefix="/auth",
-        )
+        # Need logout router for GOOGLE_OAUTH only (BASIC already has it from above)
+        if AUTH_TYPE == AuthType.GOOGLE_OAUTH:
+            include_auth_router_with_prefix(
+                application,
+                fastapi_users.get_logout_router(auth_backend),
+                prefix="/auth",
+            )
 
     if AUTH_TYPE == AuthType.OIDC:
         # Ensure we request offline_access for refresh tokens

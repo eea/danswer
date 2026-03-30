@@ -8,12 +8,9 @@ import {
   SlackChannelConfig,
   ValidSources,
 } from "@/lib/types";
-import { BackButton } from "@/components/BackButton";
+import BackButton from "@/refresh-components/buttons/BackButton";
 import { InstantSSRAutoRefresh } from "@/components/SSRAutoRefresh";
-import {
-  FetchAssistantsResponse,
-  fetchAssistantsSS,
-} from "@/lib/assistants/fetchAssistantsSS";
+import { FetchAssistantsResponse, fetchAssistantsSS } from "@/lib/agentsSS";
 import { getStandardAnswerCategoriesIfEE } from "@/components/standardAnswers/getStandardAnswerCategoriesIfEE";
 
 async function EditslackChannelConfigPage(props: {
@@ -84,7 +81,7 @@ async function EditslackChannelConfigPage(props: {
   }
 
   return (
-    <div className="max-w-4xl container mx-auto">
+    <div className="max-w-4xl container">
       <InstantSSRAutoRefresh />
 
       <BackButton />

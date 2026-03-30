@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 from urllib.parse import urlunparse
 
 from pywikibot import family  # type: ignore[import-untyped]
-from pywikibot import pagegenerators  # type: ignore[import-untyped]
+from pywikibot import pagegenerators
 from pywikibot.scripts import generate_family_file  # type: ignore[import-untyped]
 from pywikibot.scripts.generate_user_files import pywikibot  # type: ignore[import-untyped]
 
@@ -70,7 +70,7 @@ class FamilyFileGeneratorInMemory(generate_family_file.FamilyFileGenerator):
         """
         return True
 
-    def writefile(self, verify: Any) -> None:
+    def writefile(self, verify: Any) -> None:  # noqa: ARG002
         """Write the family file.
 
         This overrides the method in the parent class to write the family definition to memory instead of to disk.

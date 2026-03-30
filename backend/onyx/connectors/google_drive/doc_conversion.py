@@ -29,14 +29,14 @@ from onyx.connectors.models import DocumentFailure
 from onyx.connectors.models import ImageSection
 from onyx.connectors.models import SlimDocument
 from onyx.connectors.models import TextSection
-from onyx.file_processing.extract_file_text import ALL_ACCEPTED_FILE_EXTENSIONS
-from onyx.file_processing.extract_file_text import docx_to_text_and_images
 from onyx.file_processing.extract_file_text import extract_file_text
 from onyx.file_processing.extract_file_text import get_file_ext
 from onyx.file_processing.extract_file_text import pptx_to_text
+from onyx.file_processing.extract_file_text import read_docx_file
 from onyx.file_processing.extract_file_text import read_pdf_file
 from onyx.file_processing.extract_file_text import xlsx_to_text
-from onyx.file_processing.file_validation import is_valid_image_type
+from onyx.file_processing.file_types import OnyxFileExtensions
+from onyx.file_processing.file_types import OnyxMimeTypes
 from onyx.file_processing.image_utils import store_image_and_create_section
 from onyx.utils.logger import setup_logger
 from onyx.utils.variable_functionality import (
@@ -45,6 +45,138 @@ from onyx.utils.variable_functionality import (
 from onyx.utils.variable_functionality import noop_fallback
 
 logger = setup_logger()
+
+# Cache for folder path lookups to avoid redundant API calls
+# Maps folder_id -> (folder_name, parent_id)
+_folder_cache: dict[str, tuple[str, str | None]] = {}
+
+
+def _get_folder_info(
+    service: GoogleDriveService, folder_id: str
+) -> tuple[str, str | None]:
+    """Fetch folder name and parent ID, with caching."""
+    if folder_id in _folder_cache:
+        return _folder_cache[folder_id]
+
+    try:
+        folder = (
+            service.files()
+            .get(
+                fileId=folder_id,
+                fields="name, parents",
+                supportsAllDrives=True,
+            )
+            .execute()
+        )
+        folder_name = folder.get("name", "Unknown")
+        parents = folder.get("parents", [])
+        parent_id = parents[0] if parents else None
+        _folder_cache[folder_id] = (folder_name, parent_id)
+        return folder_name, parent_id
+    except HttpError as e:
+        logger.warning(f"Failed to get folder info for {folder_id}: {e}")
+        _folder_cache[folder_id] = ("Unknown", None)
+        return "Unknown", None
+
+
+def _get_drive_name(service: GoogleDriveService, drive_id: str) -> str:
+    """Fetch shared drive name."""
+    cache_key = f"drive_{drive_id}"
+    if cache_key in _folder_cache:
+        return _folder_cache[cache_key][0]
+
+    try:
+        drive = service.drives().get(driveId=drive_id).execute()
+        drive_name = drive.get("name", f"Shared Drive {drive_id}")
+        _folder_cache[cache_key] = (drive_name, None)
+        return drive_name
+    except HttpError as e:
+        logger.warning(f"Failed to get drive name for {drive_id}: {e}")
+        _folder_cache[cache_key] = (f"Shared Drive {drive_id}", None)
+        return f"Shared Drive {drive_id}"
+
+
+def build_folder_path(
+    file: GoogleDriveFileType,
+    service: GoogleDriveService,
+    drive_id: str | None = None,
+    user_email: str | None = None,
+) -> list[str]:
+    """
+    Build the full folder path for a file by walking up the parent chain.
+    Returns a list of folder names from root to immediate parent.
+
+    Args:
+        file: The Google Drive file object
+        service: Google Drive service instance
+        drive_id: Optional drive ID (will be extracted from file if not provided)
+        user_email: Optional user email to check ownership for "My Drive" vs "Shared with me"
+    """
+    path_parts: list[str] = []
+
+    # Get drive_id from file if not provided
+    if drive_id is None:
+        drive_id = file.get("driveId")
+
+    # Check if file is owned by the user (for distinguishing "My Drive" vs "Shared with me")
+    is_owned_by_user = False
+    if user_email:
+        owners = file.get("owners", [])
+        is_owned_by_user = any(
+            owner.get("emailAddress", "").lower() == user_email.lower()
+            for owner in owners
+        )
+
+    # Get the file's parent folder ID
+    parents = file.get("parents", [])
+    if not parents:
+        # File is at root level
+        if drive_id:
+            return [_get_drive_name(service, drive_id)]
+        # If not in a shared drive, check if it's owned by the user
+        if is_owned_by_user:
+            return ["My Drive"]
+        else:
+            return ["Shared with me"]
+
+    parent_id: str | None = parents[0]
+
+    # Walk up the folder hierarchy (limit to 50 levels to prevent infinite loops)
+    visited: set[str] = set()
+    for _ in range(50):
+        if not parent_id or parent_id in visited:
+            break
+        visited.add(parent_id)
+
+        folder_name, next_parent = _get_folder_info(service, parent_id)
+
+        # Check if we've reached the root (parent is the drive itself or no parent)
+        if next_parent is None:
+            # This folder's name is either the drive root, My Drive, or Shared with me
+            if drive_id:
+                path_parts.insert(0, _get_drive_name(service, drive_id))
+            else:
+                # Not in a shared drive - determine if it's "My Drive" or "Shared with me"
+                if is_owned_by_user:
+                    path_parts.insert(0, "My Drive")
+                else:
+                    path_parts.insert(0, "Shared with me")
+            break
+        else:
+            path_parts.insert(0, folder_name)
+            parent_id = next_parent
+
+    # If we didn't find a root, determine the root based on ownership and drive
+    if not path_parts:
+        if drive_id:
+            return [_get_drive_name(service, drive_id)]
+        elif is_owned_by_user:
+            return ["My Drive"]
+        else:
+            return ["Shared with me"]
+
+    return path_parts
+
 
 # This is not a standard valid unicode char, it is used by the docs advanced API to
 # represent smart chips (elements like dates and doc links).
@@ -114,14 +246,6 @@ def onyx_document_id_from_drive_file(file: GoogleDriveFileType) -> str:
     return urlunparse(parsed_url)
 
 
-def is_gdrive_image_mime_type(mime_type: str) -> bool:
-    """
-    Return True if the mime_type is a common image type in GDrive.
-    (e.g. 'image/png', 'image/jpeg')
-    """
-    return is_valid_image_type(mime_type)
-
-
 def download_request(
     service: GoogleDriveService, file_id: str, size_threshold: int
 ) -> bytes:
@@ -134,6 +258,9 @@ def download_request(
     return _download_request(request, file_id, size_threshold)
 
 
+_DOWNLOAD_NUM_RETRIES = 3
+
+
 def _download_request(request: Any, file_id: str, size_threshold: int) -> bytes:
     response_bytes = io.BytesIO()
     downloader = MediaIoBaseDownload(
@@ -141,7 +268,10 @@ def _download_request(request: Any, file_id: str, size_threshold: int) -> bytes:
     )
     done = False
     while not done:
-        download_progress, done = downloader.next_chunk()
+        # num_retries enables automatic retry with exponential backoff for transient errors
+        download_progress, done = downloader.next_chunk(
+            num_retries=_DOWNLOAD_NUM_RETRIES
+        )
         if download_progress.resumable_progress > size_threshold:
             logger.warning(
                 f"File {file_id} exceeds size threshold of {size_threshold}. Skipping2."
@@ -173,7 +303,7 @@ def _download_and_extract_sections_basic(
     def response_call() -> bytes:
         return download_request(service, file_id, size_threshold)
 
-    if is_gdrive_image_mime_type(mime_type):
+    if mime_type in OnyxMimeTypes.IMAGE_MIME_TYPES:
         # Skip images if not explicitly enabled
         if not allow_images:
             return []
@@ -222,7 +352,7 @@ def _download_and_extract_sections_basic(
         mime_type
         == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     ):
-        text, _ = docx_to_text_and_images(io.BytesIO(response_call()))
+        text, _ = read_docx_file(io.BytesIO(response_call()))
         return [TextSection(link=link, text=text)]
 
     elif (
@@ -260,7 +390,7 @@ def _download_and_extract_sections_basic(
 
     # Final attempt at extracting text
     file_ext = get_file_ext(file.get("name", ""))
-    if file_ext not in ALL_ACCEPTED_FILE_EXTENSIONS:
+    if file_ext not in OnyxFileExtensions.ALL_ALLOWED_EXTENSIONS:
         logger.warning(f"Skipping file {file.get('name')} due to extension.")
         return []
 
@@ -346,13 +476,24 @@ def _get_external_access_for_raw_gdrive_file(
     company_domain: str,
     retriever_drive_service: GoogleDriveService | None,
     admin_drive_service: GoogleDriveService,
+    add_prefix: bool = False,
 ) -> ExternalAccess:
     """
     Get the external access for a raw Google Drive file.
+
+    add_prefix: When True, prefix group IDs with source type (for indexing path).
+               When False (default), leave unprefixed (for permission sync path
+               where upsert_document_external_perms handles prefixing).
     """
     external_access_fn = cast(
         Callable[
-            [GoogleDriveFileType, str, GoogleDriveService | None, GoogleDriveService],
+            [
+                GoogleDriveFileType,
+                str,
+                GoogleDriveService | None,
+                GoogleDriveService,
+                bool,
+            ],
             ExternalAccess,
         ],
         fetch_versioned_implementation_with_fallback(
@@ -366,6 +507,7 @@ def _get_external_access_for_raw_gdrive_file(
         company_domain,
         retriever_drive_service,
         admin_drive_service,
+        add_prefix,
     )
 
 
@@ -529,17 +671,39 @@ def _convert_drive_item_to_document(
                 admin_drive_service=get_drive_service(
                     creds, user_email=permission_sync_context.primary_admin_email
                 ),
+                add_prefix=True,  # Indexing path - prefix here
             )
             if permission_sync_context
             else None
         )
+
+        # Build doc_metadata with hierarchy information
+        file_name = file.get("name", "")
+        mime_type = file.get("mimeType", "")
+        drive_id = file.get("driveId")
+
+        # Build full folder path by walking up the parent chain
+        # Pass retriever_email to determine if file is in "My Drive" vs "Shared with me"
+        source_path = build_folder_path(
+            file, _get_drive_service(), drive_id, retriever_email
+        )
+
+        doc_metadata = {
+            "hierarchy": {
+                "source_path": source_path,
+                "drive_id": drive_id,
+                "file_name": file_name,
+                "mime_type": mime_type,
+            }
+        }
 
         # Create the document
         return Document(
             id=doc_id,
             sections=sections,
             source=DocumentSource.GOOGLE_DRIVE,
-            semantic_identifier=file.get("name", ""),
+            semantic_identifier=file_name,
+            doc_metadata=doc_metadata,
             metadata={
                 "owner_names": ", ".join(
                     owner.get("displayName", "") for owner in file.get("owners", [])
@@ -549,6 +713,7 @@ def _convert_drive_item_to_document(
                 file.get("modifiedTime", "").replace("Z", "+00:00")
             ),
             external_access=external_access,
+            parent_hierarchy_raw_node_id=(file.get("parents") or [None])[0],
         )
     except Exception as e:
         doc_id = "unknown"

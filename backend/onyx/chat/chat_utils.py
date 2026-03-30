@@ -1,4 +1,5 @@
 import re
+from collections.abc import Callable
 from typing import cast
 from uuid import UUID
 
@@ -7,225 +8,96 @@ from fastapi.datastructures import Headers
 from sqlalchemy.orm import Session
 
 from onyx.auth.users import is_user_admin
-from onyx.background.celery.tasks.kg_processing.kg_indexing import (
-    try_creating_kg_processing_task,
-)
-from onyx.background.celery.tasks.kg_processing.kg_indexing import (
-    try_creating_kg_source_reset_task,
-)
-from onyx.chat.models import LlmDoc
+from onyx.chat.models import ChatLoadedFile
+from onyx.chat.models import ChatMessageSimple
 from onyx.chat.models import PersonaOverrideConfig
-from onyx.chat.models import ThreadMessage
-from onyx.chat.turn.models import FetchedDocumentCacheEntry
+from onyx.chat.models import ToolCallSimple
 from onyx.configs.constants import DEFAULT_PERSONA_ID
 from onyx.configs.constants import MessageType
 from onyx.configs.constants import TMP_DRALPHA_PERSONA_NAME
-from onyx.context.search.models import InferenceSection
-from onyx.context.search.models import RerankingDetails
-from onyx.context.search.models import RetrievalDetails
-from onyx.context.search.models import SavedSearchDoc
-from onyx.context.search.models import SearchDoc
+from onyx.context.search.enums import RecencyBiasSetting
 from onyx.db.chat import create_chat_session
 from onyx.db.chat import get_chat_messages_by_session
+from onyx.db.chat import get_or_create_root_message
 from onyx.db.kg_config import get_kg_config_settings
 from onyx.db.kg_config import is_kg_config_settings_enabled_valid
 from onyx.db.llm import fetch_existing_doc_sets
 from onyx.db.llm import fetch_existing_tools
 from onyx.db.models import ChatMessage
+from onyx.db.models import ChatSession
 from onyx.db.models import Persona
 from onyx.db.models import SearchDoc as DbSearchDoc
 from onyx.db.models import Tool
 from onyx.db.models import User
-from onyx.db.search_settings import get_current_search_settings
+from onyx.db.models import UserFile
+from onyx.db.projects import check_project_ownership
+from onyx.file_processing.extract_file_text import extract_file_text
+from onyx.file_store.file_store import get_default_file_store
+from onyx.file_store.models import ChatFileType
+from onyx.file_store.models import FileDescriptor
 from onyx.kg.models import KGException
 from onyx.kg.setup.kg_default_entity_definitions import (
     populate_missing_default_entity_types__commit,
 )
-from onyx.llm.models import PreviousMessage
-from onyx.llm.override_models import LLMOverride
-from onyx.natural_language_processing.utils import BaseTokenizer
-from onyx.onyxbot.slack.models import SlackContext
-from onyx.server.query_and_chat.models import CreateChatMessageRequest
+from onyx.prompts.chat_prompts import ADDITIONAL_CONTEXT_PROMPT
+from onyx.prompts.chat_prompts import TOOL_CALL_RESPONSE_CROSS_MESSAGE
+from onyx.prompts.tool_prompts import TOOL_CALL_FAILURE_PROMPT
+from onyx.server.query_and_chat.models import ChatSessionCreationRequest
 from onyx.server.query_and_chat.streaming_models import CitationInfo
+from onyx.tools.models import ToolCallKickoff
 from onyx.tools.tool_implementations.custom.custom_tool import (
     build_custom_tools_from_openapi_schema_and_headers,
 )
 from onyx.utils.logger import setup_logger
+from onyx.utils.threadpool_concurrency import run_functions_tuples_in_parallel
+from onyx.utils.timing import log_function_time
+
 
 logger = setup_logger()
 
 
-def prepare_chat_message_request(
-    message_text: str,
-    user: User | None,
-    persona_id: int | None,
-    # Does the question need to have a persona override
-    persona_override_config: PersonaOverrideConfig | None,
-    message_ts_to_respond_to: str | None,
-    retrieval_details: RetrievalDetails | None,
-    rerank_settings: RerankingDetails | None,
+def create_chat_session_from_request(
+    chat_session_request: ChatSessionCreationRequest,
+    user_id: UUID | None,
     db_session: Session,
-    use_agentic_search: bool = False,
-    skip_gen_ai_answer_generation: bool = False,
-    llm_override: LLMOverride | None = None,
-    allowed_tool_ids: list[int] | None = None,
-    slack_context: SlackContext | None = None,
-) -> CreateChatMessageRequest:
-    # Typically used for one shot flows like SlackBot or non-chat API endpoint use cases
-    new_chat_session = create_chat_session(
-        db_session=db_session,
-        description=None,
-        user_id=user.id if user else None,
-        # If using an override, this id will be ignored later on
-        persona_id=persona_id or DEFAULT_PERSONA_ID,
-        onyxbot_flow=True,
-        slack_thread_id=message_ts_to_respond_to,
-    )
+) -> ChatSession:
+    """Create a chat session from a ChatSessionCreationRequest.
 
-    return CreateChatMessageRequest(
-        chat_session_id=new_chat_session.id,
-        parent_message_id=None,  # It's a standalone chat session each time
-        message=message_text,
-        file_descriptors=[],  # Currently SlackBot/answer api do not support files in the context
-        # Can always override the persona for the single query, if it's a normal persona
-        # then it will be treated the same
-        persona_override_config=persona_override_config,
-        search_doc_ids=None,
-        retrieval_options=retrieval_details,
-        rerank_settings=rerank_settings,
-        use_agentic_search=use_agentic_search,
-        skip_gen_ai_answer_generation=skip_gen_ai_answer_generation,
-        llm_override=llm_override,
-        allowed_tool_ids=allowed_tool_ids,
-        slack_context=slack_context,  # Pass Slack context
-    )
-
-
-def llm_doc_from_inference_section(inference_section: InferenceSection) -> LlmDoc:
-    return LlmDoc(
-        document_id=inference_section.center_chunk.document_id,
-        # This one is using the combined content of all the chunks of the section
-        # In default settings, this is the same as just the content of base chunk
-        content=inference_section.combined_content,
-        blurb=inference_section.center_chunk.blurb,
-        semantic_identifier=inference_section.center_chunk.semantic_identifier,
-        source_type=inference_section.center_chunk.source_type,
-        metadata=inference_section.center_chunk.metadata,
-        updated_at=inference_section.center_chunk.updated_at,
-        link=(
-            inference_section.center_chunk.source_links[0]
-            if inference_section.center_chunk.source_links
-            else None
-        ),
-        source_links=inference_section.center_chunk.source_links,
-        match_highlights=inference_section.center_chunk.match_highlights,
-    )
-
-
-def llm_docs_from_fetched_documents_cache(
-    fetched_documents_cache: dict[str, "FetchedDocumentCacheEntry"],
-) -> list[LlmDoc]:
-    """Convert FetchedDocumentCacheEntry objects to LlmDoc objects.
-
-    This ensures that citation numbers are properly transferred from the cache
-    entries to the LlmDoc objects, which is critical for proper citation rendering.
+    Includes project ownership validation when project_id is provided.
 
     Args:
-        fetched_documents_cache: Dictionary mapping document IDs to FetchedDocumentCacheEntry
+        chat_session_request: The request containing persona_id, description, and project_id
+        user_id: The ID of the user creating the session (can be None for anonymous)
+        db_session: The database session
 
     Returns:
-        List of LlmDoc objects with properly set document_citation_number
+        The newly created ChatSession
+
+    Raises:
+        ValueError: If user lacks access to the specified project
+        Exception: If the persona is invalid
     """
-    llm_docs = []
-    for cache_value in fetched_documents_cache.values():
-        llm_doc = llm_doc_from_inference_section(cache_value.inference_section)
-        llm_doc.document_citation_number = cache_value.document_citation_number
-        llm_docs.append(llm_doc)
-    return llm_docs
+    project_id = chat_session_request.project_id
+    if project_id:
+        if not check_project_ownership(project_id, user_id, db_session):
+            raise ValueError("User does not have access to project")
+
+    return create_chat_session(
+        db_session=db_session,
+        description=chat_session_request.description or "",
+        user_id=user_id,
+        persona_id=chat_session_request.persona_id,
+        project_id=chat_session_request.project_id,
+    )
 
 
-def saved_search_docs_from_llm_docs(
-    llm_docs: list[LlmDoc] | None,
-) -> list[SavedSearchDoc]:
-    """Convert LlmDoc objects to SavedSearchDoc format."""
-    if not llm_docs:
-        return []
-
-    search_docs = []
-    for i, llm_doc in enumerate(llm_docs):
-        # Convert LlmDoc to SearchDoc format
-        # Note: Some fields need default values as they're not in LlmDoc
-        search_doc = SearchDoc(
-            document_id=llm_doc.document_id,
-            chunk_ind=0,  # Default value as LlmDoc doesn't have chunk index
-            semantic_identifier=llm_doc.semantic_identifier,
-            link=llm_doc.link,
-            blurb=llm_doc.blurb,
-            source_type=llm_doc.source_type,
-            boost=0,  # Default value
-            hidden=False,  # Default value
-            metadata=llm_doc.metadata,
-            score=None,  # Will be set by SavedSearchDoc
-            match_highlights=llm_doc.match_highlights or [],
-            updated_at=llm_doc.updated_at,
-            primary_owners=None,  # Default value
-            secondary_owners=None,  # Default value
-            is_internet=False,  # Default value
-        )
-
-        # Convert SearchDoc to SavedSearchDoc
-        saved_search_doc = SavedSearchDoc.from_search_doc(search_doc, db_doc_id=0)
-        search_docs.append(saved_search_doc)
-
-    return search_docs
-
-
-def combine_message_thread(
-    messages: list[ThreadMessage],
-    max_tokens: int | None,
-    llm_tokenizer: BaseTokenizer,
-) -> str:
-    """Used to create a single combined message context from threads"""
-    if not messages:
-        return ""
-
-    message_strs: list[str] = []
-    total_token_count = 0
-
-    for message in reversed(messages):
-        if message.role == MessageType.USER:
-            role_str = message.role.value.upper()
-            if message.sender:
-                role_str += " " + message.sender
-            else:
-                # Since other messages might have the user identifying information
-                # better to use Unknown for symmetry
-                role_str += " Unknown"
-        else:
-            role_str = message.role.value.upper()
-
-        msg_str = f"{role_str}:\n{message.message}"
-        message_token_count = len(llm_tokenizer.encode(msg_str))
-
-        if (
-            max_tokens is not None
-            and total_token_count + message_token_count > max_tokens
-        ):
-            break
-
-        message_strs.insert(0, msg_str)
-        total_token_count += message_token_count
-
-    return "\n\n".join(message_strs)
-
-
-def create_chat_chain(
+def create_chat_history_chain(
     chat_session_id: UUID,
     db_session: Session,
-    prefetch_tool_calls: bool = True,
+    prefetch_top_two_level_tool_calls: bool = True,
     # Optional id at which we finish processing
     stop_at_message_id: int | None = None,
-) -> tuple[ChatMessage, list[ChatMessage]]:
+) -> list[ChatMessage]:
     """Build the linear chain of messages without including the root message"""
     mainline_messages: list[ChatMessage] = []
 
@@ -234,18 +106,19 @@ def create_chat_chain(
         user_id=None,
         db_session=db_session,
         skip_permission_check=True,
-        prefetch_tool_calls=prefetch_tool_calls,
+        prefetch_top_two_level_tool_calls=prefetch_top_two_level_tool_calls,
     )
-    id_to_msg = {msg.id: msg for msg in all_chat_messages}
 
     if not all_chat_messages:
-        raise RuntimeError("No messages in Chat Session")
-
-    root_message = all_chat_messages[0]
-    if root_message.parent_message is not None:
-        raise RuntimeError(
-            "Invalid root message, unable to fetch valid chat message sequence"
+        root_message = get_or_create_root_message(
+            chat_session_id=chat_session_id, db_session=db_session
         )
+    else:
+        root_message = all_chat_messages[0]
+        if root_message.parent_message is not None:
+            raise RuntimeError(
+                "Invalid root message, unable to fetch valid chat message sequence"
+            )
 
     current_message: ChatMessage | None = root_message
     previous_message: ChatMessage | None = None
@@ -258,13 +131,7 @@ def create_chat_chain(
             stop_at_message_id and current_message.id == stop_at_message_id
         ):
             break
-        current_message = id_to_msg.get(child_msg)
-
-        if current_message is None:
-            raise RuntimeError(
-                "Invalid message chain,"
-                "could not find next message in the same session"
-            )
+        current_message = child_msg
 
         if (
             current_message.message_type == MessageType.ASSISTANT
@@ -272,42 +139,17 @@ def create_chat_chain(
             and previous_message.message_type == MessageType.ASSISTANT
             and mainline_messages
         ):
-            if current_message.refined_answer_improvement:
-                mainline_messages[-1] = current_message
+            # Note that 2 user messages in a row is fine since this is often used for
+            # adding custom prompts and reminders
+            raise RuntimeError(
+                "Invalid message chain, cannot have two assistant messages in a row"
+            )
         else:
             mainline_messages.append(current_message)
 
         previous_message = current_message
 
-    if not mainline_messages:
-        raise RuntimeError("Could not trace chat message history")
-
-    return mainline_messages[-1], mainline_messages[:-1]
-
-
-def combine_message_chain(
-    messages: list[ChatMessage] | list[PreviousMessage],
-    token_limit: int,
-    msg_limit: int | None = None,
-) -> str:
-    """Used for secondary LLM flows that require the chat history,"""
-    message_strs: list[str] = []
-    total_token_count = 0
-
-    if msg_limit is not None:
-        messages = messages[-msg_limit:]
-
-    for message in cast(list[ChatMessage] | list[PreviousMessage], reversed(messages)):
-        message_token_count = message.token_count
-
-        if total_token_count + message_token_count > token_limit:
-            break
-
-        role = message.message_type.value.upper()
-        message_strs.insert(0, f"{role}:\n{message.message}")
-        total_token_count += message_token_count
-
-    return "\n\n".join(message_strs)
+    return mainline_messages
 
 
 def reorganize_citations(
@@ -330,14 +172,14 @@ def reorganize_citations(
                 continue
 
             matching_citation = next(
-                iter([c for c in citations if c.citation_num == int(citation_num)]),
+                iter([c for c in citations if c.citation_number == int(citation_num)]),
                 None,
             )
             if matching_citation is None:
                 continue
 
             new_citation_info[citation_num] = CitationInfo(
-                citation_num=len(new_citation_info) + 1,
+                citation_number=len(new_citation_info) + 1,
                 document_id=matching_citation.document_id,
             )
         except Exception:
@@ -349,7 +191,7 @@ def reorganize_citations(
         try:
             citation_num = int(link_text)
             if citation_num in new_citation_info:
-                link_text = new_citation_info[citation_num].citation_num
+                link_text = new_citation_info[citation_num].citation_number
         except Exception:
             pass
 
@@ -361,8 +203,8 @@ def reorganize_citations(
 
     # if any citations weren't parsable, just add them back to be safe
     for citation in citations:
-        if citation.citation_num not in new_citation_info:
-            new_citation_info[citation.citation_num] = citation
+        if citation.citation_number not in new_citation_info:
+            new_citation_info[citation.citation_number] = citation
 
     return new_answer, list(new_citation_info.values())
 
@@ -383,10 +225,10 @@ def build_citation_map_from_infos(
 
     citation_to_saved_doc_id_map: dict[int, int] = {}
     for citation in citations_list:
-        if citation.citation_num not in citation_to_saved_doc_id_map:
+        if citation.citation_number not in citation_to_saved_doc_id_map:
             saved_id = doc_id_to_saved_doc_id_map.get(citation.document_id)
             if saved_id is not None:
-                citation_to_saved_doc_id_map[citation.citation_num] = saved_id
+                citation_to_saved_doc_id_map[citation.citation_number] = saved_id
 
     return citation_to_saved_doc_id_map
 
@@ -435,7 +277,7 @@ def extract_headers(
 
 
 def create_temporary_persona(
-    persona_config: PersonaOverrideConfig, db_session: Session, user: User | None = None
+    persona_config: PersonaOverrideConfig, db_session: Session, user: User
 ) -> Persona:
     if not is_user_admin(user):
         raise HTTPException(
@@ -450,7 +292,7 @@ def create_temporary_persona(
         num_chunks=persona_config.num_chunks,
         llm_relevance_filter=persona_config.llm_relevance_filter,
         llm_filter_extraction=persona_config.llm_filter_extraction,
-        recency_bias=persona_config.recency_bias,
+        recency_bias=RecencyBiasSetting.BASE_DECAY,
         llm_model_provider_override=persona_config.llm_model_provider_override,
         llm_model_version_override=persona_config.llm_model_version_override,
     )
@@ -464,12 +306,15 @@ def create_temporary_persona(
 
     persona.tools = []
     if persona_config.custom_tools_openapi:
+        from onyx.chat.emitter import get_default_emitter
+
         for schema in persona_config.custom_tools_openapi:
             tools = cast(
                 list[Tool],
                 build_custom_tools_from_openapi_schema_and_headers(
                     tool_id=0,  # dummy tool id
                     openapi_schema=schema,
+                    emitter=get_default_emitter(),
                 ),
             )
             persona.tools.extend(tools)
@@ -496,7 +341,7 @@ def create_temporary_persona(
 
 
 def process_kg_commands(
-    message: str, persona_name: str, tenant_id: str, db_session: Session
+    message: str, persona_name: str, tenant_id: str, db_session: Session  # noqa: ARG001
 ) -> None:
     # Temporarily, until we have a draft UI for the KG Operations/Management
     # TODO: move to api endpoint once we get frontend
@@ -507,38 +352,419 @@ def process_kg_commands(
     if not is_kg_config_settings_enabled_valid(kg_config_settings):
         return
 
-    # get Vespa index
-    search_settings = get_current_search_settings(db_session)
-    index_str = search_settings.index_name
-
-    if message == "kg_p":
-        success = try_creating_kg_processing_task(tenant_id)
-        if success:
-            raise KGException("KG processing scheduled")
-        else:
-            raise KGException(
-                "Cannot schedule another KG processing if one is already running "
-                "or there are no documents to process"
-            )
-
-    elif message.startswith("kg_rs_source"):
-        msg_split = [x for x in message.split(":")]
-        if len(msg_split) > 2:
-            raise KGException("Invalid format for a source reset command")
-        elif len(msg_split) == 2:
-            source_name = msg_split[1].strip()
-        elif len(msg_split) == 1:
-            source_name = None
-        else:
-            raise KGException("Invalid format for a source reset command")
-
-        success = try_creating_kg_source_reset_task(tenant_id, source_name, index_str)
-        if success:
-            source_name = source_name or "all"
-            raise KGException(f"KG index reset for source '{source_name}' scheduled")
-        else:
-            raise KGException("Cannot reset index while KG processing is running")
-
-    elif message == "kg_setup":
+    if message == "kg_setup":
         populate_missing_default_entity_types__commit(db_session=db_session)
         raise KGException("KG setup done")
+
+
+@log_function_time(print_only=True)
+def load_chat_file(
+    file_descriptor: FileDescriptor, db_session: Session
+) -> ChatLoadedFile:
+    file_io = get_default_file_store().read_file(file_descriptor["id"], mode="b")
+    content = file_io.read()
+
+    # Extract text content if it's a text file type (not an image)
+    content_text = None
+    # `FileDescriptor` is often JSON-roundtripped (e.g. JSONB / API), so `type`
+    # may arrive as a raw string value instead of a `ChatFileType`.
+    file_type = ChatFileType(file_descriptor["type"])
+
+    if file_type.is_text_file():
+        try:
+            content_text = extract_file_text(
+                file=file_io,
+                file_name=file_descriptor.get("name") or "",
+                break_on_unprocessable=False,
+            )
+        except Exception as e:
+            logger.warning(
+                f"Failed to retrieve content for file {file_descriptor['id']}: {str(e)}"
+            )
+
+    # Get token count from UserFile if available
+    token_count = 0
+    user_file_id_str = file_descriptor.get("user_file_id")
+    if user_file_id_str:
+        try:
+            user_file_id = UUID(user_file_id_str)
+            user_file = (
+                db_session.query(UserFile).filter(UserFile.id == user_file_id).first()
+            )
+            if user_file and user_file.token_count:
+                token_count = user_file.token_count
+        except (ValueError, TypeError) as e:
+            logger.warning(
+                f"Failed to get token count for file {file_descriptor['id']}: {e}"
+            )
+
+    return ChatLoadedFile(
+        file_id=file_descriptor["id"],
+        content=content,
+        file_type=file_type,
+        filename=file_descriptor.get("name"),
+        content_text=content_text,
+        token_count=token_count,
+    )
+
+
+def load_all_chat_files(
+    chat_messages: list[ChatMessage],
+    db_session: Session,
+) -> list[ChatLoadedFile]:
+    # TODO There is likely a more efficient/standard way to load the files here.
+    file_descriptors_for_history: list[FileDescriptor] = []
+    for chat_message in chat_messages:
+        if chat_message.files:
+            file_descriptors_for_history.extend(chat_message.files)
+
+    files = cast(
+        list[ChatLoadedFile],
+        run_functions_tuples_in_parallel(
+            [
+                (load_chat_file, (file, db_session))
+                for file in file_descriptors_for_history
+            ]
+        ),
+    )
+    return files
+
+
+def convert_chat_history_basic(
+    chat_history: list[ChatMessage],
+    token_counter: Callable[[str], int],
+    max_individual_message_tokens: int | None = None,
+    max_total_tokens: int | None = None,
+) -> list[ChatMessageSimple]:
+    """Convert ChatMessage history to ChatMessageSimple format with no tool calls or files included.
+
+    Args:
+        chat_history: List of ChatMessage objects to convert
+        token_counter: Function to count tokens in a message string
+        max_individual_message_tokens: If set, messages exceeding this number of tokens are dropped.
+            If None, no messages are dropped based on individual token count.
+        max_total_tokens: If set, maximum number of tokens allowed for the entire history.
+            If None, the history is not trimmed based on total token count.
+
+    Returns:
+        List of ChatMessageSimple objects
+    """
+    # Defensive: treat a non-positive total budget as "no history".
+    if max_total_tokens is not None and max_total_tokens <= 0:
+        return []
+
+    # Convert only the core USER/ASSISTANT messages; omit files and tool calls.
+    converted: list[ChatMessageSimple] = []
+    for chat_message in chat_history:
+        if chat_message.message_type not in (MessageType.USER, MessageType.ASSISTANT):
+            continue
+
+        message = chat_message.message or ""
+        token_count = getattr(chat_message, "token_count", None)
+        if token_count is None:
+            token_count = token_counter(message)
+
+        # Drop any single message that would dominate the context window.
+        if (
+            max_individual_message_tokens is not None
+            and token_count > max_individual_message_tokens
+        ):
+            continue
+
+        converted.append(
+            ChatMessageSimple(
+                message=message,
+                token_count=token_count,
+                message_type=chat_message.message_type,
+                image_files=None,
+            )
+        )
+
+    if max_total_tokens is None:
+        return converted
+
+    # Enforce a max total budget by keeping a contiguous suffix of the conversation.
+    trimmed_reversed: list[ChatMessageSimple] = []
+    total_tokens = 0
+    for msg in reversed(converted):
+        if total_tokens + msg.token_count > max_total_tokens:
+            break
+        trimmed_reversed.append(msg)
+        total_tokens += msg.token_count
+
+    return list(reversed(trimmed_reversed))
+
+
+def convert_chat_history(
+    chat_history: list[ChatMessage],
+    files: list[ChatLoadedFile],
+    project_image_files: list[ChatLoadedFile],
+    additional_context: str | None,
+    token_counter: Callable[[str], int],
+    tool_id_to_name_map: dict[int, str],
+) -> list[ChatMessageSimple]:
+    """Convert ChatMessage history to ChatMessageSimple format.
+
+    For user messages: includes attached files (images attached to message, text files as separate messages)
+    For assistant messages with tool calls: creates ONE ASSISTANT message with tool_calls array,
+        followed by N TOOL_CALL_RESPONSE messages (OpenAI parallel tool calling format)
+    For assistant messages without tool calls: creates a simple ASSISTANT message
+    """
+    simple_messages: list[ChatMessageSimple] = []
+
+    # Create a mapping of file IDs to loaded files for quick lookup
+    file_map = {str(f.file_id): f for f in files}
+
+    # Find the index of the last USER message
+    last_user_message_idx = None
+    for i in range(len(chat_history) - 1, -1, -1):
+        if chat_history[i].message_type == MessageType.USER:
+            last_user_message_idx = i
+            break
+
+    for idx, chat_message in enumerate(chat_history):
+        if chat_message.message_type == MessageType.USER:
+            # Process files attached to this message
+            text_files: list[ChatLoadedFile] = []
+            image_files: list[ChatLoadedFile] = []
+
+            if chat_message.files:
+                for file_descriptor in chat_message.files:
+                    file_id = file_descriptor["id"]
+                    loaded_file = file_map.get(file_id)
+                    if loaded_file:
+                        if loaded_file.file_type == ChatFileType.IMAGE:
+                            image_files.append(loaded_file)
+                        else:
+                            # Text files (DOC, PLAIN_TEXT, CSV) are added as separate messages
+                            text_files.append(loaded_file)
+
+            # Add text files as separate messages before the user message
+            for text_file in text_files:
+                file_text = text_file.content_text or ""
+                filename = text_file.filename
+                message = (
+                    f"File: {filename}\n{file_text}\nEnd of File"
+                    if filename
+                    else file_text
+                )
+                simple_messages.append(
+                    ChatMessageSimple(
+                        message=message,
+                        token_count=text_file.token_count,
+                        message_type=MessageType.USER,
+                        image_files=None,
+                    )
+                )
+
+            # Sum token counts from image files (excluding project image files)
+            image_token_count = (
+                sum(img.token_count for img in image_files) if image_files else 0
+            )
+
+            # Add the user message with image files attached
+            # If this is the last USER message, also include project_image_files
+            # Note: project image file tokens are NOT counted in the token count
+            if idx == last_user_message_idx:
+                if project_image_files:
+                    image_files.extend(project_image_files)
+
+                if additional_context:
+                    simple_messages.append(
+                        ChatMessageSimple(
+                            message=ADDITIONAL_CONTEXT_PROMPT.format(
+                                additional_context=additional_context
+                            ),
+                            token_count=token_counter(additional_context),
+                            message_type=MessageType.USER,
+                            image_files=None,
+                        )
+                    )
+
+            simple_messages.append(
+                ChatMessageSimple(
+                    message=chat_message.message,
+                    token_count=chat_message.token_count + image_token_count,
+                    message_type=MessageType.USER,
+                    image_files=image_files if image_files else None,
+                )
+            )
+
+        elif chat_message.message_type == MessageType.ASSISTANT:
+            # Handle tool calls if present using OpenAI parallel tool calling format:
+            # 1. Group tool calls by turn_number
+            # 2. For each turn: ONE ASSISTANT message with tool_calls array
+            # 3. Followed by N TOOL_CALL_RESPONSE messages (one per tool call)
+            if chat_message.tool_calls:
+                # Group tool calls by turn number
+                tool_calls_by_turn: dict[int, list] = {}
+                for tool_call in chat_message.tool_calls:
+                    if tool_call.turn_number not in tool_calls_by_turn:
+                        tool_calls_by_turn[tool_call.turn_number] = []
+                    tool_calls_by_turn[tool_call.turn_number].append(tool_call)
+
+                # Sort turns and process each turn
+                for turn_number in sorted(tool_calls_by_turn.keys()):
+                    turn_tool_calls = tool_calls_by_turn[turn_number]
+                    # Sort by tool_id within the turn for consistent ordering
+                    turn_tool_calls.sort(key=lambda tc: tc.tool_id)
+
+                    # Build ToolCallSimple list for this turn
+                    tool_calls_simple: list[ToolCallSimple] = []
+                    for tool_call in turn_tool_calls:
+                        tool_name = tool_id_to_name_map.get(
+                            tool_call.tool_id, "unknown"
+                        )
+                        tool_calls_simple.append(
+                            ToolCallSimple(
+                                tool_call_id=tool_call.tool_call_id,
+                                tool_name=tool_name,
+                                tool_arguments=tool_call.tool_call_arguments or {},
+                                token_count=tool_call.tool_call_tokens,
+                            )
+                        )
+
+                    # Create ONE ASSISTANT message with all tool calls for this turn
+                    total_tool_call_tokens = sum(
+                        tc.token_count for tc in tool_calls_simple
+                    )
+                    simple_messages.append(
+                        ChatMessageSimple(
+                            message="",  # No text content when making tool calls
+                            token_count=total_tool_call_tokens,
+                            message_type=MessageType.ASSISTANT,
+                            tool_calls=tool_calls_simple,
+                            image_files=None,
+                        )
+                    )
+
+                    # Add TOOL_CALL_RESPONSE messages for each tool call in this turn
+                    for tool_call in turn_tool_calls:
+                        simple_messages.append(
+                            ChatMessageSimple(
+                                message=TOOL_CALL_RESPONSE_CROSS_MESSAGE,
+                                token_count=20,  # Tiny overestimate
+                                message_type=MessageType.TOOL_CALL_RESPONSE,
+                                tool_call_id=tool_call.tool_call_id,
+                                image_files=None,
+                            )
+                        )
+
+            # Add the assistant message itself (the final answer)
+            simple_messages.append(
+                ChatMessageSimple(
+                    message=chat_message.message,
+                    token_count=chat_message.token_count,
+                    message_type=MessageType.ASSISTANT,
+                    image_files=None,
+                )
+            )
+        else:
+            raise ValueError(
+                f"Invalid message type when constructing simple history: {chat_message.message_type}"
+            )
+
+    return simple_messages
+
+
+def get_custom_agent_prompt(persona: Persona, chat_session: ChatSession) -> str | None:
+    """Get the custom agent prompt from persona or project instructions.
+
+    Chat Sessions in Projects that are using a custom agent will retain the custom agent prompt.
+    Priority: persona.system_prompt > chat_session.project.instructions > None
+
+    Args:
+        persona: The Persona object
+        chat_session: The ChatSession object
+
+    Returns:
+        The custom agent prompt string, or None if neither persona nor project has one
+    """
+    # Not considered a custom agent if it's the default behavior persona
+    if persona.id == DEFAULT_PERSONA_ID:
+        return None
+
+    if persona.system_prompt:
+        return persona.system_prompt
+    elif chat_session.project and chat_session.project.instructions:
+        return chat_session.project.instructions
+    else:
+        return None
+
+
+def is_last_assistant_message_clarification(chat_history: list[ChatMessage]) -> bool:
+    """Check if the last assistant message in chat history was a clarification question.
+
+    This is used in the deep research flow to determine whether to skip the
+    clarification step when the user has already responded to a clarification.
+
+    Args:
+        chat_history: List of ChatMessage objects in chronological order
+
+    Returns:
+        True if the last assistant message has is_clarification=True, False otherwise
+    """
+    for message in reversed(chat_history):
+        if message.message_type == MessageType.ASSISTANT:
+            return message.is_clarification
+    return False
+
+
+def create_tool_call_failure_messages(
+    tool_calls: list[ToolCallKickoff], token_counter: Callable[[str], int]
+) -> list[ChatMessageSimple]:
+    """Create ChatMessageSimple objects for failed tool calls.
+
+    Creates messages using OpenAI parallel tool calling format:
+    1. An ASSISTANT message with tool_calls field containing all failed tool calls
+    2. A TOOL_CALL_RESPONSE failure message for each tool call
+
+    Args:
+        tool_calls: List of ToolCallKickoff objects representing the failed tool calls
+        token_counter: Function to count tokens in a message string
+
+    Returns:
+        List containing ChatMessageSimple objects: one assistant message with all tool calls
+        followed by a failure response for each tool call
+    """
+    if not tool_calls:
+        return []
+
+    # Create ToolCallSimple for each failed tool call
+    tool_calls_simple: list[ToolCallSimple] = []
+    for tool_call in tool_calls:
+        tool_call_token_count = token_counter(tool_call.to_msg_str())
+        tool_calls_simple.append(
+            ToolCallSimple(
+                tool_call_id=tool_call.tool_call_id,
+                tool_name=tool_call.tool_name,
+                tool_arguments=tool_call.tool_args,
+                token_count=tool_call_token_count,
+            )
+        )
+
+    total_token_count = sum(tc.token_count for tc in tool_calls_simple)
+
+    # Create ONE ASSISTANT message with all tool_calls (OpenAI format)
+    assistant_msg = ChatMessageSimple(
+        message="",  # No text content when making tool calls
+        token_count=total_token_count,
+        message_type=MessageType.ASSISTANT,
+        tool_calls=tool_calls_simple,
+        image_files=None,
+    )
+
+    messages: list[ChatMessageSimple] = [assistant_msg]
+
+    # Create a TOOL_CALL_RESPONSE failure message for each tool call
+    for tool_call in tool_calls:
+        failure_response_msg = ChatMessageSimple(
+            message=TOOL_CALL_FAILURE_PROMPT,
+            token_count=50,  # Tiny overestimate
+            message_type=MessageType.TOOL_CALL_RESPONSE,
+            tool_call_id=tool_call.tool_call_id,
+            image_files=None,
+        )
+        messages.append(failure_response_msg)
+
+    return messages
