@@ -3,13 +3,13 @@ import { use } from "react";
 
 //import { useDocumentSets } from "../hooks";
 import { AdminPageTitle } from "@/components/admin/Title";
-import { BackButton } from "@/components/BackButton";
+import BackButton from "@/refresh-components/buttons/BackButton";
 //import { DocumentSetCreationForm } from "../DocumentSetCreationForm";
 import { errorHandlingFetcher } from "@/lib/fetcher";
 import useSWR from "swr";
 import { usePopup } from "@/components/admin/connectors/Popup";
 import { LoadingAnimation } from "@/components/Loading";
-import { FiCpu } from "react-icons/fi";
+import { CPUIcon } from "@/components/icons/icons";
 // import { Text, Title, Button } from "@tremor/react";
 import Button from "@/refresh-components/buttons/Button";
 import Text from "@/components/ui/text";
@@ -49,7 +49,7 @@ export default function Page(props: { params: Promise<{ pageTitle: string }> }) 
       <div className="mx-auto container">
         <AdminPageTitle
           title="Customize Layout"
-          icon={<FiCpu size={32} className="my-auto" />}
+          icon={<CPUIcon size={32} className="my-auto" />}
         />
         <Title className="mb-2 mt-6">Customize footer:</Title>
         <Text className="mb-2">

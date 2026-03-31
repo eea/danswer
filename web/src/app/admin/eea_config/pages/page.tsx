@@ -20,7 +20,7 @@ import {
 } from "@/components/ui/table";
 
 
-import { FiCpu, FiEdit } from "react-icons/fi";
+import { CPUIcon, EditIcon } from "@/components/icons/icons";
 import useSWR from "swr";
 import { Form, Formik, Field } from "formik";
 import { TextFormField } from "@/components/Field";
@@ -57,7 +57,7 @@ const EditRow = ({ pageTitle }: { pageTitle: string }) => {
       //     //setIsSyncingTooltipOpen(false);
       // }}
       >
-        <FiEdit className="text-emphasis mr-1 my-auto" />
+        <EditIcon className="text-emphasis mr-1 my-auto" />
         {pageTitle}
       </div>
     </div>
@@ -192,7 +192,7 @@ const Page = () => {
       <div className="mb-8">
         {popup}
         <div className="mx-auto container">
-          <AdminPageTitle icon={<FiCpu size={32} />} title="Pages configuration" />
+          <AdminPageTitle icon={<CPUIcon size={32} />} title="Pages configuration" />
           <Text className="mb-3">
             <b>User defined pages</b> allow you to create pages.
           </Text>

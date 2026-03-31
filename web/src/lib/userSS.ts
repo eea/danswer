@@ -118,6 +118,8 @@ export const getAuthUrlSS = async (
     case AuthType.OIDC: {
       return await getOIDCAuthUrlSS(nextUrl);
     }
+    default:
+      return "";
   }
 };
 

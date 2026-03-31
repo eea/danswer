@@ -40,6 +40,8 @@ COPY --from=ghcr.io/astral-sh/uv:0.9.9 /uv /uvx /bin/
 # curl included just for users' convenience
 # zip/unzip for Vespa and playwright cache setup
 # ca-certificates for HTTPS
+RUN sed -i '/debian-security/!s/deb.debian.org/ftp.us.debian.org/g' /etc/apt/sources.list.d/debian.sources
+
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         cmake \

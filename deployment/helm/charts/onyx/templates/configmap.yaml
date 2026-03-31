@@ -27,7 +27,7 @@ data:
   ENABLE_OPENSEARCH_RETRIEVAL_FOR_ONYX: "false"
   {{- end }}
   {{- if .Values.redis.enabled }}
-  REDIS_HOST: {{ .Values.redis.redisStandalone.name | default (printf "%s-redis" (include "onyx.fullname" .)) }}
+  REDIS_HOST: {{ if .Values.redis.host }}{{ .Values.redis.host }}{{ else }}{{ printf "%s-redis" (include "onyx.fullname" .) }}{{ end }}
   {{- end }}
   MODEL_SERVER_HOST: "{{ include "onyx.fullname" . }}-inference-model-service"
   INDEXING_MODEL_SERVER_HOST: "{{ include "onyx.fullname" . }}-indexing-model-service"

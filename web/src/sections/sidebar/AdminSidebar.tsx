@@ -2,7 +2,6 @@
 
 import { usePathname } from "next/navigation";
 import { useSettingsContext } from "@/providers/SettingsProvider";
-import { CgArrowsExpandUpLeft } from "react-icons/cg";
 import Text from "@/refresh-components/texts/Text";
 import SidebarSection from "@/sections/sidebar/SidebarSection";
 import SidebarWrapper from "@/sections/sidebar/SidebarWrapper";
@@ -35,6 +34,7 @@ import {
   SvgFolder,
   SvgGlobe,
   SvgImage,
+  SvgExternalLink,
   SvgKey,
   SvgOnyxLogo,
   SvgOnyxOctagon,
@@ -313,7 +313,7 @@ const collections = (
           items: [
             {
               name: "Pages",
-              icon: SettingsIconSkeleton,
+              icon: SvgSettings,
               link: "/admin/eea_config/pages",
             },
           ],
@@ -372,9 +372,7 @@ export default function AdminSidebar({
         scrollKey="admin-sidebar"
         actionButtons={
           <SidebarTab
-            leftIcon={({ className }) => (
-              <CgArrowsExpandUpLeft className={className} size={16} />
-            )}
+            leftIcon={SvgExternalLink}
             href="/app"
           >
             Exit Admin
