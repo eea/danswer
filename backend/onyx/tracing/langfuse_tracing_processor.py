@@ -331,6 +331,12 @@ class LangfuseTracingProcessor(TracingProcessor):
 
     def _get_generation_name(self, data: GenerationSpanData) -> str:
         """Get a descriptive name for a generation span."""
+        # Try to get custom name from metadata if it was passed through
+        if isinstance(data.model_config, dict):
+            metadata = data.model_config.get("metadata")
+            if isinstance(metadata, dict) and metadata.get("generation_name"):
+                return str(metadata["generation_name"])
+
         if data.model:
             return f"Generation with {data.model}"
         return "Generation"

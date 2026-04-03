@@ -464,9 +464,10 @@ def handle_stream_message_objects(
             )
 
             chat_history.append(user_message)
-            llm = add_metadata_to_llm(
-                llm, f"{persona.name} (llm)", user, user_message, chat_session
-            )
+
+        llm = add_metadata_to_llm(
+            llm, f"{persona.name} (llm)", user, user_message, chat_session
+        )
 
         # Find applicable summary for the current branch
         # Summary applies if its parent_message_id is in current chat_history

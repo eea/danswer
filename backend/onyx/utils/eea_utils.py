@@ -1,3 +1,4 @@
+from typing import Any
 from datetime import datetime
 import json
 import os
@@ -177,6 +178,37 @@ def add_metadata_to_llm(llm, generation, user, user_message, chat_session):
             "session_id": str(chat_session.id),
             "trace_name": user_message.message[:200],
             "trace_id": str(user_message.id)
+        }
+    }
+    return llm
+
+
+def add_metadata_to_llm_dr(
+    llm: Any,
+    generation_name: str,
+    user_identity: "LLMUserIdentity | None",
+    chat_session_id: str | None,
+    trace_name: str,
+    trace_id: str,
+) -> Any:
+    user_id = "anon"
+    if user_identity and user_identity.user_id:
+        user_id = user_identity.user_id
+
+    # Try to mask API key prefix if it looks like an email
+    if "@" in user_id and DANSWER_API_KEY_PREFIX.lower() in user_id.lower():
+        parts = user_id.split("@")[0].split(DANSWER_API_KEY_PREFIX.lower())
+        if len(parts) > 1:
+            user_id = parts[1]
+
+    llm._model_kwargs = {
+        "metadata": {
+            "debug_langfuse": True,
+            "generation_name": generation_name,
+            "user_id": user_id,
+            "session_id": chat_session_id or "missing",
+            "trace_name": trace_name[:200],
+            "trace_id": trace_id,
         }
     }
     return llm

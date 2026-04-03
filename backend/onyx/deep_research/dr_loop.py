@@ -19,6 +19,7 @@ from onyx.chat.llm_step import run_llm_step_pkt_generator
 from onyx.chat.models import ChatMessageSimple
 from onyx.chat.models import LlmStepResult
 from onyx.chat.models import ToolCallSimple
+from onyx.utils.eea_utils import add_metadata_to_llm_dr
 from onyx.configs.chat_configs import SKIP_DEEP_RESEARCH_CLARIFICATION
 from onyx.configs.constants import MessageType
 from onyx.db.tools import get_tool_by_name
@@ -107,6 +108,7 @@ def generate_final_report(
     turn_index: int,
     citation_mapping: CitationMapping,
     user_identity: LLMUserIdentity | None,
+    chat_session_id: str | None = None,
     saved_reasoning: str | None = None,
     pre_answer_processing_time: float | None = None,
 ) -> bool:
@@ -147,6 +149,14 @@ def generate_final_report(
         # Only passing in the cited documents as the whole list would be too long
         final_documents = list(citation_processor.citation_to_doc.values())
 
+        llm = add_metadata_to_llm_dr(
+            llm,
+            "deep-research-final-report",
+            user_identity,
+            chat_session_id,
+            "Final Report Generation",
+            f"dr_final_{chat_session_id}",
+        )
         llm_step_result, has_reasoned = run_llm_step(
             emitter=emitter,
             history=final_report_history,
@@ -237,6 +247,14 @@ def run_deep_research_llm_loop(
             else ""
         )
         if not SKIP_DEEP_RESEARCH_CLARIFICATION and not skip_clarification:
+            llm = add_metadata_to_llm_dr(
+                llm,
+                "deep-research-clarification",
+                user_identity,
+                chat_session_id,
+                "Clarification Step",
+                f"dr_clarify_{chat_session_id}",
+            )
             with function_span("clarification_step") as span:
                 clarification_prompt = CLARIFICATION_PROMPT.format(
                     current_datetime=get_current_llm_day_time(full_sentence=False),
@@ -296,6 +314,14 @@ def run_deep_research_llm_loop(
         #########################################################
         # RESEARCH PLAN STEP
         #########################################################
+        llm = add_metadata_to_llm_dr(
+            llm,
+            "deep-research-plan",
+            user_identity,
+            chat_session_id,
+            "Research Plan Generation",
+            f"dr_plan_{chat_session_id}",
+        )
         with function_span("research_plan_step") as span:
             system_prompt = ChatMessageSimple(
                 message=RESEARCH_PLAN_PROMPT.format(
@@ -441,6 +467,7 @@ def run_deep_research_llm_loop(
                         turn_index=report_turn_index,
                         citation_mapping=citation_mapping,
                         user_identity=user_identity,
+                        chat_session_id=chat_session_id,
                         pre_answer_processing_time=elapsed_seconds,
                     )
                     final_turn_index = report_turn_index + (1 if report_reasoned else 0)
@@ -494,6 +521,14 @@ def run_deep_research_llm_loop(
                     else None
                 )
 
+                llm = add_metadata_to_llm_dr(
+                    llm,
+                    f"deep-research-iteration-{turn_index}",
+                    user_identity,
+                    chat_session_id,
+                    f"Research Iteration {turn_index}",
+                    f"dr_iter_{turn_index}_{chat_session_id}",
+                )
                 llm_step_result, has_reasoned = run_llm_step(
                     emitter=emitter,
                     history=truncated_message_history,
@@ -547,6 +582,7 @@ def run_deep_research_llm_loop(
                         turn_index=report_turn_index,
                         citation_mapping=citation_mapping,
                         user_identity=user_identity,
+                        chat_session_id=chat_session_id,
                         pre_answer_processing_time=time.monotonic()
                         - processing_start_time,
                     )
@@ -569,6 +605,7 @@ def run_deep_research_llm_loop(
                         turn_index=report_turn_index,
                         citation_mapping=citation_mapping,
                         user_identity=user_identity,
+                        chat_session_id=chat_session_id,
                         saved_reasoning=most_recent_reasoning,
                         pre_answer_processing_time=time.monotonic()
                         - processing_start_time,
@@ -642,6 +679,7 @@ def run_deep_research_llm_loop(
                             turn_index=report_turn_index,
                             citation_mapping=citation_mapping,
                             user_identity=user_identity,
+                            chat_session_id=chat_session_id,
                             pre_answer_processing_time=time.monotonic()
                             - processing_start_time,
                         )

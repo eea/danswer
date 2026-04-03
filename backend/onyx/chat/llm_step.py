@@ -668,11 +668,15 @@ def run_llm_step_pkt_generator(
 
     processor_state: Any = None
 
+    # Extract metadata for tracing if available
+    metadata = getattr(llm, "_model_kwargs", {}).get("metadata")
+
     with generation_span(
         model=llm.config.model_name,
         model_config={
             "base_url": str(llm.config.api_base or ""),
             "model_impl": "litellm",
+            "metadata": metadata,
         },
     ) as span_generation:
         span_generation.span_data.input = cast(
