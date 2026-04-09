@@ -38,8 +38,19 @@ We have a critical customization that adds metadata to all `litellm` calls for L
 5. **Onyx Tracing Processor (Deep Research)**:
     - **Target File**: `danswer/backend/onyx/tracing/langfuse_tracing_processor.py`
     - **Logic**: Identify where the "Generation with" string is constructed. 
-    - **Modification**: Ensure the processor pulls from the `extra_metadata` or `tags` passed in the LiteLLM call. The modifications should be as minimal as possible. Do not add any new dependencies or change the overall structure of the file.
+    - **Modification**: If the metadata indicates a "Clarification Step", set the name to: `Clarification needed for "<original_question>"` (where `<original_question>` is extracted from the metadata context).Ensure the processor pulls from the `extra_metadata` or `tags` passed in the LiteLLM call. The modifications should be as minimal as possible. Do not add any new dependencies or change the overall structure of the file.
     - **Consistency**: The processor must prioritize the metadata we injected in the LiteLLM call over its own default naming conventions.
+
+## Global LLM Metadata Audit
+Before finalizing the merge, the agent must perform a "Call Trace Audit":
+
+1. **Discovery**: Scan the entire `onyx/` and `danswer/` directories for any imports of `litellm` or references to `completion`, `get_llm_callback`, or `get_default_llm`.
+2. **Branch Analysis**: For every identified call site:
+    - Trace the logic backwards to the entry point (e.g., `dr_loop`, `standard_search`).
+    - Check all conditional branches (`if/elif/else`) and `try/except` blocks.
+    - **Requirement**: Every single logical path that leads to an LLM call MUST include the `metadata` dictionary.
+3. **Parameter Propagation**: If a helper function is called that eventually triggers an LLM, ensure the `metadata` is passed as an argument through the entire chain.
+4. **Validation**: Use static analysis to flag any `completion()` call that does not explicitly pass a `metadata=` argument. Fix these by injecting the contextually relevant metadata (including the `original_question` for naming).
 
 ## Constraints
 - Do not delete our custom features.
