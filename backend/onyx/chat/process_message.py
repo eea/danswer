@@ -653,6 +653,7 @@ def handle_stream_message_objects(
 
         llm = add_metadata_to_llm(
             llm, f"{persona.name} (llm)", user, user_message, chat_session
+        )
         # Collect file IDs for the file reader tool *before* summary
         # truncation so that files attached to older (summarized-away)
         # messages are still accessible via the FileReaderTool.
