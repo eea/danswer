@@ -164,7 +164,10 @@ class SimpleJobClient:
                 del self.jobs[job.id]
 
     def submit(
-        self, func: Callable, *args: Any, pure: bool = True  # noqa: ARG002
+        self,
+        func: Callable,
+        *args: Any,
+        pure: bool = True,  # noqa: ARG002
     ) -> SimpleJob | None:
         """NOTE: `pure` arg is needed so this can be a drop in replacement for Dask"""
         self._cleanup_completed_jobs()

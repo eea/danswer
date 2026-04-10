@@ -4,26 +4,36 @@ from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ee.onyx.db.persona import update_persona_access
 from ee.onyx.db.user_group import add_users_to_user_group
+from ee.onyx.db.user_group import delete_user_group as db_delete_user_group
+from ee.onyx.db.user_group import fetch_user_group
 from ee.onyx.db.user_group import fetch_user_groups
 from ee.onyx.db.user_group import fetch_user_groups_for_user
 from ee.onyx.db.user_group import insert_user_group
 from ee.onyx.db.user_group import prepare_user_group_for_deletion
+from ee.onyx.db.user_group import rename_user_group
 from ee.onyx.db.user_group import update_user_curator_relationship
 from ee.onyx.db.user_group import update_user_group
 from ee.onyx.server.user_group.models import AddUsersToUserGroupRequest
 from ee.onyx.server.user_group.models import MinimalUserGroupSnapshot
 from ee.onyx.server.user_group.models import SetCuratorRequest
+from ee.onyx.server.user_group.models import UpdateGroupAgentsRequest
 from ee.onyx.server.user_group.models import UserGroup
 from ee.onyx.server.user_group.models import UserGroupCreate
+from ee.onyx.server.user_group.models import UserGroupRename
 from ee.onyx.server.user_group.models import UserGroupUpdate
 from onyx.auth.users import current_admin_user
 from onyx.auth.users import current_curator_or_admin_user
 from onyx.auth.users import current_user
+from onyx.configs.app_configs import DISABLE_VECTOR_DB
 from onyx.configs.constants import PUBLIC_API_TAGS
 from onyx.db.engine.sql_engine import get_session
 from onyx.db.models import User
 from onyx.db.models import UserRole
+from onyx.db.persona import get_persona_by_id
+from onyx.error_handling.error_codes import OnyxErrorCode
+from onyx.error_handling.exceptions import OnyxError
 from onyx.utils.logger import setup_logger
 
 logger = setup_logger()
@@ -37,12 +47,15 @@ def list_user_groups(
     db_session: Session = Depends(get_session),
 ) -> list[UserGroup]:
     if user.role == UserRole.ADMIN:
-        user_groups = fetch_user_groups(db_session, only_up_to_date=False)
+        user_groups = fetch_user_groups(
+            db_session, only_up_to_date=False, eager_load_for_snapshot=True
+        )
     else:
         user_groups = fetch_user_groups_for_user(
             db_session=db_session,
             user_id=user.id,
             only_curator_groups=user.role == UserRole.CURATOR,
+            eager_load_for_snapshot=True,
         )
     return [UserGroup.from_model(user_group) for user_group in user_groups]
 
@@ -79,6 +92,32 @@ def create_user_group(
             + "choose a different name.",
         )
     return UserGroup.from_model(db_user_group)
+
+
+@router.patch("/admin/user-group/rename")
+def rename_user_group_endpoint(
+    rename_request: UserGroupRename,
+    _: User = Depends(current_admin_user),
+    db_session: Session = Depends(get_session),
+) -> UserGroup:
+    try:
+        return UserGroup.from_model(
+            rename_user_group(
+                db_session=db_session,
+                user_group_id=rename_request.id,
+                new_name=rename_request.name,
+            )
+        )
+    except IntegrityError:
+        raise OnyxError(
+            OnyxErrorCode.DUPLICATE_RESOURCE,
+            f"User group with name '{rename_request.name}' already exists.",
+        )
+    except ValueError as e:
+        msg = str(e)
+        if "not found" in msg.lower():
+            raise OnyxError(OnyxErrorCode.NOT_FOUND, msg)
+        raise OnyxError(OnyxErrorCode.CONFLICT, msg)
 
 
 @router.patch("/admin/user-group/{user_group_id}")
@@ -150,3 +189,43 @@ def delete_user_group(
         prepare_user_group_for_deletion(db_session, user_group_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+    if DISABLE_VECTOR_DB:
+        user_group = fetch_user_group(db_session, user_group_id)
+        if user_group:
+            db_delete_user_group(db_session, user_group)
+
+
+@router.patch("/admin/user-group/{user_group_id}/agents")
+def update_group_agents(
+    user_group_id: int,
+    request: UpdateGroupAgentsRequest,
+    user: User = Depends(current_admin_user),
+    db_session: Session = Depends(get_session),
+) -> None:
+    for agent_id in request.added_agent_ids:
+        persona = get_persona_by_id(
+            persona_id=agent_id, user=user, db_session=db_session
+        )
+        current_group_ids = [g.id for g in persona.groups]
+        if user_group_id not in current_group_ids:
+            update_persona_access(
+                persona_id=agent_id,
+                creator_user_id=user.id,
+                db_session=db_session,
+                group_ids=current_group_ids + [user_group_id],
+            )
+
+    for agent_id in request.removed_agent_ids:
+        persona = get_persona_by_id(
+            persona_id=agent_id, user=user, db_session=db_session
+        )
+        current_group_ids = [g.id for g in persona.groups]
+        update_persona_access(
+            persona_id=agent_id,
+            creator_user_id=user.id,
+            db_session=db_session,
+            group_ids=[gid for gid in current_group_ids if gid != user_group_id],
+        )
+
+    db_session.commit()

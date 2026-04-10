@@ -10,7 +10,6 @@ from onyx.db.enums import AccessType
 from onyx.db.models import ConnectorCredentialPair
 from onyx.db.models import DocumentByConnectorCredentialPair
 from tests.integration.common_utils.constants import API_SERVER_URL
-from tests.integration.common_utils.constants import GENERAL_HEADERS
 from tests.integration.common_utils.constants import NUM_DOCS
 from tests.integration.common_utils.managers.api_key import DATestAPIKey
 from tests.integration.common_utils.managers.cc_pair import DATestCCPair
@@ -22,9 +21,9 @@ from tests.integration.common_utils.vespa import vespa_fixture
 def _verify_document_permissions(
     retrieved_doc: dict,
     cc_pair: DATestCCPair,
+    doc_creating_user: DATestUser,
     doc_set_names: list[str] | None = None,
     group_names: list[str] | None = None,
-    doc_creating_user: DATestUser | None = None,
 ) -> None:
     acl_keys = set(retrieved_doc.get("access_control_list", {}).keys())
     print(f"ACL keys: {acl_keys}")
@@ -32,16 +31,14 @@ def _verify_document_permissions(
     if cc_pair.access_type == AccessType.PUBLIC:
         if "PUBLIC" not in acl_keys:
             raise ValueError(
-                f"Document {retrieved_doc['document_id']} is public but"
-                " does not have the PUBLIC ACL key"
+                f"Document {retrieved_doc['document_id']} is public but does not have the PUBLIC ACL key"
             )
 
-    if doc_creating_user is not None:
-        if f"user_email:{doc_creating_user.email}" not in acl_keys:
-            raise ValueError(
-                f"Document {retrieved_doc['document_id']} was created by user"
-                f" {doc_creating_user.email} but does not have the user_email:{doc_creating_user.email} ACL key"
-            )
+    if f"user_email:{doc_creating_user.email}" not in acl_keys:
+        raise ValueError(
+            f"Document {retrieved_doc['document_id']} was created by user"
+            f" {doc_creating_user.email} but does not have the user_email:{doc_creating_user.email} ACL key"
+        )
 
     if group_names is not None:
         expected_group_keys = {f"group:{group_name}" for group_name in group_names}
@@ -57,8 +54,7 @@ def _verify_document_permissions(
         found_doc_set_names = set(retrieved_doc.get("document_sets", {}).keys())
         if found_doc_set_names != set(doc_set_names):
             raise ValueError(
-                f"Document set names mismatch. \nFound: {found_doc_set_names}, \n"
-                f"Expected: {set(doc_set_names)}"
+                f"Document set names mismatch. \nFound: {found_doc_set_names}, \nExpected: {set(doc_set_names)}"
             )
 
 
@@ -101,9 +97,9 @@ class DocumentManager:
     @staticmethod
     def seed_dummy_docs(
         cc_pair: DATestCCPair,
+        api_key: DATestAPIKey,
         num_docs: int = NUM_DOCS,
         document_ids: list[str] | None = None,
-        api_key: DATestAPIKey | None = None,
     ) -> list[SimpleTestDocument]:
         # Use provided document_ids if available, otherwise generate random UUIDs
         if document_ids is None:
@@ -118,12 +114,13 @@ class DocumentManager:
             response = requests.post(
                 f"{API_SERVER_URL}/onyx-api/ingestion",
                 json=document,
-                headers=api_key.headers if api_key else GENERAL_HEADERS,
+                headers=api_key.headers,
             )
             response.raise_for_status()
 
-        api_key_id = api_key.api_key_id if api_key else ""
-        print(f"Seeding docs for api_key_id={api_key_id} completed successfully.")
+        print(
+            f"Seeding docs for api_key_id={api_key.api_key_id} completed successfully."
+        )
         return [
             SimpleTestDocument(
                 id=document["document"]["id"],
@@ -136,8 +133,8 @@ class DocumentManager:
     def seed_doc_with_content(
         cc_pair: DATestCCPair,
         content: str,
+        api_key: DATestAPIKey,
         document_id: str | None = None,
-        api_key: DATestAPIKey | None = None,
         metadata: dict | None = None,
     ) -> SimpleTestDocument:
         # Use provided document_ids if available, otherwise generate random UUIDs
@@ -153,12 +150,13 @@ class DocumentManager:
         response = requests.post(
             f"{API_SERVER_URL}/onyx-api/ingestion",
             json=document,
-            headers=api_key.headers if api_key else GENERAL_HEADERS,
+            headers=api_key.headers,
         )
         response.raise_for_status()
 
-        api_key_id = api_key.api_key_id if api_key else ""
-        print(f"Seeding doc for api_key_id={api_key_id} completed successfully.")
+        print(
+            f"Seeding doc for api_key_id={api_key.api_key_id} completed successfully."
+        )
 
         return SimpleTestDocument(
             id=document["document"]["id"],
@@ -169,11 +167,11 @@ class DocumentManager:
     def verify(
         vespa_client: vespa_fixture,
         cc_pair: DATestCCPair,
+        doc_creating_user: DATestUser,
         # If None, will not check doc sets or groups
         # If empty list, will check for empty doc sets or groups
         doc_set_names: list[str] | None = None,
         group_names: list[str] | None = None,
-        doc_creating_user: DATestUser | None = None,
         verify_deleted: bool = False,
     ) -> None:
         doc_ids = [document.id for document in cc_pair.documents]
@@ -212,9 +210,9 @@ class DocumentManager:
             _verify_document_permissions(
                 retrieved_doc,
                 cc_pair,
+                doc_creating_user,
                 doc_set_names,
                 group_names,
-                doc_creating_user,
             )
 
     @staticmethod
@@ -268,11 +266,11 @@ class IngestionManager(DocumentManager):
 
     @staticmethod
     def list_all_ingestion_docs(
-        api_key: DATestAPIKey | None = None,
+        api_key: DATestAPIKey,
     ) -> list[dict]:
         response = requests.get(
             f"{API_SERVER_URL}/onyx-api/ingestion",
-            headers=api_key.headers if api_key else GENERAL_HEADERS,
+            headers=api_key.headers,
         )
         response.raise_for_status()
         return response.json()
@@ -280,11 +278,11 @@ class IngestionManager(DocumentManager):
     @staticmethod
     def delete(
         document_id: str,
-        api_key: DATestAPIKey | None = None,
+        api_key: DATestAPIKey,
     ) -> None:
         response = requests.delete(
             f"{API_SERVER_URL}/onyx-api/ingestion/{document_id}",
-            headers=api_key.headers if api_key else GENERAL_HEADERS,
+            headers=api_key.headers,
         )
         response.raise_for_status()
         print(f"Deleted document {document_id} successfully.")

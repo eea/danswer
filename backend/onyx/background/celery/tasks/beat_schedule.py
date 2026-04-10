@@ -6,6 +6,7 @@ from celery.schedules import crontab
 
 from onyx.configs.app_configs import AUTO_LLM_CONFIG_URL
 from onyx.configs.app_configs import AUTO_LLM_UPDATE_INTERVAL_SECONDS
+from onyx.configs.app_configs import DISABLE_VECTOR_DB
 from onyx.configs.app_configs import ENABLE_OPENSEARCH_INDEXING_FOR_ONYX
 from onyx.configs.app_configs import ENTERPRISE_EDITION_ENABLED
 from onyx.configs.app_configs import SCHEDULED_EVAL_DATASET_NAMES
@@ -13,6 +14,7 @@ from onyx.configs.constants import ONYX_CLOUD_CELERY_TASK_PREFIX
 from onyx.configs.constants import OnyxCeleryPriority
 from onyx.configs.constants import OnyxCeleryQueues
 from onyx.configs.constants import OnyxCeleryTask
+from onyx.hooks.utils import HOOKS_AVAILABLE
 from shared_configs.configs import MULTI_TENANT
 
 # choosing 15 minutes because it roughly gives us enough time to process many tasks
@@ -215,36 +217,38 @@ if SCHEDULED_EVAL_DATASET_NAMES:
 if ENABLE_OPENSEARCH_INDEXING_FOR_ONYX:
     beat_task_templates.append(
         {
-            "name": "check-for-documents-for-opensearch-migration",
-            "task": OnyxCeleryTask.CHECK_FOR_DOCUMENTS_FOR_OPENSEARCH_MIGRATION_TASK,
+            "name": "migrate-chunks-from-vespa-to-opensearch",
+            "task": OnyxCeleryTask.MIGRATE_CHUNKS_FROM_VESPA_TO_OPENSEARCH_TASK,
             # Try to enqueue an invocation of this task with this frequency.
             "schedule": timedelta(seconds=120),  # 2 minutes
             "options": {
                 "priority": OnyxCeleryPriority.LOW,
                 # If the task was not dequeued in this time, revoke it.
                 "expires": BEAT_EXPIRES_DEFAULT,
+                "queue": OnyxCeleryQueues.OPENSEARCH_MIGRATION,
             },
         }
     )
-    beat_task_templates.append(
-        {
-            "name": "migrate-documents-from-vespa-to-opensearch",
-            "task": OnyxCeleryTask.MIGRATE_DOCUMENTS_FROM_VESPA_TO_OPENSEARCH_TASK,
-            # Try to enqueue an invocation of this task with this frequency.
-            # NOTE: If MIGRATION_TASK_SOFT_TIME_LIMIT_S is greater than this
-            # value and the task is maximally busy, we can expect to see some
-            # enqueued tasks be revoked over time. This is ok; by erring on the
-            # side of "there will probably always be at least one task of this
-            # type in the queue", we are minimizing this task's idleness while
-            # still giving chances for other tasks to execute.
-            "schedule": timedelta(seconds=120),  # 2 minutes
-            "options": {
-                "priority": OnyxCeleryPriority.LOW,
-                # If the task was not dequeued in this time, revoke it.
-                "expires": BEAT_EXPIRES_DEFAULT,
-            },
-        }
-    )
+
+
+# Beat task names that require a vector DB. Filtered out when DISABLE_VECTOR_DB.
+_VECTOR_DB_BEAT_TASK_NAMES: set[str] = {
+    "check-for-indexing",
+    "check-for-connector-deletion",
+    "check-for-vespa-sync",
+    "check-for-pruning",
+    "check-for-hierarchy-fetching",
+    "check-for-checkpoint-cleanup",
+    "check-for-index-attempt-cleanup",
+    "check-for-doc-permissions-sync",
+    "check-for-external-group-sync",
+    "migrate-chunks-from-vespa-to-opensearch",
+}
+
+if DISABLE_VECTOR_DB:
+    beat_task_templates = [
+        t for t in beat_task_templates if t["name"] not in _VECTOR_DB_BEAT_TASK_NAMES
+    ]
 
 
 def make_cloud_generator_task(task: dict[str, Any]) -> dict[str, Any]:
@@ -357,6 +361,19 @@ if not MULTI_TENANT:
     )
 
     tasks_to_schedule.extend(beat_task_templates)
+
+if HOOKS_AVAILABLE:
+    tasks_to_schedule.append(
+        {
+            "name": "hook-execution-log-cleanup",
+            "task": OnyxCeleryTask.HOOK_EXECUTION_LOG_CLEANUP_TASK,
+            "schedule": timedelta(days=1),
+            "options": {
+                "priority": OnyxCeleryPriority.LOW,
+                "expires": BEAT_EXPIRES_DEFAULT,
+            },
+        }
+    )
 
 
 def generate_cloud_tasks(beat_tasks: list[dict], beat_templates: list[dict], beat_multiplier: float) -> list[dict[str, Any]]:

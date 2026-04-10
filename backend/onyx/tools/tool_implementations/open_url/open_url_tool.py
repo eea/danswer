@@ -414,10 +414,20 @@ class OpenURLTool(Tool[OpenURLToolOverrideKwargs]):
 
     @override
     @classmethod
-    def is_available(cls, db_session: Session) -> bool:
-        """OpenURLTool is always available since it falls back to built-in crawler."""
+    def is_available(cls, db_session: Session) -> bool:  # noqa: ARG003
+        """OpenURLTool is available unless the vector DB is disabled.
+
+        The tool uses id_based_retrieval to match URLs to indexed documents,
+        which requires a vector database. When DISABLE_VECTOR_DB is set, the
+        tool is disabled entirely.
+        """
+        from onyx.configs.app_configs import DISABLE_VECTOR_DB
+
+        if DISABLE_VECTOR_DB:
+            return False
+
         # The tool can use either a configured provider or the built-in crawler,
-        # so it's always available
+        # so it's always available when the vector DB is present
         return True
 
     def tool_definition(self) -> dict:
@@ -524,7 +534,9 @@ class OpenURLTool(Tool[OpenURLToolOverrideKwargs]):
             timeout_occurred = [False]  # Using list for mutability in closure
 
             def _timeout_handler(
-                index: int, func: Any, args: tuple[Any, ...]  # noqa: ARG001
+                index: int,  # noqa: ARG001
+                func: Any,  # noqa: ARG001
+                args: tuple[Any, ...],  # noqa: ARG001
             ) -> None:
                 timeout_occurred[0] = True
                 return None
@@ -752,8 +764,7 @@ class OpenURLTool(Tool[OpenURLToolOverrideKwargs]):
             tags=None,
             access_control_list=access_control_list,
             tenant_id=get_current_tenant_id() if MULTI_TENANT else None,
-            user_file_ids=None,
-            project_id=None,
+            project_id_filter=None,
         )
 
     def _merge_indexed_and_crawled_results(

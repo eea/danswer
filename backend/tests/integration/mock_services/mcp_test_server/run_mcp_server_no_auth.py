@@ -2,7 +2,6 @@ import os
 import sys
 
 from fastmcp import FastMCP
-from fastmcp.server.server import FunctionTool
 
 mcp = FastMCP("My HTTP MCP")
 
@@ -13,23 +12,18 @@ def hello(name: str) -> str:
     return f"Hello, {name}!"
 
 
-def make_many_tools() -> list[FunctionTool]:
-    def make_tool(i: int) -> FunctionTool:
+def make_many_tools() -> None:
+    def make_tool(i: int) -> None:
         @mcp.tool(name=f"tool_{i}", description=f"Get secret value {i}")
         def tool_name(name: str) -> str:  # noqa: ARG001
             """Get secret value."""
             return f"Secret value {100 - i}!"
 
-        return tool_name
-
-    tools = []
     for i in range(100):
-        tools.append(make_tool(i))
-    return tools
+        make_tool(i)
 
 
 if __name__ == "__main__":
-
     # Get port from command-line argument first (passed by test)
     port_from_arg = int(sys.argv[1]) if len(sys.argv) > 1 else None
     # Streamable HTTP transport (recommended)

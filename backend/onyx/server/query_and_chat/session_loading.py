@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import json
+from typing import Any
 from typing import cast
+from typing import Literal
 
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from onyx.chat.citation_utils import extract_citation_order_from_text
@@ -18,18 +22,26 @@ from onyx.server.query_and_chat.placement import Placement
 from onyx.server.query_and_chat.streaming_models import AgentResponseDelta
 from onyx.server.query_and_chat.streaming_models import AgentResponseStart
 from onyx.server.query_and_chat.streaming_models import CitationInfo
+from onyx.server.query_and_chat.streaming_models import CustomToolArgs
 from onyx.server.query_and_chat.streaming_models import CustomToolDelta
+from onyx.server.query_and_chat.streaming_models import CustomToolErrorInfo
 from onyx.server.query_and_chat.streaming_models import CustomToolStart
+from onyx.server.query_and_chat.streaming_models import FileReaderResult
+from onyx.server.query_and_chat.streaming_models import FileReaderStart
 from onyx.server.query_and_chat.streaming_models import GeneratedImage
 from onyx.server.query_and_chat.streaming_models import ImageGenerationFinal
 from onyx.server.query_and_chat.streaming_models import ImageGenerationToolStart
 from onyx.server.query_and_chat.streaming_models import IntermediateReportDelta
 from onyx.server.query_and_chat.streaming_models import IntermediateReportStart
+from onyx.server.query_and_chat.streaming_models import MemoryToolDelta
+from onyx.server.query_and_chat.streaming_models import MemoryToolStart
 from onyx.server.query_and_chat.streaming_models import OpenUrlDocuments
 from onyx.server.query_and_chat.streaming_models import OpenUrlStart
 from onyx.server.query_and_chat.streaming_models import OpenUrlUrls
 from onyx.server.query_and_chat.streaming_models import OverallStop
 from onyx.server.query_and_chat.streaming_models import Packet
+from onyx.server.query_and_chat.streaming_models import PythonToolDelta
+from onyx.server.query_and_chat.streaming_models import PythonToolStart
 from onyx.server.query_and_chat.streaming_models import ReasoningDelta
 from onyx.server.query_and_chat.streaming_models import ReasoningStart
 from onyx.server.query_and_chat.streaming_models import ResearchAgentStart
@@ -38,10 +50,13 @@ from onyx.server.query_and_chat.streaming_models import SearchToolQueriesDelta
 from onyx.server.query_and_chat.streaming_models import SearchToolStart
 from onyx.server.query_and_chat.streaming_models import SectionEnd
 from onyx.server.query_and_chat.streaming_models import TopLevelBranching
+from onyx.tools.tool_implementations.file_reader.file_reader_tool import FileReaderTool
 from onyx.tools.tool_implementations.images.image_generation_tool import (
     ImageGenerationTool,
 )
+from onyx.tools.tool_implementations.memory.memory_tool import MemoryTool
 from onyx.tools.tool_implementations.open_url.open_url_tool import OpenURLTool
+from onyx.tools.tool_implementations.python.python_tool import PythonTool
 from onyx.tools.tool_implementations.search.search_tool import SearchTool
 from onyx.tools.tool_implementations.web_search.web_search_tool import WebSearchTool
 from onyx.utils.logger import setup_logger
@@ -59,7 +74,7 @@ def create_message_packets(
     final_search_docs: list[SearchDoc] | None = None
     if final_documents:
         sorted_final_documents = sorted(
-            final_documents, key=lambda x: (x.score or 0.0), reverse=True
+            final_documents, key=lambda x: x.score or 0.0, reverse=True
         )
         final_search_docs = [
             SearchDoc(**doc.model_dump()) for doc in sorted_final_documents
@@ -169,24 +184,37 @@ def create_custom_tool_packets(
     tab_index: int = 0,
     data: dict | list | str | int | float | bool | None = None,
     file_ids: list[str] | None = None,
+    error: CustomToolErrorInfo | None = None,
+    tool_args: dict[str, Any] | None = None,
+    tool_id: int | None = None,
 ) -> list[Packet]:
     packets: list[Packet] = []
 
     packets.append(
         Packet(
             placement=Placement(turn_index=turn_index, tab_index=tab_index),
-            obj=CustomToolStart(tool_name=tool_name),
+            obj=CustomToolStart(tool_name=tool_name, tool_id=tool_id),
         )
     )
+
+    if tool_args:
+        packets.append(
+            Packet(
+                placement=Placement(turn_index=turn_index, tab_index=tab_index),
+                obj=CustomToolArgs(tool_name=tool_name, tool_args=tool_args),
+            )
+        )
 
     packets.append(
         Packet(
             placement=Placement(turn_index=turn_index, tab_index=tab_index),
             obj=CustomToolDelta(
                 tool_name=tool_name,
+                tool_id=tool_id,
                 response_type=response_type,
                 data=data,
                 file_ids=file_ids,
+                error=error,
             ),
         ),
     )
@@ -198,6 +226,45 @@ def create_custom_tool_packets(
         )
     )
 
+    return packets
+
+
+def create_file_reader_packets(
+    summary_json: str,
+    turn_index: int,
+    tab_index: int = 0,
+) -> list[Packet]:
+    """Recreate FileReaderStart + FileReaderResult + SectionEnd from the stored
+    JSON summary so that the FileReaderToolRenderer can display the result on
+    page reload."""
+    import json
+
+    packets: list[Packet] = []
+    placement = Placement(turn_index=turn_index, tab_index=tab_index)
+
+    packets.append(Packet(placement=placement, obj=FileReaderStart()))
+
+    try:
+        data = json.loads(summary_json)
+        packets.append(
+            Packet(
+                placement=placement,
+                obj=FileReaderResult(
+                    file_name=data["file_name"],
+                    file_id=data["file_id"],
+                    start_char=data["start_char"],
+                    end_char=data["end_char"],
+                    total_chars=data["total_chars"],
+                    preview_start=data.get("preview_start", ""),
+                    preview_end=data.get("preview_end", ""),
+                ),
+            )
+        )
+    except (json.JSONDecodeError, KeyError):
+        # Gracefully degrade for old data that wasn't saved as JSON summary
+        pass
+
+    packets.append(Packet(placement=placement, obj=SectionEnd()))
     return packets
 
 
@@ -291,6 +358,76 @@ def create_fetch_packets(
     return packets
 
 
+def create_memory_packets(
+    memory_text: str,
+    operation: Literal["add", "update"],
+    memory_id: int | None,
+    turn_index: int,
+    tab_index: int = 0,
+    index: int | None = None,
+) -> list[Packet]:
+    packets: list[Packet] = []
+
+    packets.append(
+        Packet(
+            placement=Placement(turn_index=turn_index, tab_index=tab_index),
+            obj=MemoryToolStart(),
+        )
+    )
+
+    packets.append(
+        Packet(
+            placement=Placement(turn_index=turn_index, tab_index=tab_index),
+            obj=MemoryToolDelta(
+                memory_text=memory_text,
+                operation=operation,
+                memory_id=memory_id,
+                index=index,
+            ),
+        ),
+    )
+
+    packets.append(
+        Packet(
+            placement=Placement(turn_index=turn_index, tab_index=tab_index),
+            obj=SectionEnd(),
+        )
+    )
+
+    return packets
+
+
+def create_python_tool_packets(
+    code: str,
+    stdout: str,
+    stderr: str,
+    file_ids: list[str],
+    turn_index: int,
+    tab_index: int = 0,
+) -> list[Packet]:
+    """Recreate PythonToolStart + PythonToolDelta + SectionEnd from the stored
+    tool call data so the frontend can display both the code and its output
+    on page reload."""
+    packets: list[Packet] = []
+    placement = Placement(turn_index=turn_index, tab_index=tab_index)
+
+    packets.append(Packet(placement=placement, obj=PythonToolStart(code=code)))
+
+    packets.append(
+        Packet(
+            placement=placement,
+            obj=PythonToolDelta(
+                stdout=stdout,
+                stderr=stderr,
+                file_ids=file_ids,
+            ),
+        )
+    )
+
+    packets.append(Packet(placement=placement, obj=SectionEnd()))
+    return packets
+
+
 def create_search_packets(
     search_queries: list[str],
     search_docs: list[SavedSearchDoc],
@@ -321,7 +458,7 @@ def create_search_packets(
     # Emit documents if present
     if search_docs:
         sorted_search_docs = sorted(
-            search_docs, key=lambda x: (x.score or 0.0), reverse=True
+            search_docs, key=lambda x: x.score or 0.0, reverse=True
         )
         packets.append(
             Packet(
@@ -458,6 +595,15 @@ def translate_assistant_message_to_packets(
                                 )
                             )
 
+                    elif tool.in_code_tool_id == FileReaderTool.__name__:
+                        turn_tool_packets.extend(
+                            create_file_reader_packets(
+                                summary_json=tool_call.tool_call_response or "",
+                                turn_index=turn_num,
+                                tab_index=tool_call.tab_index,
+                            )
+                        )
+
                     elif tool.in_code_tool_id == RESEARCH_AGENT_IN_CODE_ID:
                         # Not ideal but not a huge issue if the research task is lost.
                         research_task = cast(
@@ -474,15 +620,109 @@ def translate_assistant_message_to_packets(
                             )
                         )
 
+                    elif tool.in_code_tool_id == MemoryTool.__name__:
+                        if tool_call.tool_call_response:
+                            memory_data = json.loads(tool_call.tool_call_response)
+                            turn_tool_packets.extend(
+                                create_memory_packets(
+                                    memory_text=memory_data["memory_text"],
+                                    operation=cast(
+                                        Literal["add", "update"],
+                                        memory_data["operation"],
+                                    ),
+                                    memory_id=memory_data.get("memory_id"),
+                                    turn_index=turn_num,
+                                    tab_index=tool_call.tab_index,
+                                    index=memory_data.get("index"),
+                                )
+                            )
+
+                    elif tool.in_code_tool_id == PythonTool.__name__:
+                        code = cast(
+                            str,
+                            tool_call.tool_call_arguments.get("code", ""),
+                        )
+                        stdout = ""
+                        stderr = ""
+                        file_ids: list[str] = []
+                        if tool_call.tool_call_response:
+                            try:
+                                response_data = json.loads(tool_call.tool_call_response)
+                                stdout = response_data.get("stdout", "")
+                                stderr = response_data.get("stderr", "")
+                                generated_files = response_data.get(
+                                    "generated_files", []
+                                )
+                                file_ids = [
+                                    f.get("file_link", "").split("/")[-1]
+                                    for f in generated_files
+                                    if f.get("file_link")
+                                ]
+                            except (json.JSONDecodeError, KeyError):
+                                # Fall back to raw response as stdout
+                                stdout = tool_call.tool_call_response
+                        turn_tool_packets.extend(
+                            create_python_tool_packets(
+                                code=code,
+                                stdout=stdout,
+                                stderr=stderr,
+                                file_ids=file_ids,
+                                turn_index=turn_num,
+                                tab_index=tool_call.tab_index,
+                            )
+                        )
+
                     else:
                         # Custom tool or unknown tool
+                        # Try to parse as structured CustomToolCallSummary JSON
+                        custom_data: dict | list | str | int | float | bool | None = (
+                            tool_call.tool_call_response
+                        )
+                        custom_error: CustomToolErrorInfo | None = None
+                        custom_response_type = "text"
+
+                        try:
+                            parsed = json.loads(tool_call.tool_call_response)
+                            if isinstance(parsed, dict) and "tool_name" in parsed:
+                                custom_data = parsed.get("tool_result")
+                                custom_response_type = parsed.get(
+                                    "response_type", "text"
+                                )
+                                if parsed.get("error"):
+                                    custom_error = CustomToolErrorInfo(
+                                        **parsed["error"]
+                                    )
+                        except (
+                            json.JSONDecodeError,
+                            KeyError,
+                            TypeError,
+                            ValidationError,
+                        ):
+                            pass
+
+                        custom_file_ids: list[str] | None = None
+                        if custom_response_type in ("image", "csv") and isinstance(
+                            custom_data, dict
+                        ):
+                            custom_file_ids = custom_data.get("file_ids")
+                            custom_data = None
+
+                        custom_args = {
+                            k: v
+                            for k, v in (tool_call.tool_call_arguments or {}).items()
+                            if k != "requestBody"
+                        }
                         turn_tool_packets.extend(
                             create_custom_tool_packets(
                                 tool_name=tool.display_name or tool.name,
-                                response_type="text",
+                                response_type=custom_response_type,
                                 turn_index=turn_num,
                                 tab_index=tool_call.tab_index,
-                                data=tool_call.tool_call_response,
+                                data=custom_data,
+                                file_ids=custom_file_ids,
+                                error=custom_error,
+                                tool_args=custom_args if custom_args else None,
+                                tool_id=tool_call.tool_id,
                             )
                         )
 

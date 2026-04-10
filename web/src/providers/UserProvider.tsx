@@ -2,7 +2,9 @@
 
 import React, {
   createContext,
+  useCallback,
   useContext,
+  useMemo,
   useState,
   useEffect,
   useRef,
@@ -13,12 +15,14 @@ import {
   UserRole,
   ThemePreference,
 } from "@/lib/types";
-import { getCurrentUser } from "@/lib/user";
 import { usePostHog } from "posthog-js/react";
-import { CombinedSettings } from "@/app/admin/settings/interfaces";
 import { SettingsContext } from "@/providers/SettingsProvider";
 import { useTokenRefresh } from "@/hooks/useTokenRefresh";
-import { AuthTypeMetadata } from "@/lib/userSS";
+import { useCurrentUser } from "@/hooks/useCurrentUser";
+import {
+  useAuthTypeMetadata,
+  AuthTypeMetadata,
+} from "@/hooks/useAuthTypeMetadata";
 import { updateUserPersonalization as persistPersonalization } from "@/lib/userSettings";
 import { useTheme } from "next-themes";
 
@@ -31,9 +35,9 @@ interface UserContextType {
   authTypeMetadata: AuthTypeMetadata;
   updateUserAutoScroll: (autoScroll: boolean) => Promise<void>;
   updateUserShortcuts: (enabled: boolean) => Promise<void>;
-  toggleAssistantPinnedStatus: (
-    currentPinnedAssistantIDs: number[],
-    assistantId: number,
+  toggleAgentPinnedStatus: (
+    currentPinnedAgentIDs: number[],
+    agentId: number,
     isPinned: boolean
   ) => Promise<boolean>;
   updateUserTemperatureOverrideEnabled: (enabled: boolean) => Promise<void>;
@@ -45,83 +49,74 @@ interface UserContextType {
   ) => Promise<void>;
   updateUserChatBackground: (chatBackground: string | null) => Promise<void>;
   updateUserDefaultModel: (defaultModel: string | null) => Promise<void>;
+  updateUserDefaultAppMode: (mode: "CHAT" | "SEARCH") => Promise<void>;
+  updateUserVoiceSettings: (settings: {
+    auto_send?: boolean;
+    auto_playback?: boolean;
+    playback_speed?: number;
+  }) => Promise<void>;
 }
 
 const UserContext = createContext<UserContextType | undefined>(undefined);
 
-export function UserProvider({
-  authTypeMetadata,
-  children,
-  user,
-  settings,
-}: {
-  authTypeMetadata: AuthTypeMetadata;
-  children: React.ReactNode;
-  user: User | null;
-  settings: CombinedSettings;
-}) {
+export function UserProvider({ children }: { children: React.ReactNode }) {
+  const { user: fetchedUser, mutateUser } = useCurrentUser();
+  const { authTypeMetadata } = useAuthTypeMetadata();
   const updatedSettings = useContext(SettingsContext);
   const posthog = usePostHog();
 
   // For auto_scroll and temperature_override_enabled:
   // - If user has a preference set, use that
   // - Otherwise, use the workspace setting if available
-  function mergeUserPreferences(
-    currentUser: User | null,
-    currentSettings: CombinedSettings | null
-  ): User | null {
-    if (!currentUser) return null;
-    return {
-      ...currentUser,
-      preferences: {
-        ...currentUser.preferences,
-        auto_scroll:
-          currentUser.preferences?.auto_scroll ??
-          currentSettings?.settings?.auto_scroll ??
-          false,
-        temperature_override_enabled:
-          currentUser.preferences?.temperature_override_enabled ??
-          currentSettings?.settings?.temperature_override_enabled ??
-          false,
-      },
-    };
-  }
-
-  const [upToDateUser, setUpToDateUser] = useState<User | null>(
-    mergeUserPreferences(user, settings)
+  const mergeUserPreferences = useCallback(
+    (currentUser: User | null): User | null => {
+      if (!currentUser) return null;
+      return {
+        ...currentUser,
+        preferences: {
+          ...currentUser.preferences,
+          auto_scroll:
+            currentUser.preferences?.auto_scroll ??
+            updatedSettings?.settings?.auto_scroll ??
+            false,
+          temperature_override_enabled:
+            currentUser.preferences?.temperature_override_enabled ??
+            updatedSettings?.settings?.temperature_override_enabled ??
+            false,
+        },
+      };
+    },
+    [updatedSettings]
   );
 
+  const [upToDateUser, setUpToDateUser] = useState<User | null>(null);
+
   useEffect(() => {
-    setUpToDateUser(mergeUserPreferences(user, updatedSettings));
-  }, [user, updatedSettings]);
+    setUpToDateUser(mergeUserPreferences(fetchedUser ?? null));
+  }, [fetchedUser, mergeUserPreferences]);
 
   useEffect(() => {
     if (!posthog) return;
 
-    if (user?.id) {
+    if (fetchedUser?.id) {
       const identifyData: Record<string, any> = {
-        email: user.email,
+        email: fetchedUser.email,
       };
-      if (user.team_name) {
-        identifyData.team_name = user.team_name;
+      if (fetchedUser.team_name) {
+        identifyData.team_name = fetchedUser.team_name;
       }
-      posthog.identify(user.id, identifyData);
+      posthog.identify(fetchedUser.id, identifyData);
     } else {
       posthog.reset();
     }
-  }, [posthog, user]);
+  }, [posthog, fetchedUser]);
 
-  const fetchUser = async () => {
-    try {
-      const currentUser = await getCurrentUser();
-      setUpToDateUser(currentUser);
-    } catch (error) {
-      console.error("Error fetching current user:", error);
-    }
-  };
-
-  // Use the custom token refresh hook
-  useTokenRefresh(upToDateUser, authTypeMetadata, fetchUser);
+  // Use the custom token refresh hook — on refresh failure, revalidate via SWR
+  // so the result goes through mergeUserPreferences
+  const onRefreshFail = useCallback(async () => {
+    await mutateUser();
+  }, [mutateUser]);
+  useTokenRefresh(upToDateUser, authTypeMetadata, onRefreshFail);
 
   // Sync user's theme preference from DB to next-themes on load
   const { setTheme, theme } = useTheme();
@@ -281,9 +276,9 @@ export function UserProvider({
     }
   };
 
-  const toggleAssistantPinnedStatus = async (
-    currentPinnedAssistantIDs: number[],
-    assistantId: number,
+  const toggleAgentPinnedStatus = async (
+    currentPinnedAgentIDs: number[],
+    agentId: number,
     isPinned: boolean
   ) => {
     setUpToDateUser((prevUser) => {
@@ -293,21 +288,15 @@ export function UserProvider({
         preferences: {
           ...prevUser.preferences,
           pinned_assistants: isPinned
-            ? [...currentPinnedAssistantIDs, assistantId]
-            : currentPinnedAssistantIDs.filter((id) => id !== assistantId),
+            ? [...currentPinnedAgentIDs, agentId]
+            : currentPinnedAgentIDs.filter((id) => id !== agentId),
         },
       };
     });
 
-    let updatedPinnedAssistantsIds = currentPinnedAssistantIDs;
-
-    if (isPinned) {
-      updatedPinnedAssistantsIds.push(assistantId);
-    } else {
-      updatedPinnedAssistantsIds = updatedPinnedAssistantsIds.filter(
-        (id) => id !== assistantId
-      );
-    }
+    let updatedPinnedAgentsIds = isPinned
+      ? [...currentPinnedAgentIDs, agentId]
+      : currentPinnedAgentIDs.filter((id) => id !== agentId);
     try {
       const response = await fetch(`/api/user/pinned-assistants`, {
         method: "PATCH",
@@ -315,7 +304,7 @@ export function UserProvider({
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          ordered_assistant_ids: updatedPinnedAssistantsIds,
+          ordered_assistant_ids: updatedPinnedAgentsIds,
         }),
       });
 
@@ -432,8 +421,85 @@ export function UserProvider({
     }
   };
 
+  const updateUserDefaultAppMode = async (mode: "CHAT" | "SEARCH") => {
+    try {
+      setUpToDateUser((prevUser) => {
+        if (prevUser) {
+          return {
+            ...prevUser,
+            preferences: {
+              ...prevUser.preferences,
+              default_app_mode: mode,
+            },
+          };
+        }
+        return prevUser;
+      });
+
+      const response = await fetch("/api/user/default-app-mode", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ default_app_mode: mode }),
+      });
+
+      if (!response.ok) {
+        await refreshUser();
+        throw new Error("Failed to update default app mode");
+      }
+    } catch (error) {
+      console.error("Error updating default app mode:", error);
+      throw error;
+    }
+  };
+
+  const updateUserVoiceSettings = async (settings: {
+    auto_send?: boolean;
+    auto_playback?: boolean;
+    playback_speed?: number;
+  }) => {
+    try {
+      setUpToDateUser((prevUser) => {
+        if (prevUser) {
+          return {
+            ...prevUser,
+            preferences: {
+              ...prevUser.preferences,
+              voice_auto_send:
+                settings.auto_send ?? prevUser.preferences.voice_auto_send,
+              voice_auto_playback:
+                settings.auto_playback ??
+                prevUser.preferences.voice_auto_playback,
+              voice_playback_speed:
+                settings.playback_speed ??
+                prevUser.preferences.voice_playback_speed,
+            },
+          };
+        }
+        return prevUser;
+      });
+
+      const response = await fetch("/api/voice/settings", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(settings),
+      });
+
+      if (!response.ok) {
+        await refreshUser();
+        throw new Error("Failed to update voice settings");
+      }
+    } catch (error) {
+      console.error("Error updating voice settings:", error);
+      throw error;
+    }
+  };
+
   const refreshUser = async () => {
-    await fetchUser();
+    await mutateUser();
   };
 
   return (
@@ -449,7 +515,9 @@ export function UserProvider({
         updateUserThemePreference,
         updateUserChatBackground,
         updateUserDefaultModel,
-        toggleAssistantPinnedStatus,
+        updateUserDefaultAppMode,
+        updateUserVoiceSettings,
+        toggleAgentPinnedStatus,
         isAdmin: upToDateUser?.role === UserRole.ADMIN,
         // Curator status applies for either global or basic curator
         isCurator:

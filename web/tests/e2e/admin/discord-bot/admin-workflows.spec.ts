@@ -10,7 +10,7 @@ import {
   expect,
   gotoDiscordBotPage,
   gotoGuildDetailPage,
-} from "./fixtures";
+} from "@tests/e2e/admin/discord-bot/fixtures";
 
 // Disable retries for Discord bot tests - attempt once at most
 test.describe.configure({ retries: 0 });
@@ -28,7 +28,7 @@ test.describe("Admin Workflow E2E Flows", () => {
     await expect(
       adminPage
         .locator('[aria-label="admin-page-title"]')
-        .getByText("Discord Bots")
+        .getByText("Discord Integration")
     ).toBeVisible();
     await expect(
       adminPage.locator("text=Server Configurations").first()

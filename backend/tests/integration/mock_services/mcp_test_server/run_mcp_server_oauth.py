@@ -15,7 +15,6 @@ from fastapi.responses import Response
 from fastmcp import FastMCP
 from fastmcp.server.auth.providers.jwt import JWTVerifier
 from fastmcp.server.dependencies import get_access_token
-from fastmcp.server.server import FunctionTool
 from starlette.middleware.base import BaseHTTPMiddleware
 
 # uncomment for debug logs
@@ -37,18 +36,15 @@ Enable authorization code and store the client id and secret.
 """
 
 
-def make_many_tools(mcp: FastMCP) -> list[FunctionTool]:
-    def make_tool(i: int) -> FunctionTool:
+def make_many_tools(mcp: FastMCP) -> None:
+    def make_tool(i: int) -> None:
         @mcp.tool(name=f"tool_{i}", description=f"Get secret value {i}")
         def tool_name(name: str) -> str:  # noqa: ARG001
             """Get secret value."""
             return f"Secret value {500 - i}!"
 
-        return tool_name
-
-    tools = []
     for i in range(100):
-        tools.append(make_tool(i))
+        make_tool(i)
 
     @mcp.tool
     async def whoami() -> dict[str, Any]:
@@ -58,9 +54,6 @@ def make_many_tools(mcp: FastMCP) -> list[FunctionTool]:
             "scopes": tok.scopes if tok else [],
             "claims": tok.claims if tok else {},
         }
-
-    tools.append(whoami)
-    return tools
 
 
 # ---------- FASTAPI APP ----------
@@ -134,11 +127,7 @@ class WWWAuthenticateMiddleware(BaseHTTPMiddleware):
         if response.status_code == 401:
             # RFC 9728: include resource_metadata param pointing to PRM URL.
             # RFC 6750: include error + error_description when appropriate.
-            challenge = (
-                f'Bearer resource_metadata="{PRM_URL}", '
-                f'error="invalid_token", '
-                f'error_description="Authentication required"'
-            )
+            challenge = f'Bearer resource_metadata="{PRM_URL}", error="invalid_token", error_description="Authentication required"'
             # Don't clobber if already present; append or set.
             if "www-authenticate" in response.headers:
                 response.headers["www-authenticate"] += ", " + challenge

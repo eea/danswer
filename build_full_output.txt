@@ -1,0 +1,794 @@
+Compose can now delegate builds to bake for better performance.
+ To do so, set COMPOSE_BAKE=true.
+#0 building with "default" instance using docker driver
+
+#1 [web_server internal] load build definition from Dockerfile
+#1 transferring dockerfile: 5.78kB done
+#1 DONE 0.0s
+
+#2 [web_server internal] load metadata for docker.io/library/node:20-alpine
+#2 DONE 0.2s
+
+#3 [web_server internal] load .dockerignore
+#3 transferring context: 156B done
+#3 DONE 0.0s
+
+#4 [web_server base 1/1] FROM docker.io/library/node:20-alpine@sha256:f598378b5240225e6beab68fa9f356db1fb8efe55173e6d4d8153113bb8f333c
+#4 DONE 0.0s
+
+#5 [web_server internal] load build context
+#5 transferring context: 117.22kB 0.1s done
+#5 DONE 0.1s
+
+#6 [web_server builder 1/7] RUN apk add --no-cache libc6-compat
+#6 CACHED
+
+#7 [web_server builder 2/7] WORKDIR /app
+#7 CACHED
+
+#8 [web_server builder 3/7] COPY package.json package-lock.json ./
+#8 CACHED
+
+#9 [web_server builder 4/7] COPY lib/opal/package.json ./lib/opal/
+#9 CACHED
+
+#10 [web_server builder 5/7] RUN npm ci
+#10 CACHED
+
+#11 [web_server builder 6/7] COPY . .
+#11 CACHED
+
+#12 [web_server builder 7/7] RUN NODE_OPTIONS="${NODE_OPTIONS}" npx next build
+#12 1.354 ▲ Next.js 16.1.7 (Turbopack)
+#12 1.354 - Experiments (use with caution):
+#12 1.354   · clientTraceMetadata
+#12 1.354 
+#12 1.409   Creating an optimized production build ...
+#12 29.83 
+#12 29.83 > Build error occurred
+#12 29.84 Error: Turbopack build failed with 27 errors:
+#12 29.84 ./src/app/app/components/AgentDescription.tsx:4:1
+#12 29.84 Parsing ecmascript source code failed
+#12 29.84 [0m [90m 2 |[39m
+#12 29.84  [90m 3 |[39m [36mimport[39m [33mText[39m [36mfrom[39m [32m"@/refresh-components/texts/Text"[39m[33m;[39m
+#12 29.84 [31m[1m>[22m[39m[90m 4 |[39m [33m<<[39m[33m<<[39m[33m<<[39m[33m<[39m [33mHEAD[39m
+#12 29.84  [90m   |[39m [31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m
+#12 29.84  [90m 5 |[39m [36mimport[39m { [33mMinimalPersonaSnapshot[39m } [36mfrom[39m [32m"@/app/admin/assistants/interfaces"[39m[33m;[39m
+#12 29.84  [90m 6 |[39m [33m===[39m[33m===[39m[33m=[39m
+#12 29.84  [90m 7 |[39m [36mimport[39m { [33mMinimalPersonaSnapshot[39m } [36mfrom[39m [32m"@/app/admin/agents/interfaces"[39m[33m;[39m[0m
+#12 29.84 
+#12 29.84 Merge conflict marker encountered.
+#12 29.84 
+#12 29.84 Import traces:
+#12 29.84   Client Component Browser:
+#12 29.84     ./src/app/app/components/AgentDescription.tsx [Client Component Browser]
+#12 29.84     ./src/refresh-pages/AppPage.tsx [Client Component Browser]
+#12 29.84     ./src/refresh-pages/AppPage.tsx [Server Component]
+#12 29.84     ./src/app/app/page.tsx [Server Component]
+#12 29.84 
+#12 29.84   Client Component SSR:
+#12 29.84     ./src/app/app/components/AgentDescription.tsx [Client Component SSR]
+#12 29.84     ./src/refresh-pages/AppPage.tsx [Client Component SSR]
+#12 29.84     ./src/refresh-pages/AppPage.tsx [Server Component]
+#12 29.84     ./src/app/app/page.tsx [Server Component]
+#12 29.84 
+#12 29.84 
+#12 29.84 ./src/app/app/components/AgentDescription.tsx:6:1
+#12 29.84 Parsing ecmascript source code failed
+#12 29.84 [0m [90m 4 |[39m [33m<<[39m[33m<<[39m[33m<<[39m[33m<[39m [33mHEAD[39m
+#12 29.84  [90m 5 |[39m [36mimport[39m { [33mMinimalPersonaSnapshot[39m } [36mfrom[39m [32m"@/app/admin/assistants/interfaces"[39m[33m;[39m
+#12 29.84 [31m[1m>[22m[39m[90m 6 |[39m [33m===[39m[33m===[39m[33m=[39m
+#12 29.84  [90m   |[39m [31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m
+#12 29.84  [90m 7 |[39m [36mimport[39m { [33mMinimalPersonaSnapshot[39m } [36mfrom[39m [32m"@/app/admin/agents/interfaces"[39m[33m;[39m
+#12 29.84  [90m 8 |[39m [33m>>>[39m[33m>>>[39m[33m>[39m v3[35m.1[39m[35m.4[39m
+#12 29.84  [90m 9 |[39m[0m
+#12 29.84 
+#12 29.84 Merge conflict marker encountered.
+#12 29.84 
+#12 29.84 Import traces:
+#12 29.84   Client Component Browser:
+#12 29.84     ./src/app/app/components/AgentDescription.tsx [Client Component Browser]
+#12 29.84     ./src/refresh-pages/AppPage.tsx [Client Component Browser]
+#12 29.84     ./src/refresh-pages/AppPage.tsx [Server Component]
+#12 29.84     ./src/app/app/page.tsx [Server Component]
+#12 29.84 
+#12 29.84   Client Component SSR:
+#12 29.84     ./src/app/app/components/AgentDescription.tsx [Client Component SSR]
+#12 29.84     ./src/refresh-pages/AppPage.tsx [Client Component SSR]
+#12 29.84     ./src/refresh-pages/AppPage.tsx [Server Component]
+#12 29.84     ./src/app/app/page.tsx [Server Component]
+#12 29.84 
+#12 29.84 
+#12 29.84 ./src/app/app/components/AgentDescription.tsx:8:1
+#12 29.84 Parsing ecmascript source code failed
+#12 29.84 [0m [90m  6 |[39m [33m===[39m[33m===[39m[33m=[39m
+#12 29.84  [90m  7 |[39m [36mimport[39m { [33mMinimalPersonaSnapshot[39m } [36mfrom[39m [32m"@/app/admin/agents/interfaces"[39m[33m;[39m
+#12 29.84 [31m[1m>[22m[39m[90m  8 |[39m [33m>>>[39m[33m>>>[39m[33m>[39m v3[35m.1[39m[35m.4[39m
+#12 29.84  [90m    |[39m [31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m
+#12 29.84  [90m  9 |[39m
+#12 29.84  [90m 10 |[39m [36mexport[39m [36minterface[39m [33mAgentDescriptionProps[39m {
+#12 29.84  [90m 11 |[39m   agent[33m?[39m[33m:[39m [33mMinimalPersonaSnapshot[39m[33m;[39m[0m
+#12 29.84 
+#12 29.84 Merge conflict marker encountered.
+#12 29.84 
+#12 29.84 Import traces:
+#12 29.84   Client Component Browser:
+#12 29.84     ./src/app/app/components/AgentDescription.tsx [Client Component Browser]
+#12 29.84     ./src/refresh-pages/AppPage.tsx [Client Component Browser]
+#12 29.84     ./src/refresh-pages/AppPage.tsx [Server Component]
+#12 29.84     ./src/app/app/page.tsx [Server Component]
+#12 29.84 
+#12 29.84   Client Component SSR:
+#12 29.84     ./src/app/app/components/AgentDescription.tsx [Client Component SSR]
+#12 29.84     ./src/refresh-pages/AppPage.tsx [Client Component SSR]
+#12 29.84     ./src/refresh-pages/AppPage.tsx [Server Component]
+#12 29.84     ./src/app/app/page.tsx [Server Component]
+#12 29.84 
+#12 29.84 
+#12 29.84 ./src/app/ee/EEFeatureRedirect.tsx:5:1
+#12 29.84 Parsing ecmascript source code failed
+#12 29.84 [0m [90m 3 |[39m [36mimport[39m { useEffect } [36mfrom[39m [32m"react"[39m[33m;[39m
+#12 29.84  [90m 4 |[39m [36mimport[39m { useRouter } [36mfrom[39m [32m"next/navigation"[39m[33m;[39m
+#12 29.84 [31m[1m>[22m[39m[90m 5 |[39m [33m<<[39m[33m<<[39m[33m<<[39m[33m<[39m [33mHEAD[39m
+#12 29.84  [90m   |[39m [31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m
+#12 29.84  [90m 6 |[39m [36mimport[39m { usePopup } [36mfrom[39m [32m"@/components/admin/connectors/Popup"[39m[33m;[39m
+#12 29.84  [90m 7 |[39m
+#12 29.84  [90m 8 |[39m [36mexport[39m [36mdefault[39m [36mfunction[39m [33mEEFeatureRedirect[39m() {[0m
+#12 29.84 
+#12 29.84 Merge conflict marker encountered.
+#12 29.84 
+#12 29.84 Import trace:
+#12 29.84   Server Component:
+#12 29.84     ./src/app/ee/EEFeatureRedirect.tsx
+#12 29.84     ./src/app/ee/layout.tsx
+#12 29.84 
+#12 29.84 
+#12 29.84 ./src/app/ee/EEFeatureRedirect.tsx:20:1
+#12 29.84 Parsing ecmascript source code failed
+#12 29.84 [0m [90m 18 |[39m     router[33m.[39mreplace([32m"/app"[39m)[33m;[39m
+#12 29.84  [90m 19 |[39m   }[33m,[39m [router[33m,[39m setPopup])[33m;[39m
+#12 29.84 [31m[1m>[22m[39m[90m 20 |[39m [33m===[39m[33m===[39m[33m=[39m
+#12 29.84  [90m    |[39m [31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m
+#12 29.84  [90m 21 |[39m [36mimport[39m { toast } [36mfrom[39m [32m"@/hooks/useToast"[39m[33m;[39m
+#12 29.84  [90m 22 |[39m
+#12 29.84  [90m 23 |[39m [36mexport[39m [36mdefault[39m [36mfunction[39m [33mEEFeatureRedirect[39m() {[0m
+#12 29.84 
+#12 29.84 Merge conflict marker encountered.
+#12 29.84 
+#12 29.84 Import trace:
+#12 29.84   Server Component:
+#12 29.84     ./src/app/ee/EEFeatureRedirect.tsx
+#12 29.84     ./src/app/ee/layout.tsx
+#12 29.84 
+#12 29.84 
+#12 29.84 ./src/hooks/useShareableGroups.ts:3:1
+#12 29.84 Parsing ecmascript source code failed
+#12 29.84 [0m [90m 1 |[39m [32m"use client"[39m[33m;[39m
+#12 29.84  [90m 2 |[39m
+#12 29.84 [31m[1m>[22m[39m[90m 3 |[39m [33m<<[39m[33m<<[39m[33m<<[39m[33m<[39m [33mHEAD[39m
+#12 29.84  [90m   |[39m [31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m
+#12 29.84  [90m 4 |[39m [36mimport[39m useSWR [36mfrom[39m [32m"swr"[39m[33m;[39m
+#12 29.84  [90m 5 |[39m [33m===[39m[33m===[39m[33m=[39m
+#12 29.84  [90m 6 |[39m [36mimport[39m useSWR[33m,[39m { mutate } [36mfrom[39m [32m"swr"[39m[33m;[39m[0m
+#12 29.84 
+#12 29.84 Merge conflict marker encountered.
+#12 29.84 
+#12 29.84 Import traces:
+#12 29.84   Client Component Browser:
+#12 29.84     ./src/hooks/useShareableGroups.ts [Client Component Browser]
+#12 29.84     ./src/sections/modals/ShareAgentModal.tsx [Client Component Browser]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Client Component Browser]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Server Component]
+#12 29.84     ./src/app/app/agents/create/page.tsx [Server Component]
+#12 29.84 
+#12 29.84   Client Component SSR:
+#12 29.84     ./src/hooks/useShareableGroups.ts [Client Component SSR]
+#12 29.84     ./src/sections/modals/ShareAgentModal.tsx [Client Component SSR]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Client Component SSR]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Server Component]
+#12 29.84     ./src/app/app/agents/create/page.tsx [Server Component]
+#12 29.84 
+#12 29.84 
+#12 29.84 ./src/hooks/useShareableGroups.ts:5:1
+#12 29.84 Parsing ecmascript source code failed
+#12 29.84 [0m [90m 3 |[39m [33m<<[39m[33m<<[39m[33m<<[39m[33m<[39m [33mHEAD[39m
+#12 29.84  [90m 4 |[39m [36mimport[39m useSWR [36mfrom[39m [32m"swr"[39m[33m;[39m
+#12 29.84 [31m[1m>[22m[39m[90m 5 |[39m [33m===[39m[33m===[39m[33m=[39m
+#12 29.84  [90m   |[39m [31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m
+#12 29.84  [90m 6 |[39m [36mimport[39m useSWR[33m,[39m { mutate } [36mfrom[39m [32m"swr"[39m[33m;[39m
+#12 29.84  [90m 7 |[39m [33m>>>[39m[33m>>>[39m[33m>[39m v3[35m.1[39m[35m.4[39m
+#12 29.84  [90m 8 |[39m [36mimport[39m { useContext } [36mfrom[39m [32m"react"[39m[33m;[39m[0m
+#12 29.84 
+#12 29.84 Merge conflict marker encountered.
+#12 29.84 
+#12 29.84 Import traces:
+#12 29.84   Client Component Browser:
+#12 29.84     ./src/hooks/useShareableGroups.ts [Client Component Browser]
+#12 29.84     ./src/sections/modals/ShareAgentModal.tsx [Client Component Browser]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Client Component Browser]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Server Component]
+#12 29.84     ./src/app/app/agents/create/page.tsx [Server Component]
+#12 29.84 
+#12 29.84   Client Component SSR:
+#12 29.84     ./src/hooks/useShareableGroups.ts [Client Component SSR]
+#12 29.84     ./src/sections/modals/ShareAgentModal.tsx [Client Component SSR]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Client Component SSR]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Server Component]
+#12 29.84     ./src/app/app/agents/create/page.tsx [Server Component]
+#12 29.84 
+#12 29.84 
+#12 29.84 ./src/hooks/useShareableGroups.ts:7:1
+#12 29.84 Parsing ecmascript source code failed
+#12 29.84 [0m [90m  5 |[39m [33m===[39m[33m===[39m[33m=[39m
+#12 29.84  [90m  6 |[39m [36mimport[39m useSWR[33m,[39m { mutate } [36mfrom[39m [32m"swr"[39m[33m;[39m
+#12 29.84 [31m[1m>[22m[39m[90m  7 |[39m [33m>>>[39m[33m>>>[39m[33m>[39m v3[35m.1[39m[35m.4[39m
+#12 29.84  [90m    |[39m [31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m
+#12 29.84  [90m  8 |[39m [36mimport[39m { useContext } [36mfrom[39m [32m"react"[39m[33m;[39m
+#12 29.84  [90m  9 |[39m [36mimport[39m { errorHandlingFetcher } [36mfrom[39m [32m"@/lib/fetcher"[39m[33m;[39m
+#12 29.84  [90m 10 |[39m [36mimport[39m { [33mSettingsContext[39m } [36mfrom[39m [32m"@/providers/SettingsProvider"[39m[33m;[39m[0m
+#12 29.84 
+#12 29.84 Merge conflict marker encountered.
+#12 29.84 
+#12 29.84 Import traces:
+#12 29.84   Client Component Browser:
+#12 29.84     ./src/hooks/useShareableGroups.ts [Client Component Browser]
+#12 29.84     ./src/sections/modals/ShareAgentModal.tsx [Client Component Browser]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Client Component Browser]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Server Component]
+#12 29.84     ./src/app/app/agents/create/page.tsx [Server Component]
+#12 29.84 
+#12 29.84   Client Component SSR:
+#12 29.84     ./src/hooks/useShareableGroups.ts [Client Component SSR]
+#12 29.84     ./src/sections/modals/ShareAgentModal.tsx [Client Component SSR]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Client Component SSR]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Server Component]
+#12 29.84     ./src/app/app/agents/create/page.tsx [Server Component]
+#12 29.84 
+#12 29.84 
+#12 29.84 ./src/hooks/useShareableGroups.ts:22:1
+#12 29.84 Parsing ecmascript source code failed
+#12 29.84 [0m [90m 20 |[39m [36mexport[39m [36mdefault[39m [36mfunction[39m useShareableGroups() {
+#12 29.84  [90m 21 |[39m   [36mconst[39m combinedSettings [33m=[39m useContext([33mSettingsContext[39m)[33m;[39m
+#12 29.84 [31m[1m>[22m[39m[90m 22 |[39m [33m<<[39m[33m<<[39m[33m<<[39m[33m<[39m [33mHEAD[39m
+#12 29.84  [90m    |[39m [31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m
+#12 29.84  [90m 23 |[39m   [36mconst[39m isPaidEnterpriseFeaturesEnabled [33m=[39m
+#12 29.84  [90m 24 |[39m     combinedSettings [33m&&[39m combinedSettings[33m.[39menterpriseSettings [33m!==[39m [36mnull[39m[33m;[39m
+#12 29.84  [90m 25 |[39m[0m
+#12 29.84 
+#12 29.84 Merge conflict marker encountered.
+#12 29.84 
+#12 29.84 Import traces:
+#12 29.84   Client Component Browser:
+#12 29.84     ./src/hooks/useShareableGroups.ts [Client Component Browser]
+#12 29.84     ./src/sections/modals/ShareAgentModal.tsx [Client Component Browser]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Client Component Browser]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Server Component]
+#12 29.84     ./src/app/app/agents/create/page.tsx [Server Component]
+#12 29.84 
+#12 29.84   Client Component SSR:
+#12 29.84     ./src/hooks/useShareableGroups.ts [Client Component SSR]
+#12 29.84     ./src/sections/modals/ShareAgentModal.tsx [Client Component SSR]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Client Component SSR]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Server Component]
+#12 29.84     ./src/app/app/agents/create/page.tsx [Server Component]
+#12 29.84 
+#12 29.84 
+#12 29.84 ./src/hooks/useShareableGroups.ts:31:1
+#12 29.84 Parsing ecmascript source code failed
+#12 29.84 [0m [90m 29 |[39m   )[33m;[39m
+#12 29.84  [90m 30 |[39m
+#12 29.84 [31m[1m>[22m[39m[90m 31 |[39m [33m===[39m[33m===[39m[33m=[39m
+#12 29.84  [90m    |[39m [31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m
+#12 29.84  [90m 32 |[39m   [36mconst[39m settingsLoading [33m=[39m combinedSettings[33m?[39m[33m.[39msettingsLoading [33m?[39m[33m?[39m [36mfalse[39m[33m;[39m
+#12 29.84  [90m 33 |[39m   [36mconst[39m isPaidEnterpriseFeaturesEnabled [33m=[39m
+#12 29.84  [90m 34 |[39m     [33m![39msettingsLoading [33m&&[39m[0m
+#12 29.84 
+#12 29.84 Merge conflict marker encountered.
+#12 29.84 
+#12 29.84 Import traces:
+#12 29.84   Client Component Browser:
+#12 29.84     ./src/hooks/useShareableGroups.ts [Client Component Browser]
+#12 29.84     ./src/sections/modals/ShareAgentModal.tsx [Client Component Browser]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Client Component Browser]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Server Component]
+#12 29.84     ./src/app/app/agents/create/page.tsx [Server Component]
+#12 29.84 
+#12 29.84   Client Component SSR:
+#12 29.84     ./src/hooks/useShareableGroups.ts [Client Component SSR]
+#12 29.84     ./src/sections/modals/ShareAgentModal.tsx [Client Component SSR]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Client Component SSR]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Server Component]
+#12 29.84     ./src/app/app/agents/create/page.tsx [Server Component]
+#12 29.84 
+#12 29.84 
+#12 29.84 ./src/hooks/useShareableGroups.ts:55:1
+#12 29.84 Parsing ecmascript source code failed
+#12 29.84 [0m [90m 53 |[39m   }
+#12 29.84  [90m 54 |[39m
+#12 29.84 [31m[1m>[22m[39m[90m 55 |[39m [33m>>>[39m[33m>>>[39m[33m>[39m v3[35m.1[39m[35m.4[39m
+#12 29.84  [90m    |[39m [31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m
+#12 29.84  [90m 56 |[39m   [36mif[39m ([33m![39misPaidEnterpriseFeaturesEnabled) {
+#12 29.84  [90m 57 |[39m     [36mreturn[39m {
+#12 29.84  [90m 58 |[39m       data[33m:[39m [][33m,[39m[0m
+#12 29.84 
+#12 29.84 Merge conflict marker encountered.
+#12 29.84 
+#12 29.84 Import traces:
+#12 29.84   Client Component Browser:
+#12 29.84     ./src/hooks/useShareableGroups.ts [Client Component Browser]
+#12 29.84     ./src/sections/modals/ShareAgentModal.tsx [Client Component Browser]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Client Component Browser]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Server Component]
+#12 29.84     ./src/app/app/agents/create/page.tsx [Server Component]
+#12 29.84 
+#12 29.84   Client Component SSR:
+#12 29.84     ./src/hooks/useShareableGroups.ts [Client Component SSR]
+#12 29.84     ./src/sections/modals/ShareAgentModal.tsx [Client Component SSR]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Client Component SSR]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Server Component]
+#12 29.84     ./src/app/app/agents/create/page.tsx [Server Component]
+#12 29.84 
+#12 29.84 
+#12 29.84 ./src/hooks/useShareableGroups.ts:61:1
+#12 29.84 Parsing ecmascript source code failed
+#12 29.84 [0m [90m 59 |[39m       isLoading[33m:[39m [36mfalse[39m[33m,[39m
+#12 29.84  [90m 60 |[39m       error[33m:[39m undefined[33m,[39m
+#12 29.84 [31m[1m>[22m[39m[90m 61 |[39m [33m<<[39m[33m<<[39m[33m<<[39m[33m<[39m [33mHEAD[39m
+#12 29.84  [90m    |[39m [31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m
+#12 29.84  [90m 62 |[39m       refreshShareableGroups[33m:[39m () [33m=>[39m {}[33m,[39m
+#12 29.84  [90m 63 |[39m [33m===[39m[33m===[39m[33m=[39m
+#12 29.84  [90m 64 |[39m       refreshShareableGroups[33m,[39m[0m
+#12 29.84 
+#12 29.84 Merge conflict marker encountered.
+#12 29.84 
+#12 29.84 Import traces:
+#12 29.84   Client Component Browser:
+#12 29.84     ./src/hooks/useShareableGroups.ts [Client Component Browser]
+#12 29.84     ./src/sections/modals/ShareAgentModal.tsx [Client Component Browser]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Client Component Browser]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Server Component]
+#12 29.84     ./src/app/app/agents/create/page.tsx [Server Component]
+#12 29.84 
+#12 29.84   Client Component SSR:
+#12 29.84     ./src/hooks/useShareableGroups.ts [Client Component SSR]
+#12 29.84     ./src/sections/modals/ShareAgentModal.tsx [Client Component SSR]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Client Component SSR]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Server Component]
+#12 29.84     ./src/app/app/agents/create/page.tsx [Server Component]
+#12 29.84 
+#12 29.84 
+#12 29.84 ./src/hooks/useShareableGroups.ts:63:1
+#12 29.84 Parsing ecmascript source code failed
+#12 29.84 [0m [90m 61 |[39m [33m<<[39m[33m<<[39m[33m<<[39m[33m<[39m [33mHEAD[39m
+#12 29.84  [90m 62 |[39m       refreshShareableGroups[33m:[39m () [33m=>[39m {}[33m,[39m
+#12 29.84 [31m[1m>[22m[39m[90m 63 |[39m [33m===[39m[33m===[39m[33m=[39m
+#12 29.84  [90m    |[39m [31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m
+#12 29.84  [90m 64 |[39m       refreshShareableGroups[33m,[39m
+#12 29.84  [90m 65 |[39m [33m>>>[39m[33m>>>[39m[33m>[39m v3[35m.1[39m[35m.4[39m
+#12 29.84  [90m 66 |[39m     }[33m;[39m[0m
+#12 29.84 
+#12 29.84 Merge conflict marker encountered.
+#12 29.84 
+#12 29.84 Import traces:
+#12 29.84   Client Component Browser:
+#12 29.84     ./src/hooks/useShareableGroups.ts [Client Component Browser]
+#12 29.84     ./src/sections/modals/ShareAgentModal.tsx [Client Component Browser]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Client Component Browser]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Server Component]
+#12 29.84     ./src/app/app/agents/create/page.tsx [Server Component]
+#12 29.84 
+#12 29.84   Client Component SSR:
+#12 29.84     ./src/hooks/useShareableGroups.ts [Client Component SSR]
+#12 29.84     ./src/sections/modals/ShareAgentModal.tsx [Client Component SSR]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Client Component SSR]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Server Component]
+#12 29.84     ./src/app/app/agents/create/page.tsx [Server Component]
+#12 29.84 
+#12 29.84 
+#12 29.84 ./src/hooks/useShareableGroups.ts:65:1
+#12 29.84 Parsing ecmascript source code failed
+#12 29.84 [0m [90m 63 |[39m [33m===[39m[33m===[39m[33m=[39m
+#12 29.84  [90m 64 |[39m       refreshShareableGroups[33m,[39m
+#12 29.84 [31m[1m>[22m[39m[90m 65 |[39m [33m>>>[39m[33m>>>[39m[33m>[39m v3[35m.1[39m[35m.4[39m
+#12 29.84  [90m    |[39m [31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m
+#12 29.84  [90m 66 |[39m     }[33m;[39m
+#12 29.84  [90m 67 |[39m   }
+#12 29.84  [90m 68 |[39m[0m
+#12 29.84 
+#12 29.84 Merge conflict marker encountered.
+#12 29.84 
+#12 29.84 Import traces:
+#12 29.84   Client Component Browser:
+#12 29.84     ./src/hooks/useShareableGroups.ts [Client Component Browser]
+#12 29.84     ./src/sections/modals/ShareAgentModal.tsx [Client Component Browser]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Client Component Browser]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Server Component]
+#12 29.84     ./src/app/app/agents/create/page.tsx [Server Component]
+#12 29.84 
+#12 29.84   Client Component SSR:
+#12 29.84     ./src/hooks/useShareableGroups.ts [Client Component SSR]
+#12 29.84     ./src/sections/modals/ShareAgentModal.tsx [Client Component SSR]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Client Component SSR]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Server Component]
+#12 29.84     ./src/app/app/agents/create/page.tsx [Server Component]
+#12 29.84 
+#12 29.84 
+#12 29.84 ./src/hooks/useShareableGroups.ts:73:1
+#12 29.84 Parsing ecmascript source code failed
+#12 29.84 [0m [90m 71 |[39m     isLoading[33m,[39m
+#12 29.84  [90m 72 |[39m     error[33m,[39m
+#12 29.84 [31m[1m>[22m[39m[90m 73 |[39m [33m<<[39m[33m<<[39m[33m<<[39m[33m<[39m [33mHEAD[39m
+#12 29.84  [90m    |[39m [31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m
+#12 29.84  [90m 74 |[39m     refreshShareableGroups[33m:[39m mutate[33m,[39m
+#12 29.84  [90m 75 |[39m [33m===[39m[33m===[39m[33m=[39m
+#12 29.84  [90m 76 |[39m     refreshShareableGroups[33m,[39m[0m
+#12 29.84 
+#12 29.84 Merge conflict marker encountered.
+#12 29.84 
+#12 29.84 Import traces:
+#12 29.84   Client Component Browser:
+#12 29.84     ./src/hooks/useShareableGroups.ts [Client Component Browser]
+#12 29.84     ./src/sections/modals/ShareAgentModal.tsx [Client Component Browser]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Client Component Browser]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Server Component]
+#12 29.84     ./src/app/app/agents/create/page.tsx [Server Component]
+#12 29.84 
+#12 29.84   Client Component SSR:
+#12 29.84     ./src/hooks/useShareableGroups.ts [Client Component SSR]
+#12 29.84     ./src/sections/modals/ShareAgentModal.tsx [Client Component SSR]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Client Component SSR]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Server Component]
+#12 29.84     ./src/app/app/agents/create/page.tsx [Server Component]
+#12 29.84 
+#12 29.84 
+#12 29.84 ./src/hooks/useShareableGroups.ts:75:1
+#12 29.84 Parsing ecmascript source code failed
+#12 29.84 [0m [90m 73 |[39m [33m<<[39m[33m<<[39m[33m<<[39m[33m<[39m [33mHEAD[39m
+#12 29.84  [90m 74 |[39m     refreshShareableGroups[33m:[39m mutate[33m,[39m
+#12 29.84 [31m[1m>[22m[39m[90m 75 |[39m [33m===[39m[33m===[39m[33m=[39m
+#12 29.84  [90m    |[39m [31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m
+#12 29.84  [90m 76 |[39m     refreshShareableGroups[33m,[39m
+#12 29.84  [90m 77 |[39m [33m>>>[39m[33m>>>[39m[33m>[39m v3[35m.1[39m[35m.4[39m
+#12 29.84  [90m 78 |[39m   }[33m;[39m[0m
+#12 29.84 
+#12 29.84 Merge conflict marker encountered.
+#12 29.84 
+#12 29.84 Import traces:
+#12 29.84   Client Component Browser:
+#12 29.84     ./src/hooks/useShareableGroups.ts [Client Component Browser]
+#12 29.84     ./src/sections/modals/ShareAgentModal.tsx [Client Component Browser]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Client Component Browser]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Server Component]
+#12 29.84     ./src/app/app/agents/create/page.tsx [Server Component]
+#12 29.84 
+#12 29.84   Client Component SSR:
+#12 29.84     ./src/hooks/useShareableGroups.ts [Client Component SSR]
+#12 29.84     ./src/sections/modals/ShareAgentModal.tsx [Client Component SSR]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Client Component SSR]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Server Component]
+#12 29.84     ./src/app/app/agents/create/page.tsx [Server Component]
+#12 29.84 
+#12 29.84 
+#12 29.84 ./src/hooks/useShareableGroups.ts:77:1
+#12 29.84 Parsing ecmascript source code failed
+#12 29.84 [0m [90m 75 |[39m [33m===[39m[33m===[39m[33m=[39m
+#12 29.84  [90m 76 |[39m     refreshShareableGroups[33m,[39m
+#12 29.84 [31m[1m>[22m[39m[90m 77 |[39m [33m>>>[39m[33m>>>[39m[33m>[39m v3[35m.1[39m[35m.4[39m
+#12 29.84  [90m    |[39m [31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m
+#12 29.84  [90m 78 |[39m   }[33m;[39m
+#12 29.84  [90m 79 |[39m }
+#12 29.84  [90m 80 |[39m[0m
+#12 29.84 
+#12 29.84 Merge conflict marker encountered.
+#12 29.84 
+#12 29.84 Import traces:
+#12 29.84   Client Component Browser:
+#12 29.84     ./src/hooks/useShareableGroups.ts [Client Component Browser]
+#12 29.84     ./src/sections/modals/ShareAgentModal.tsx [Client Component Browser]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Client Component Browser]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Server Component]
+#12 29.84     ./src/app/app/agents/create/page.tsx [Server Component]
+#12 29.84 
+#12 29.84   Client Component SSR:
+#12 29.84     ./src/hooks/useShareableGroups.ts [Client Component SSR]
+#12 29.84     ./src/sections/modals/ShareAgentModal.tsx [Client Component SSR]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Client Component SSR]
+#12 29.84     ./src/refresh-pages/AgentEditorPage.tsx [Server Component]
+#12 29.84     ./src/app/app/agents/create/page.tsx [Server Component]
+#12 29.84 
+#12 29.84 
+#12 29.84 ./src/sections/onboarding/steps/NameStep.tsx:66:10
+#12 29.84 Parsing ecmascript source code failed
+#12 29.84 [0m [90m 64 |[39m           }
+#12 29.84  [90m 65 |[39m         [33m/[39m[33m>[39m
+#12 29.84 [31m[1m>[22m[39m[90m 66 |[39m         [33m/[39m[33m>[39m
+#12 29.84  [90m    |[39m          [31m[1m^[22m[39m
+#12 29.84  [90m 67 |[39m       [33m<[39m[33m/[39m[33mdiv[39m[33m>[39m
+#12 29.84  [90m 68 |[39m     ) [33m:[39m (
+#12 29.84  [90m 69 |[39m       [33m<[39m[33mdiv[39m[0m
+#12 29.84 
+#12 29.84 Unexpected token. Did you mean `{'>'}` or `&gt;`?
+#12 29.84 
+#12 29.84 Import traces:
+#12 29.84   Client Component Browser:
+#12 29.84     ./src/sections/onboarding/steps/NameStep.tsx [Client Component Browser]
+#12 29.84     ./src/sections/onboarding/OnboardingFlow.tsx [Client Component Browser]
+#12 29.84     ./src/refresh-pages/AppPage.tsx [Client Component Browser]
+#12 29.84     ./src/refresh-pages/AppPage.tsx [Server Component]
+#12 29.84     ./src/app/app/page.tsx [Server Component]
+#12 29.84 
+#12 29.84   Client Component SSR:
+#12 29.84     ./src/sections/onboarding/steps/NameStep.tsx [Client Component SSR]
+#12 29.84     ./src/sections/onboarding/OnboardingFlow.tsx [Client Component SSR]
+#12 29.84     ./src/refresh-pages/AppPage.tsx [Client Component SSR]
+#12 29.84     ./src/refresh-pages/AppPage.tsx [Server Component]
+#12 29.84     ./src/app/app/page.tsx [Server Component]
+#12 29.84 
+#12 29.84 
+#12 29.84 ./src/app/admin/eea_config/pages/new/page.tsx:11:1
+#12 29.84 Module not found: Can't resolve '@/components/admin/connectors/Popup'
+#12 29.84 [0m [90m  9 |[39m [36mimport[39m { errorHandlingFetcher } [36mfrom[39m [32m"@/lib/fetcher"[39m[33m;[39m
+#12 29.84  [90m 10 |[39m [36mimport[39m useSWR [36mfrom[39m [32m"swr"[39m[33m;[39m
+#12 29.84 [31m[1m>[22m[39m[90m 11 |[39m [36mimport[39m { usePopup } [36mfrom[39m [32m"@/components/admin/connectors/Popup"[39m[33m;[39m
+#12 29.84  [90m    |[39m [31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m
+#12 29.84  [90m 12 |[39m [36mimport[39m { [33mLoadingAnimation[39m } [36mfrom[39m [32m"@/components/Loading"[39m[33m;[39m
+#12 29.84  [90m 13 |[39m [36mimport[39m { [33mCPUIcon[39m } [36mfrom[39m [32m"@/components/icons/icons"[39m[33m;[39m
+#12 29.84  [90m 14 |[39m [90m// import { Text, Title, Button } from "@tremor/react";[39m[0m
+#12 29.84 
+#12 29.84 Import map: aliased to relative './src/components/admin/connectors/Popup' inside of [project]/
+#12 29.84 
+#12 29.84 
+#12 29.84 Import traces:
+#12 29.84   Client Component Browser:
+#12 29.84     ./src/app/admin/eea_config/pages/new/page.tsx [Client Component Browser]
+#12 29.84     ./src/app/admin/eea_config/pages/new/page.tsx [Server Component]
+#12 29.84 
+#12 29.84   Client Component SSR:
+#12 29.84     ./src/app/admin/eea_config/pages/new/page.tsx [Client Component SSR]
+#12 29.84     ./src/app/admin/eea_config/pages/new/page.tsx [Server Component]
+#12 29.84 
+#12 29.84 https://nextjs.org/docs/messages/module-not-found
+#12 29.84 
+#12 29.84 
+#12 29.84 ./src/app/admin/eea_config/pages/new/page.tsx:10:1
+#12 29.84 Module not found: Can't resolve '@/components/admin/connectors/Popup'
+#12 29.84 [0m [90m  8 |[39m [36mimport[39m { errorHandlingFetcher } [36mfrom[39m [32m"@/lib/fetcher"[39m[33m;[39m
+#12 29.84  [90m  9 |[39m [36mimport[39m useSWR [36mfrom[39m [32m"swr"[39m[33m;[39m
+#12 29.84 [31m[1m>[22m[39m[90m 10 |[39m [36mimport[39m { usePopup } [36mfrom[39m [32m"@/components/admin/connectors/Popup"[39m[33m;[39m
+#12 29.84  [90m    |[39m [31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m
+#12 29.84  [90m 11 |[39m [36mimport[39m { [33mLoadingAnimation[39m } [36mfrom[39m [32m"@/components/Loading"[39m[33m;[39m
+#12 29.84  [90m 12 |[39m [36mimport[39m { [33mCPUIcon[39m } [36mfrom[39m [32m"@/components/icons/icons"[39m[33m;[39m
+#12 29.84  [90m 13 |[39m [90m// import { Text, Title, Button } from "@tremor/react";[39m[0m
+#12 29.84 
+#12 29.84 Import map: aliased to relative './src/components/admin/connectors/Popup' inside of [project]/
+#12 29.84 
+#12 29.84 
+#12 29.84 Import traces:
+#12 29.84   Client Component Browser:
+#12 29.84     ./src/app/admin/eea_config/pages/new/page.tsx [Client Component Browser]
+#12 29.84     ./src/app/admin/eea_config/pages/new/page.tsx [Server Component]
+#12 29.84 
+#12 29.84   Client Component SSR:
+#12 29.84     ./src/app/admin/eea_config/pages/new/page.tsx [Client Component SSR]
+#12 29.84     ./src/app/admin/eea_config/pages/new/page.tsx [Server Component]
+#12 29.84 
+#12 29.84 https://nextjs.org/docs/messages/module-not-found
+#12 29.84 
+#12 29.84 
+#12 29.84 ./src/app/admin/eea_config/pages/page.tsx:27:1
+#12 29.84 Module not found: Can't resolve '@/components/admin/connectors/Popup'
+#12 29.84 [0m [90m 25 |[39m [36mimport[39m { [33mForm[39m[33m,[39m [33mFormik[39m[33m,[39m [33mField[39m } [36mfrom[39m [32m"formik"[39m[33m;[39m
+#12 29.84  [90m 26 |[39m [36mimport[39m { [33mTextFormField[39m } [36mfrom[39m [32m"@/components/Field"[39m[33m;[39m
+#12 29.84 [31m[1m>[22m[39m[90m 27 |[39m [36mimport[39m { usePopup } [36mfrom[39m [32m"@/components/admin/connectors/Popup"[39m[33m;[39m
+#12 29.84  [90m    |[39m [31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m
+#12 29.84  [90m 28 |[39m [36mimport[39m [33mLink[39m [36mfrom[39m [32m"next/link"[39m[33m;[39m
+#12 29.84  [90m 29 |[39m [36mimport[39m { useState } [36mfrom[39m [32m"react"[39m[33m;[39m
+#12 29.84  [90m 30 |[39m [36mimport[39m { [33mDeleteButton[39m } [36mfrom[39m [32m"@/components/DeleteButton"[39m[33m;[39m[0m
+#12 29.84 
+#12 29.84 Import map: aliased to relative './src/components/admin/connectors/Popup' inside of [project]/
+#12 29.84 
+#12 29.84 
+#12 29.84 Import traces:
+#12 29.84   Client Component Browser:
+#12 29.84     ./src/app/admin/eea_config/pages/page.tsx [Client Component Browser]
+#12 29.84     ./src/app/admin/eea_config/pages/page.tsx [Server Component]
+#12 29.84 
+#12 29.84   Client Component SSR:
+#12 29.84     ./src/app/admin/eea_config/pages/page.tsx [Client Component SSR]
+#12 29.84     ./src/app/admin/eea_config/pages/page.tsx [Server Component]
+#12 29.84 
+#12 29.84 https://nextjs.org/docs/messages/module-not-found
+#12 29.84 
+#12 29.84 
+#12 29.84 ./src/app/admin/eea_config/pages/page.tsx:18:1
+#12 29.84 Module not found: Can't resolve '@/components/admin/connectors/Popup'
+#12 29.84 [0m [90m 16 |[39m [36mimport[39m { [33mForm[39m[33m,[39m [33mFormik[39m[33m,[39m [33mField[39m } [36mfrom[39m [32m"formik"[39m[33m;[39m
+#12 29.84  [90m 17 |[39m [36mimport[39m { [33mTextFormField[39m } [36mfrom[39m [32m"@/components/Field"[39m[33m;[39m
+#12 29.84 [31m[1m>[22m[39m[90m 18 |[39m [36mimport[39m { usePopup } [36mfrom[39m [32m"@/components/admin/connectors/Popup"[39m[33m;[39m
+#12 29.84  [90m    |[39m [31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m
+#12 29.84  [90m 19 |[39m [36mimport[39m [33mLink[39m [36mfrom[39m [32m"next/link"[39m[33m;[39m
+#12 29.84  [90m 20 |[39m [36mimport[39m { useState } [36mfrom[39m [32m"react"[39m[33m;[39m
+#12 29.84  [90m 21 |[39m [36mimport[39m { [33mDeleteButton[39m } [36mfrom[39m [32m"@/components/DeleteButton"[39m[33m;[39m[0m
+#12 29.84 
+#12 29.84 Import map: aliased to relative './src/components/admin/connectors/Popup' inside of [project]/
+#12 29.84 
+#12 29.84 
+#12 29.84 Import traces:
+#12 29.84   Client Component Browser:
+#12 29.84     ./src/app/admin/eea_config/pages/page.tsx [Client Component Browser]
+#12 29.84     ./src/app/admin/eea_config/pages/page.tsx [Server Component]
+#12 29.84 
+#12 29.84   Client Component SSR:
+#12 29.84     ./src/app/admin/eea_config/pages/page.tsx [Client Component SSR]
+#12 29.84     ./src/app/admin/eea_config/pages/page.tsx [Server Component]
+#12 29.84 
+#12 29.84 https://nextjs.org/docs/messages/module-not-found
+#12 29.84 
+#12 29.84 
+#12 29.84 ./src/app/pages/[pageTitle]/page.tsx:9:1
+#12 29.84 Module not found: Can't resolve '@/components/health/healthcheck'
+#12 29.84 [0m [90m  7 |[39m [36mimport[39m { fetchSS } [36mfrom[39m [32m"@/lib/utilsSS"[39m[33m;[39m
+#12 29.84  [90m  8 |[39m [36mimport[39m { [33mUser[39m } [36mfrom[39m [32m"@/lib/types"[39m[33m;[39m
+#12 29.84 [31m[1m>[22m[39m[90m  9 |[39m [36mimport[39m { [33mHealthCheckBanner[39m } [36mfrom[39m [32m"@/components/health/healthcheck"[39m[33m;[39m
+#12 29.84  [90m    |[39m [31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m
+#12 29.84  [90m 10 |[39m [36mimport[39m { notFound } [36mfrom[39m [32m'next/navigation'[39m
+#12 29.84  [90m 11 |[39m [36mimport[39m { fetchEEASettings } [36mfrom[39m [32m"@/lib/eea/fetchEEASettings"[39m[33m;[39m
+#12 29.84  [90m 12 |[39m [90m//import { useRouter } from "next/navigation";[39m[0m
+#12 29.84 
+#12 29.84 Import map: aliased to relative './src/components/health/healthcheck' inside of [project]/
+#12 29.84 
+#12 29.84 
+#12 29.84 https://nextjs.org/docs/messages/module-not-found
+#12 29.84 
+#12 29.84 
+#12 29.84 ./src/app/admin/eea_config/pages/new/page.tsx:16:1
+#12 29.84 Module not found: Can't resolve '@/components/ui/text'
+#12 29.84 [0m [90m 14 |[39m [90m// import { Text, Title, Button } from "@tremor/react";[39m
+#12 29.84  [90m 15 |[39m [36mimport[39m [33mButton[39m [36mfrom[39m [32m"@/refresh-components/buttons/Button"[39m[33m;[39m
+#12 29.84 [31m[1m>[22m[39m[90m 16 |[39m [36mimport[39m [33mText[39m [36mfrom[39m [32m"@/components/ui/text"[39m[33m;[39m
+#12 29.84  [90m    |[39m [31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m
+#12 29.84  [90m 17 |[39m [36mimport[39m [33mTitle[39m [36mfrom[39m [32m"@/components/ui/title"[39m[33m;[39m
+#12 29.84  [90m 18 |[39m [36mimport[39m { [33mForm[39m[33m,[39m [33mFormik[39m[33m,[39m [33mField[39m } [36mfrom[39m [32m"formik"[39m[33m;[39m
+#12 29.84  [90m 19 |[39m [36mimport[39m { [33mTextFormField[39m } [36mfrom[39m [32m"@/components/Field"[39m[33m;[39m[0m
+#12 29.84 
+#12 29.84 Import map: aliased to relative './src/components/ui/text' inside of [project]/
+#12 29.84 
+#12 29.84 
+#12 29.84 Import traces:
+#12 29.84   Client Component Browser:
+#12 29.84     ./src/app/admin/eea_config/pages/new/page.tsx [Client Component Browser]
+#12 29.84     ./src/app/admin/eea_config/pages/new/page.tsx [Server Component]
+#12 29.84 
+#12 29.84   Client Component SSR:
+#12 29.84     ./src/app/admin/eea_config/pages/new/page.tsx [Client Component SSR]
+#12 29.84     ./src/app/admin/eea_config/pages/new/page.tsx [Server Component]
+#12 29.84 
+#12 29.84 https://nextjs.org/docs/messages/module-not-found
+#12 29.84 
+#12 29.84 
+#12 29.84 ./src/app/admin/eea_config/pages/new/page.tsx:15:1
+#12 29.84 Module not found: Can't resolve '@/components/ui/text'
+#12 29.84 [0m [90m 13 |[39m [90m// import { Text, Title, Button } from "@tremor/react";[39m
+#12 29.84  [90m 14 |[39m [36mimport[39m [33mButton[39m [36mfrom[39m [32m"@/refresh-components/buttons/Button"[39m[33m;[39m
+#12 29.84 [31m[1m>[22m[39m[90m 15 |[39m [36mimport[39m [33mText[39m [36mfrom[39m [32m"@/components/ui/text"[39m[33m;[39m
+#12 29.84  [90m    |[39m [31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m
+#12 29.84  [90m 16 |[39m [36mimport[39m [33mTitle[39m [36mfrom[39m [32m"@/components/ui/title"[39m[33m;[39m
+#12 29.84  [90m 17 |[39m
+#12 29.84  [90m 18 |[39m [36mimport[39m { [33mForm[39m[33m,[39m [33mFormik[39m[33m,[39m [33mField[39m } [36mfrom[39m [32m"formik"[39m[33m;[39m[0m
+#12 29.84 
+#12 29.84 Import map: aliased to relative './src/components/ui/text' inside of [project]/
+#12 29.84 
+#12 29.84 
+#12 29.84 Import traces:
+#12 29.84   Client Component Browser:
+#12 29.84     ./src/app/admin/eea_config/pages/new/page.tsx [Client Component Browser]
+#12 29.84     ./src/app/admin/eea_config/pages/new/page.tsx [Server Component]
+#12 29.84 
+#12 29.84   Client Component SSR:
+#12 29.84     ./src/app/admin/eea_config/pages/new/page.tsx [Client Component SSR]
+#12 29.84     ./src/app/admin/eea_config/pages/new/page.tsx [Server Component]
+#12 29.84 
+#12 29.84 https://nextjs.org/docs/messages/module-not-found
+#12 29.84 
+#12 29.84 
+#12 29.84 ./src/app/admin/eea_config/pages/page.tsx:8:1
+#12 29.84 Module not found: Can't resolve '@/components/ui/text'
+#12 29.84 [0m [90m  6 |[39m [90m//import {TableHeaderCell } from "@tremor/react";[39m
+#12 29.84  [90m  7 |[39m
+#12 29.84 [31m[1m>[22m[39m[90m  8 |[39m [36mimport[39m [33mText[39m [36mfrom[39m [32m"@/components/ui/text"[39m[33m;[39m
+#12 29.84  [90m    |[39m [31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m
+#12 29.84  [90m  9 |[39m [36mimport[39m [33mTitle[39m [36mfrom[39m [32m"@/components/ui/title"[39m[33m;[39m
+#12 29.84  [90m 10 |[39m [36mimport[39m [33mButton[39m [36mfrom[39m [32m"@/refresh-components/buttons/Button"[39m[33m;[39m
+#12 29.84  [90m 11 |[39m [36mimport[39m { [33mSeparator[39m } [36mfrom[39m [32m"@radix-ui/react-separator"[39m[33m;[39m[0m
+#12 29.84 
+#12 29.84 Import map: aliased to relative './src/components/ui/text' inside of [project]/
+#12 29.84 
+#12 29.84 
+#12 29.84 Import traces:
+#12 29.84   Client Component Browser:
+#12 29.84     ./src/app/admin/eea_config/pages/page.tsx [Client Component Browser]
+#12 29.84     ./src/app/admin/eea_config/pages/page.tsx [Server Component]
+#12 29.84 
+#12 29.84   Client Component SSR:
+#12 29.84     ./src/app/admin/eea_config/pages/page.tsx [Client Component SSR]
+#12 29.84     ./src/app/admin/eea_config/pages/page.tsx [Server Component]
+#12 29.84 
+#12 29.84 https://nextjs.org/docs/messages/module-not-found
+#12 29.84 
+#12 29.84 
+#12 29.84 ./src/app/admin/eea_config/pages/page.tsx:9:1
+#12 29.84 Module not found: Can't resolve '@/components/ui/text'
+#12 29.84 [0m [90m  7 |[39m [90m//import {TableHeaderCell } from "@tremor/react";[39m
+#12 29.84  [90m  8 |[39m
+#12 29.84 [31m[1m>[22m[39m[90m  9 |[39m [36mimport[39m [33mText[39m [36mfrom[39m [32m"@/components/ui/text"[39m[33m;[39m
+#12 29.84  [90m    |[39m [31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m
+#12 29.84  [90m 10 |[39m [36mimport[39m [33mTitle[39m [36mfrom[39m [32m"@/components/ui/title"[39m[33m;[39m
+#12 29.84  [90m 11 |[39m [36mimport[39m [33mButton[39m [36mfrom[39m [32m"@/refresh-components/buttons/Button"[39m[33m;[39m
+#12 29.84  [90m 12 |[39m [36mimport[39m { [33mSeparator[39m } [36mfrom[39m [32m"@radix-ui/react-separator"[39m[33m;[39m[0m
+#12 29.84 
+#12 29.84 Import map: aliased to relative './src/components/ui/text' inside of [project]/
+#12 29.84 
+#12 29.84 
+#12 29.84 Import traces:
+#12 29.84   Client Component Browser:
+#12 29.84     ./src/app/admin/eea_config/pages/page.tsx [Client Component Browser]
+#12 29.84     ./src/app/admin/eea_config/pages/page.tsx [Server Component]
+#12 29.84 
+#12 29.84   Client Component SSR:
+#12 29.84     ./src/app/admin/eea_config/pages/page.tsx [Client Component SSR]
+#12 29.84     ./src/app/admin/eea_config/pages/page.tsx [Server Component]
+#12 29.84 
+#12 29.84 https://nextjs.org/docs/messages/module-not-found
+#12 29.84 
+#12 29.84 
+#12 29.84     at <unknown> (./src/app/app/components/AgentDescription.tsx:4:1)
+#12 29.84     at <unknown> (./src/app/app/components/AgentDescription.tsx:6:1)
+#12 29.84     at <unknown> (./src/app/app/components/AgentDescription.tsx:8:1)
+#12 29.84     at <unknown> (./src/app/ee/EEFeatureRedirect.tsx:5:1)
+#12 29.84     at <unknown> (./src/app/ee/EEFeatureRedirect.tsx:20:1)
+#12 29.84     at <unknown> (./src/hooks/useShareableGroups.ts:3:1)
+#12 29.84     at <unknown> (./src/hooks/useShareableGroups.ts:5:1)
+#12 29.84     at <unknown> (./src/hooks/useShareableGroups.ts:7:1)
+#12 29.84     at <unknown> (./src/hooks/useShareableGroups.ts:22:1)
+#12 29.84     at <unknown> (./src/hooks/useShareableGroups.ts:31:1)
+#12 29.84     at <unknown> (./src/hooks/useShareableGroups.ts:55:1)
+#12 29.84     at <unknown> (./src/hooks/useShareableGroups.ts:61:1)
+#12 29.84     at <unknown> (./src/hooks/useShareableGroups.ts:63:1)
+#12 29.84     at <unknown> (./src/hooks/useShareableGroups.ts:65:1)
+#12 29.84     at <unknown> (./src/hooks/useShareableGroups.ts:73:1)
+#12 29.84     at <unknown> (./src/hooks/useShareableGroups.ts:75:1)
+#12 29.84     at <unknown> (./src/hooks/useShareableGroups.ts:77:1)
+#12 29.84     at <unknown> (./src/sections/onboarding/steps/NameStep.tsx:66:10)
+#12 29.84     at <unknown> (./src/app/admin/eea_config/pages/new/page.tsx:11:1)
+#12 29.84     at <unknown> (https://nextjs.org/docs/messages/module-not-found)
+#12 29.84     at <unknown> (./src/app/admin/eea_config/pages/new/page.tsx:10:1)
+#12 29.84     at <unknown> (https://nextjs.org/docs/messages/module-not-found)
+#12 29.84     at <unknown> (./src/app/admin/eea_config/pages/page.tsx:27:1)
+#12 29.84     at <unknown> (https://nextjs.org/docs/messages/module-not-found)
+#12 29.84     at <unknown> (./src/app/admin/eea_config/pages/page.tsx:18:1)
+#12 29.84     at <unknown> (https://nextjs.org/docs/messages/module-not-found)
+#12 29.84     at <unknown> (./src/app/pages/[pageTitle]/page.tsx:9:1)
+#12 29.84     at <unknown> (https://nextjs.org/docs/messages/module-not-found)
+#12 29.84     at <unknown> (./src/app/admin/eea_config/pages/new/page.tsx:16:1)
+#12 29.84     at <unknown> (https://nextjs.org/docs/messages/module-not-found)
+#12 29.84     at <unknown> (./src/app/admin/eea_config/pages/new/page.tsx:15:1)
+#12 29.84     at <unknown> (https://nextjs.org/docs/messages/module-not-found)
+#12 29.84     at <unknown> (./src/app/admin/eea_config/pages/page.tsx:8:1)
+#12 29.84     at <unknown> (https://nextjs.org/docs/messages/module-not-found)
+#12 29.84     at <unknown> (./src/app/admin/eea_config/pages/page.tsx:9:1)
+#12 29.84     at <unknown> (https://nextjs.org/docs/messages/module-not-found)
+#12 ERROR: process "/bin/sh -c NODE_OPTIONS=\"${NODE_OPTIONS}\" npx next build" did not complete successfully: exit code: 1
+------
+ > [web_server builder 7/7] RUN NODE_OPTIONS="${NODE_OPTIONS}" npx next build:
+29.84     at <unknown> (./src/app/pages/[pageTitle]/page.tsx:9:1)
+29.84     at <unknown> (https://nextjs.org/docs/messages/module-not-found)
+29.84     at <unknown> (./src/app/admin/eea_config/pages/new/page.tsx:16:1)
+29.84     at <unknown> (https://nextjs.org/docs/messages/module-not-found)
+29.84     at <unknown> (./src/app/admin/eea_config/pages/new/page.tsx:15:1)
+29.84     at <unknown> (https://nextjs.org/docs/messages/module-not-found)
+29.84     at <unknown> (./src/app/admin/eea_config/pages/page.tsx:8:1)
+29.84     at <unknown> (https://nextjs.org/docs/messages/module-not-found)
+29.84     at <unknown> (./src/app/admin/eea_config/pages/page.tsx:9:1)
+29.84     at <unknown> (https://nextjs.org/docs/messages/module-not-found)
+------
+failed to solve: process "/bin/sh -c NODE_OPTIONS=\"${NODE_OPTIONS}\" npx next build" did not complete successfully: exit code: 1

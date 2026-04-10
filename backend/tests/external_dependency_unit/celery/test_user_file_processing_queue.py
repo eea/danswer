@@ -90,8 +90,17 @@ def _patch_task_app(task: Any, mock_app: MagicMock) -> Generator[None, None, Non
     task only.
     """
     task_instance = task.run.__self__
-    with patch.object(
-        type(task_instance), "app", new_callable=PropertyMock, return_value=mock_app
+    with (
+        patch.object(
+            type(task_instance),
+            "app",
+            new_callable=PropertyMock,
+            return_value=mock_app,
+        ),
+        patch(
+            "onyx.background.celery.tasks.user_file_processing.tasks.celery_get_broker_client",
+            return_value=MagicMock(),
+        ),
     ):
         yield
 
@@ -186,10 +195,9 @@ class TestPerFileGuardKey:
                 guard_key
             ), "Guard key should be set in Redis after enqueue"
             ttl = int(redis_client.ttl(guard_key))  # type: ignore[arg-type]
-            assert 0 < ttl <= CELERY_USER_FILE_PROCESSING_TASK_EXPIRES, (
-                f"Guard key TTL {ttl}s is outside the expected range "
-                f"(0, {CELERY_USER_FILE_PROCESSING_TASK_EXPIRES}]"
-            )
+            assert (
+                0 < ttl <= CELERY_USER_FILE_PROCESSING_TASK_EXPIRES
+            ), f"Guard key TTL {ttl}s is outside the expected range (0, {CELERY_USER_FILE_PROCESSING_TASK_EXPIRES}]"
         finally:
             redis_client.delete(guard_key)
 
@@ -231,10 +239,7 @@ class TestTaskExpiry:
                 assert (
                     call.kwargs.get("expires")
                     == CELERY_USER_FILE_PROCESSING_TASK_EXPIRES
-                ), (
-                    "Task must be submitted with the correct expires value to prevent "
-                    "stale task accumulation"
-                )
+                ), "Task must be submitted with the correct expires value to prevent stale task accumulation"
         finally:
             redis_client.delete(guard_key)
 

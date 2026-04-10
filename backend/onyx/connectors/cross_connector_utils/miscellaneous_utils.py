@@ -138,8 +138,7 @@ def _parse_document_source(connector_type: Any) -> DocumentSource | None:
         return DocumentSource(normalized)
     except ValueError:
         logger.warning(
-            f"Invalid connector_type value: '{connector_type}' "
-            f"(normalized: '{normalized}')"
+            f"Invalid connector_type value: '{connector_type}' (normalized: '{normalized}')"
         )
         return None
 
@@ -171,6 +170,7 @@ def process_onyx_metadata(
 
     return (
         OnyxMetadata(
+            document_id=metadata.get("id"),
             source_type=source_type,
             link=metadata.get("link"),
             file_display_name=metadata.get("file_display_name"),

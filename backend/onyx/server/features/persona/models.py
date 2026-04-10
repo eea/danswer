@@ -5,7 +5,6 @@ from pydantic import BaseModel
 from pydantic import Field
 
 from onyx.configs.constants import DocumentSource
-from onyx.context.search.enums import RecencyBiasSetting
 from onyx.db.enums import HierarchyNodeType
 from onyx.db.models import Document
 from onyx.db.models import HierarchyNode
@@ -108,11 +107,7 @@ class PersonaUpsertRequest(BaseModel):
     name: str
     description: str
     document_set_ids: list[int]
-    num_chunks: float
     is_public: bool
-    recency_bias: RecencyBiasSetting
-    llm_filter_extraction: bool
-    llm_relevance_filter: bool
     llm_model_provider_override: str | None = None
     llm_model_version_override: str | None = None
     starter_messages: list[StarterMessage] | None = None
@@ -128,7 +123,7 @@ class PersonaUpsertRequest(BaseModel):
     )
     search_start_date: datetime | None = None
     label_ids: list[int] | None = None
-    is_default_persona: bool = False
+    is_featured: bool = False
     display_priority: int | None = None
     # Accept string UUIDs from frontend
     user_file_ids: list[str] | None = None
@@ -155,9 +150,6 @@ class MinimalPersonaSnapshot(BaseModel):
     tools: list[ToolSnapshot]
     starter_messages: list[StarterMessage] | None
 
-    llm_relevance_filter: bool
-    llm_filter_extraction: bool
-
     # only show document sets in the UI that the assistant has access to
     document_sets: list[DocumentSetSummary]
     # Counts for knowledge sources (used to determine if search tool should be enabled)
@@ -173,9 +165,9 @@ class MinimalPersonaSnapshot(BaseModel):
     icon_name: str | None
 
     is_public: bool
-    is_visible: bool
+    is_listed: bool
     display_priority: int | None
-    is_default_persona: bool
+    is_featured: bool
     builtin_persona: bool
 
     # Used for filtering
@@ -214,8 +206,6 @@ class MinimalPersonaSnapshot(BaseModel):
                 if should_expose_tool_to_fe(tool)
             ],
             starter_messages=persona.starter_messages,
-            llm_relevance_filter=persona.llm_relevance_filter,
-            llm_filter_extraction=persona.llm_filter_extraction,
             document_sets=[
                 DocumentSetSummary.from_model(document_set)
                 for document_set in persona.document_sets
@@ -228,9 +218,9 @@ class MinimalPersonaSnapshot(BaseModel):
             uploaded_image_id=persona.uploaded_image_id,
             icon_name=persona.icon_name,
             is_public=persona.is_public,
-            is_visible=persona.is_visible,
+            is_listed=persona.is_listed,
             display_priority=persona.display_priority,
-            is_default_persona=persona.is_default_persona,
+            is_featured=persona.is_featured,
             builtin_persona=persona.builtin_persona,
             labels=[PersonaLabelSnapshot.from_model(label) for label in persona.labels],
             owner=(
@@ -246,17 +236,15 @@ class PersonaSnapshot(BaseModel):
     name: str
     description: str
     is_public: bool
-    is_visible: bool
+    is_listed: bool
     uploaded_image_id: str | None
     icon_name: str | None
     # Return string UUIDs to frontend for consistency
     user_file_ids: list[str]
     display_priority: int | None
-    is_default_persona: bool
+    is_featured: bool
     builtin_persona: bool
     starter_messages: list[StarterMessage] | None
-    llm_relevance_filter: bool
-    llm_filter_extraction: bool
     tools: list[ToolSnapshot]
     labels: list["PersonaLabelSnapshot"]
     owner: MinimalUserSnapshot | None
@@ -265,7 +253,6 @@ class PersonaSnapshot(BaseModel):
     document_sets: list[DocumentSetSummary]
     llm_model_provider_override: str | None
     llm_model_version_override: str | None
-    num_chunks: float | None
     # Hierarchy nodes attached for scoped search
     hierarchy_nodes: list[HierarchyNodeSnapshot] = Field(default_factory=list)
     # Individual documents attached for scoped search
@@ -284,16 +271,14 @@ class PersonaSnapshot(BaseModel):
             name=persona.name,
             description=persona.description,
             is_public=persona.is_public,
-            is_visible=persona.is_visible,
+            is_listed=persona.is_listed,
             uploaded_image_id=persona.uploaded_image_id,
             icon_name=persona.icon_name,
             user_file_ids=[str(file.id) for file in persona.user_files],
             display_priority=persona.display_priority,
-            is_default_persona=persona.is_default_persona,
+            is_featured=persona.is_featured,
             builtin_persona=persona.builtin_persona,
             starter_messages=persona.starter_messages,
-            llm_relevance_filter=persona.llm_relevance_filter,
-            llm_filter_extraction=persona.llm_filter_extraction,
             tools=[
                 ToolSnapshot.from_model(tool)
                 for tool in persona.tools
@@ -324,7 +309,6 @@ class PersonaSnapshot(BaseModel):
             ],
             llm_model_provider_override=persona.llm_model_provider_override,
             llm_model_version_override=persona.llm_model_version_override,
-            num_chunks=persona.num_chunks,
             system_prompt=persona.system_prompt,
             replace_base_system_prompt=persona.replace_base_system_prompt,
             task_prompt=persona.task_prompt,
@@ -332,12 +316,10 @@ class PersonaSnapshot(BaseModel):
         )
 
 
-# Model with full context on perona's internal settings
+# Model with full context on persona's internal settings
 # This is used for flows which need to know all settings
 class FullPersonaSnapshot(PersonaSnapshot):
     search_start_date: datetime | None = None
-    llm_relevance_filter: bool = False
-    llm_filter_extraction: bool = False
 
     @classmethod
     def from_model(
@@ -355,12 +337,12 @@ class FullPersonaSnapshot(PersonaSnapshot):
             name=persona.name,
             description=persona.description,
             is_public=persona.is_public,
-            is_visible=persona.is_visible,
+            is_listed=persona.is_listed,
             uploaded_image_id=persona.uploaded_image_id,
             icon_name=persona.icon_name,
             user_file_ids=[str(file.id) for file in persona.user_files],
             display_priority=persona.display_priority,
-            is_default_persona=persona.is_default_persona,
+            is_featured=persona.is_featured,
             builtin_persona=persona.builtin_persona,
             starter_messages=persona.starter_messages,
             users=[
@@ -391,10 +373,7 @@ class FullPersonaSnapshot(PersonaSnapshot):
                 DocumentSetSummary.from_model(document_set_model)
                 for document_set_model in persona.document_sets
             ],
-            num_chunks=persona.num_chunks,
             search_start_date=persona.search_start_date,
-            llm_relevance_filter=persona.llm_relevance_filter,
-            llm_filter_extraction=persona.llm_filter_extraction,
             llm_model_provider_override=persona.llm_model_provider_override,
             llm_model_version_override=persona.llm_model_version_override,
             system_prompt=persona.system_prompt,

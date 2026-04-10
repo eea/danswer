@@ -6,6 +6,7 @@ from datetime import timezone
 from typing import cast
 
 from onyx.auth.schemas import AuthBackend
+from onyx.cache.interface import CacheBackendType
 from onyx.configs.constants import AuthType
 from onyx.configs.constants import QueryHistoryType
 from onyx.file_processing.enums import HtmlBasedConnectorTransformLinksStrategy
@@ -50,6 +51,27 @@ GENERATIVE_MODEL_ACCESS_CHECK_FREQ = int(
 # Controls whether users can use User Knowledge (personal documents) in assistants
 DISABLE_USER_KNOWLEDGE = os.environ.get("DISABLE_USER_KNOWLEDGE", "").lower() == "true"
 
+# Disables vector DB (Vespa/OpenSearch) entirely. When True, connectors and RAG search
+# are disabled but core chat, tools, user file uploads, and Projects still work.
+DISABLE_VECTOR_DB = os.environ.get("DISABLE_VECTOR_DB", "").lower() == "true"
+
+# Which backend to use for caching, locks, and ephemeral state.
+# "redis" (default) or "postgres" (only valid when DISABLE_VECTOR_DB=true).
+CACHE_BACKEND = CacheBackendType(
+    os.environ.get("CACHE_BACKEND", CacheBackendType.REDIS)
+)
+
+# Maximum token count for a single uploaded file. Files exceeding this are rejected.
+# Defaults to 100k tokens (or 10M when vector DB is disabled).
+_DEFAULT_FILE_TOKEN_LIMIT = 10_000_000 if DISABLE_VECTOR_DB else 100_000
+FILE_TOKEN_COUNT_THRESHOLD = int(
+    os.environ.get("FILE_TOKEN_COUNT_THRESHOLD", str(_DEFAULT_FILE_TOKEN_LIMIT))
+)
+
+# Maximum upload size for a single user file (chat/projects) in MB.
+USER_FILE_MAX_UPLOAD_SIZE_MB = int(os.environ.get("USER_FILE_MAX_UPLOAD_SIZE_MB") or 50)
+USER_FILE_MAX_UPLOAD_SIZE_BYTES = USER_FILE_MAX_UPLOAD_SIZE_MB * 1024 * 1024
+
 # If set to true, will show extra/uncommon connectors in the "Other" category
 SHOW_EXTRA_CONNECTORS = os.environ.get("SHOW_EXTRA_CONNECTORS", "").lower() == "true"
 
@@ -74,19 +96,12 @@ WEB_DOMAIN = os.environ.get("WEB_DOMAIN") or "http://localhost:3000"
 #####
 # Auth Configs
 #####
-# Upgrades users from disabled auth to basic auth and shows warning.
-_auth_type_str = (os.environ.get("AUTH_TYPE") or "basic").lower()
-if _auth_type_str == "disabled":
-    logger.warning(
-        "AUTH_TYPE='disabled' is no longer supported. "
-        "Defaulting to 'basic'. Please update your configuration. "
-        "Your existing data will be migrated automatically."
-    )
-    _auth_type_str = AuthType.BASIC.value
-try:
+# Silently default to basic - warnings/errors logged in verify_auth_setting()
+# which only runs on app startup, not during migrations/scripts
+_auth_type_str = (os.environ.get("AUTH_TYPE") or "").lower()
+if _auth_type_str in [auth_type.value for auth_type in AuthType]:
     AUTH_TYPE = AuthType(_auth_type_str)
-except ValueError:
-    logger.error(f"Invalid AUTH_TYPE: {_auth_type_str}. Defaulting to 'basic'.")
+else:
     AUTH_TYPE = AuthType.BASIC
 
 PASSWORD_MIN_LENGTH = int(os.getenv("PASSWORD_MIN_LENGTH", 8))
@@ -181,6 +196,10 @@ if _OIDC_SCOPE_OVERRIDE:
     except Exception:
         pass
 
+# Enables PKCE for OIDC login flow. Disabled by default to preserve
+# backwards compatibility for existing OIDC deployments.
+OIDC_PKCE_ENABLED = os.environ.get("OIDC_PKCE_ENABLED", "").lower() == "true"
+
 # Applicable for SAML Auth
 SAML_CONF_DIR = os.environ.get("SAML_CONF_DIR") or "/app/onyx/configs/saml_config"
 
@@ -188,6 +207,12 @@ SAML_CONF_DIR = os.environ.get("SAML_CONF_DIR") or "/app/onyx/configs/saml_confi
 JWT_PUBLIC_KEY_URL: str | None = os.getenv("JWT_PUBLIC_KEY_URL", None)
 
 USER_AUTH_SECRET = os.environ.get("USER_AUTH_SECRET", "")
+
+if AUTH_TYPE == AuthType.BASIC and not USER_AUTH_SECRET:
+    logger.warning(
+        "USER_AUTH_SECRET is not set. This is required for secure password reset "
+        "and email verification tokens. Please set USER_AUTH_SECRET in production."
+    )
 
 # Duration (in seconds) for which the FastAPI Users JWT token remains valid in the user's browser.
 # By default, this is set to match the Redis expiry time for consistency.
@@ -199,14 +224,14 @@ AUTH_COOKIE_EXPIRE_TIME_SECONDS = int(
 REQUIRE_EMAIL_VERIFICATION = (
     os.environ.get("REQUIRE_EMAIL_VERIFICATION", "").lower() == "true"
 )
-SMTP_SERVER = os.environ.get("SMTP_SERVER") or "smtp.gmail.com"
+SMTP_SERVER = os.environ.get("SMTP_SERVER") or ""
 SMTP_PORT = int(os.environ.get("SMTP_PORT") or "587")
-SMTP_USER = os.environ.get("SMTP_USER", None)
-SMTP_PASS = os.environ.get("SMTP_PASS", None)
+SMTP_USER = os.environ.get("SMTP_USER") or ""
+SMTP_PASS = os.environ.get("SMTP_PASS") or ""
 EMAIL_FROM = os.environ.get("EMAIL_FROM") or SMTP_USER
 
 SENDGRID_API_KEY = os.environ.get("SENDGRID_API_KEY") or ""
-EMAIL_CONFIGURED = all([SMTP_SERVER]) or SENDGRID_API_KEY
+EMAIL_CONFIGURED = all([SMTP_SERVER, SMTP_USER, SMTP_PASS]) or SENDGRID_API_KEY
 
 # If set, Onyx will listen to the `expires_at` returned by the identity
 # provider (e.g. Okta, Google, etc.) and force the user to re-authenticate
@@ -225,25 +250,91 @@ DOCUMENT_INDEX_NAME = "danswer_index"
 # OpenSearch Configs
 OPENSEARCH_HOST = os.environ.get("OPENSEARCH_HOST") or "localhost"
 OPENSEARCH_REST_API_PORT = int(os.environ.get("OPENSEARCH_REST_API_PORT") or 9200)
+# TODO(andrei): 60 seconds is too much, we're just setting a high default
+# timeout for now to examine why queries are slow.
+# NOTE: This timeout applies to all requests the client makes, including bulk
+# indexing.
+DEFAULT_OPENSEARCH_CLIENT_TIMEOUT_S = int(
+    os.environ.get("DEFAULT_OPENSEARCH_CLIENT_TIMEOUT_S") or 60
+)
+# TODO(andrei): 50 seconds is too much, we're just setting a high default
+# timeout for now to examine why queries are slow.
+# NOTE: To get useful partial results, this value should be less than the client
+# timeout above.
+DEFAULT_OPENSEARCH_QUERY_TIMEOUT_S = int(
+    os.environ.get("DEFAULT_OPENSEARCH_QUERY_TIMEOUT_S") or 50
+)
 OPENSEARCH_ADMIN_USERNAME = os.environ.get("OPENSEARCH_ADMIN_USERNAME", "admin")
-OPENSEARCH_ADMIN_PASSWORD = os.environ.get("OPENSEARCH_ADMIN_PASSWORD", "")
+OPENSEARCH_ADMIN_PASSWORD = os.environ.get(
+    "OPENSEARCH_ADMIN_PASSWORD", "StrongPassword123!"
+)
 USING_AWS_MANAGED_OPENSEARCH = (
     os.environ.get("USING_AWS_MANAGED_OPENSEARCH", "").lower() == "true"
 )
+# Profiling adds some overhead to OpenSearch operations. This overhead is
+# unknown right now. It is enabled by default so we can get useful logs for
+# investigating slow queries. We may never disable it if the overhead is
+# minimal.
+OPENSEARCH_PROFILING_DISABLED = (
+    os.environ.get("OPENSEARCH_PROFILING_DISABLED", "").lower() == "true"
+)
+# Whether to disable match highlights for OpenSearch. Defaults to True for now
+# as we investigate query performance.
+OPENSEARCH_MATCH_HIGHLIGHTS_DISABLED = (
+    os.environ.get("OPENSEARCH_MATCH_HIGHLIGHTS_DISABLED", "true").lower() == "true"
+)
+# When enabled, OpenSearch returns detailed score breakdowns for each hit.
+# Useful for debugging and tuning search relevance. Has ~10-30% performance overhead according to documentation.
+# Seems for Hybrid Search in practice, the impact is actually more like 1000x slower.
+OPENSEARCH_EXPLAIN_ENABLED = (
+    os.environ.get("OPENSEARCH_EXPLAIN_ENABLED", "").lower() == "true"
+)
+# Analyzer used for full-text fields (title, content). Use OpenSearch built-in analyzer
+# names (e.g. "english", "standard", "german"). Affects stemming and tokenization;
+# existing indices need reindexing after a change.
+OPENSEARCH_TEXT_ANALYZER = os.environ.get("OPENSEARCH_TEXT_ANALYZER") or "english"
 
 # This is the "base" config for now, the idea is that at least for our dev
 # environments we always want to be dual indexing into both OpenSearch and Vespa
 # to stress test the new codepaths. Only enable this if there is some instance
 # of OpenSearch running for the relevant Onyx instance.
+# NOTE: Now enabled on by default, unless the env indicates otherwise.
 ENABLE_OPENSEARCH_INDEXING_FOR_ONYX = (
-    os.environ.get("ENABLE_OPENSEARCH_INDEXING_FOR_ONYX", "").lower() == "true"
+    os.environ.get("ENABLE_OPENSEARCH_INDEXING_FOR_ONYX", "true").lower() == "true"
 )
+# NOTE: This effectively does nothing anymore, admins can now toggle whether
+# retrieval is through OpenSearch. This value is only used as a final fallback
+# in case that doesn't work for whatever reason.
 # Given that the "base" config above is true, this enables whether we want to
 # retrieve from OpenSearch or Vespa. We want to be able to quickly toggle this
 # in the event we see issues with OpenSearch retrieval in our dev environments.
 ENABLE_OPENSEARCH_RETRIEVAL_FOR_ONYX = (
     ENABLE_OPENSEARCH_INDEXING_FOR_ONYX
     and os.environ.get("ENABLE_OPENSEARCH_RETRIEVAL_FOR_ONYX", "").lower() == "true"
+)
+# Whether we should check for and create an index if necessary every time we
+# instantiate an OpenSearchDocumentIndex on multitenant cloud. Defaults to True.
+VERIFY_CREATE_OPENSEARCH_INDEX_ON_INIT_MT = (
+    os.environ.get("VERIFY_CREATE_OPENSEARCH_INDEX_ON_INIT_MT", "true").lower()
+    == "true"
+)
+OPENSEARCH_MIGRATION_GET_VESPA_CHUNKS_PAGE_SIZE = int(
+    os.environ.get("OPENSEARCH_MIGRATION_GET_VESPA_CHUNKS_PAGE_SIZE") or 500
+)
+# If set, will override the default number of shards and replicas for the index.
+OPENSEARCH_INDEX_NUM_SHARDS: int | None = (
+    int(os.environ["OPENSEARCH_INDEX_NUM_SHARDS"])
+    if os.environ.get("OPENSEARCH_INDEX_NUM_SHARDS", None) is not None
+    else None
+)
+OPENSEARCH_INDEX_NUM_REPLICAS: int | None = (
+    int(os.environ["OPENSEARCH_INDEX_NUM_REPLICAS"])
+    if os.environ.get("OPENSEARCH_INDEX_NUM_REPLICAS", None) is not None
+    else None
+)
+ONYX_SEARCH_UI_USES_OPENSEARCH_KEYWORD_SEARCH = (
+    os.environ.get("ONYX_SEARCH_UI_USES_OPENSEARCH_KEYWORD_SEARCH", "").lower()
+    == "true"
 )
 
 VESPA_HOST = os.environ.get("VESPA_HOST") or "localhost"
@@ -433,14 +524,7 @@ CELERY_WORKER_PRIMARY_POOL_OVERFLOW = int(
     os.environ.get("CELERY_WORKER_PRIMARY_POOL_OVERFLOW") or 4
 )
 
-# Consolidated background worker (light, docprocessing, docfetching, heavy, monitoring, user_file_processing)
-# separate workers' defaults: light=24, docprocessing=6, docfetching=1, heavy=4, kg=2, monitoring=1, user_file=2
-# Total would be 40, but we use a more conservative default of 20 for the consolidated worker
-CELERY_WORKER_BACKGROUND_CONCURRENCY = int(
-    os.environ.get("CELERY_WORKER_BACKGROUND_CONCURRENCY") or 20
-)
-
-# Individual worker concurrency settings (used when USE_LIGHTWEIGHT_BACKGROUND_WORKER is False or on Kuberenetes deployments)
+# Individual worker concurrency settings
 CELERY_WORKER_HEAVY_CONCURRENCY = int(
     os.environ.get("CELERY_WORKER_HEAVY_CONCURRENCY") or 4
 )
@@ -591,6 +675,14 @@ DRUPAL_WIKI_ATTACHMENT_SIZE_THRESHOLD = int(
 # Default size threshold for SharePoint files (20MB)
 SHAREPOINT_CONNECTOR_SIZE_THRESHOLD = int(
     os.environ.get("SHAREPOINT_CONNECTOR_SIZE_THRESHOLD", 20 * 1024 * 1024)
+)
+
+# When True, group sync enumerates every Azure AD group in the tenant (expensive).
+# When False (default), only groups found in site role assignments are synced.
+# Can be overridden per-connector via the "exhaustive_ad_enumeration" key in
+# connector_specific_config.
+SHAREPOINT_EXHAUSTIVE_AD_ENUMERATION = (
+    os.environ.get("SHAREPOINT_EXHAUSTIVE_AD_ENUMERATION", "").lower() == "true"
 )
 
 BLOB_STORAGE_SIZE_THRESHOLD = int(
@@ -749,7 +841,9 @@ RERANK_COUNT = int(os.environ.get("RERANK_COUNT") or 1000)
 # Tool Configs
 #####
 # Code Interpreter Service Configuration
-CODE_INTERPRETER_BASE_URL = os.environ.get("CODE_INTERPRETER_BASE_URL")
+CODE_INTERPRETER_BASE_URL = os.environ.get(
+    "CODE_INTERPRETER_BASE_URL", "http://localhost:8000"
+)
 
 CODE_INTERPRETER_DEFAULT_TIMEOUT_MS = int(
     os.environ.get("CODE_INTERPRETER_DEFAULT_TIMEOUT_MS") or 60_000
@@ -830,6 +924,9 @@ CUSTOM_ANSWER_VALIDITY_CONDITIONS = json.loads(
 )
 
 VESPA_REQUEST_TIMEOUT = int(os.environ.get("VESPA_REQUEST_TIMEOUT") or "15")
+VESPA_MIGRATION_REQUEST_TIMEOUT_S = int(
+    os.environ.get("VESPA_MIGRATION_REQUEST_TIMEOUT_S") or "120"
+)
 
 SYSTEM_RECURSION_LIMIT = int(os.environ.get("SYSTEM_RECURSION_LIMIT") or "1000")
 
@@ -945,6 +1042,7 @@ API_KEY_HASH_ROUNDS = (
 # MCP Server Configs
 #####
 MCP_SERVER_ENABLED = os.environ.get("MCP_SERVER_ENABLED", "").lower() == "true"
+MCP_SERVER_HOST = os.environ.get("MCP_SERVER_HOST", "0.0.0.0")
 MCP_SERVER_PORT = int(os.environ.get("MCP_SERVER_PORT") or 8090)
 
 # CORS origins for MCP clients (comma-separated)
@@ -962,6 +1060,8 @@ POD_NAMESPACE = os.environ.get("POD_NAMESPACE")
 
 
 DEV_MODE = os.environ.get("DEV_MODE", "").lower() == "true"
+
+HOOK_ENABLED = os.environ.get("HOOK_ENABLED", "").lower() == "true"
 
 INTEGRATION_TESTS_MODE = os.environ.get("INTEGRATION_TESTS_MODE", "").lower() == "true"
 
@@ -1034,7 +1134,6 @@ S3_GENERATE_LOCAL_CHECKSUM = (
 # Forcing Vespa Language
 # English: en, German:de, etc. See: https://docs.vespa.ai/en/linguistics.html
 VESPA_LANGUAGE_OVERRIDE = os.environ.get("VESPA_LANGUAGE_OVERRIDE")
-VESPA_RESOURCE_LIMITS_DISK = float(os.environ.get("VESPA_RESOURCE_LIMITS_DISK") or 0.95)
 
 
 #####
@@ -1063,7 +1162,6 @@ DISCORD_BOT_INVOKE_CHAR = os.environ.get("DISCORD_BOT_INVOKE_CHAR", "!")
 ## Stripe Configuration
 # URL to fetch the Stripe publishable key from a public S3 bucket.
 # Publishable keys are safe to expose publicly - they can only initialize
-# Stripe.js and tokenize payment info, not make charges or access data.
 # Stripe.js and tokenize payment info, not make charges or access data.
 STRIPE_PUBLISHABLE_KEY_URL = (
     "https://onyx-stripe-public.s3.amazonaws.com/publishable-key.txt"

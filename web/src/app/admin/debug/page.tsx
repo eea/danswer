@@ -1,8 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { AdminPageTitle } from "@/components/admin/Title";
-import { FiDownload } from "react-icons/fi";
+import * as SettingsLayouts from "@/layouts/settings-layouts";
 import { ThreeDotsLoader } from "@/components/Loading";
 import {
   Table,
@@ -12,11 +11,16 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import Button from "@/refresh-components/buttons/Button";
+import { Button, Text } from "@opal/components";
 import { Card } from "@/components/ui/card";
-import Text from "@/components/ui/text";
+import { markdown } from "@opal/utils";
+import Spacer from "@/refresh-components/Spacer";
 import { Spinner } from "@/components/Spinner";
 import { SvgDownloadCloud } from "@opal/icons";
+import { ADMIN_ROUTES } from "@/lib/admin-routes";
+
+const route = ADMIN_ROUTES.DEBUG;
+
 function Main() {
   const [categories, setCategories] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -72,11 +76,12 @@ function Main() {
     <>
       {isDownloading && <Spinner />}
       <div className="mb-8">
-        <Text className="mb-3">
-          <b>Debug Logs</b> provide detailed information about system operations
-          and events. You can download logs for each category to analyze system
-          behavior or troubleshoot issues.
+        <Text as="p">
+          {markdown(
+            "**Debug Logs** provide detailed information about system operations and events. You can download logs for each category to analyze system behavior or troubleshoot issues."
+          )}
         </Text>
+        <Spacer rem={0.75} />
 
         {categories.length > 0 && (
           <Card className="mt-4">
@@ -96,9 +101,9 @@ function Main() {
                     <TableCell className="font-medium">{category}</TableCell>
                     <TableCell>
                       <Button
+                        prominence="secondary"
                         onClick={() => handleDownload(category)}
-                        secondary
-                        leftIcon={SvgDownloadCloud}
+                        icon={SvgDownloadCloud}
                       >
                         Download Logs
                       </Button>
@@ -114,13 +119,13 @@ function Main() {
   );
 }
 
-const Page = () => {
+export default function Page() {
   return (
-    <>
-      <AdminPageTitle icon={<FiDownload size={32} />} title="Debug Logs" />
-      <Main />
-    </>
+    <SettingsLayouts.Root>
+      <SettingsLayouts.Header icon={route.icon} title={route.title} separator />
+      <SettingsLayouts.Body>
+        <Main />
+      </SettingsLayouts.Body>
+    </SettingsLayouts.Root>
   );
-};
-
-export default Page;
+}

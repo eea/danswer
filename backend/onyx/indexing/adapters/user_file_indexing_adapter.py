@@ -20,6 +20,7 @@ from onyx.db.models import Persona
 from onyx.db.models import UserFile
 from onyx.db.notification import create_notification
 from onyx.db.user_file import fetch_chunk_counts_for_user_files
+from onyx.db.user_file import fetch_persona_ids_for_user_files
 from onyx.db.user_file import fetch_user_project_ids_for_user_files
 from onyx.file_store.utils import store_user_file_plaintext
 from onyx.indexing.indexing_pipeline import DocumentBatchPrepareContext
@@ -63,10 +64,13 @@ class UserFileIndexingAdapter:
         self.db_session = db_session
 
     def prepare(
-        self, documents: list[Document], ignore_time_skip: bool  # noqa: ARG002
+        self,
+        documents: list[Document],
+        ignore_time_skip: bool,  # noqa: ARG002
     ) -> DocumentBatchPrepareContext:
         return DocumentBatchPrepareContext(
-            updatable_docs=documents, id_to_boost_map={}  # TODO(subash): add boost map
+            updatable_docs=documents,
+            id_to_boost_map={},  # TODO(subash): add boost map
         )
 
     @contextlib.contextmanager
@@ -94,8 +98,7 @@ class UserFileIndexingAdapter:
 
         if not lock_acquired:
             raise RuntimeError(
-                f"Failed to acquire locks after {_NUM_LOCK_ATTEMPTS} attempts "
-                f"for user files: {[doc.id for doc in documents]}"
+                f"Failed to acquire locks after {_NUM_LOCK_ATTEMPTS} attempts for user files: {[doc.id for doc in documents]}"
             )
 
     def build_metadata_aware_chunks(
@@ -116,6 +119,10 @@ class UserFileIndexingAdapter:
 
         updatable_ids = [doc.id for doc in context.updatable_docs]
         user_file_id_to_project_ids = fetch_user_project_ids_for_user_files(
+            user_file_ids=updatable_ids,
+            db_session=self.db_session,
+        )
+        user_file_id_to_persona_ids = fetch_persona_ids_for_user_files(
             user_file_ids=updatable_ids,
             db_session=self.db_session,
         )
@@ -182,7 +189,7 @@ class UserFileIndexingAdapter:
                 user_project=user_file_id_to_project_ids.get(
                     chunk.source_document.id, []
                 ),
-                # we are going to index userfiles only once, so we just set the boost to the default
+                personas=user_file_id_to_persona_ids.get(chunk.source_document.id, []),
                 boost=DEFAULT_BOOST,
                 tenant_id=tenant_id,
                 aggregated_chunk_boost_factor=chunk_content_scores[chunk_num],

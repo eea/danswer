@@ -33,12 +33,20 @@ class StreamingType(Enum):
     PYTHON_TOOL_START = "python_tool_start"
     PYTHON_TOOL_DELTA = "python_tool_delta"
     CUSTOM_TOOL_START = "custom_tool_start"
+    CUSTOM_TOOL_ARGS = "custom_tool_args"
     CUSTOM_TOOL_DELTA = "custom_tool_delta"
+    FILE_READER_START = "file_reader_start"
+    FILE_READER_RESULT = "file_reader_result"
     REASONING_START = "reasoning_start"
     REASONING_DELTA = "reasoning_delta"
     REASONING_DONE = "reasoning_done"
     CITATION_INFO = "citation_info"
     TOOL_CALL_DEBUG = "tool_call_debug"
+    TOOL_CALL_ARGUMENT_DELTA = "tool_call_argument_delta"
+
+    MEMORY_TOOL_START = "memory_tool_start"
+    MEMORY_TOOL_DELTA = "memory_tool_delta"
+    MEMORY_TOOL_NO_ACCESS = "memory_tool_no_access"
 
     DEEP_RESEARCH_PLAN_START = "deep_research_plan_start"
     DEEP_RESEARCH_PLAN_DELTA = "deep_research_plan_delta"
@@ -239,6 +247,20 @@ class CustomToolStart(BaseObj):
     type: Literal["custom_tool_start"] = StreamingType.CUSTOM_TOOL_START.value
 
     tool_name: str
+    tool_id: int | None = None
+
+
+class CustomToolArgs(BaseObj):
+    type: Literal["custom_tool_args"] = StreamingType.CUSTOM_TOOL_ARGS.value
+
+    tool_name: str
+    tool_args: dict[str, Any]
+
+
+class CustomToolErrorInfo(BaseModel):
+    is_auth_error: bool = False
+    status_code: int
+    message: str
 
 
 # The allowed streamed packets for a custom tool
@@ -246,11 +268,61 @@ class CustomToolDelta(BaseObj):
     type: Literal["custom_tool_delta"] = StreamingType.CUSTOM_TOOL_DELTA.value
 
     tool_name: str
+    tool_id: int | None = None
     response_type: str
     # For non-file responses
     data: dict | list | str | int | float | bool | None = None
     # For file-based responses like image/csv
     file_ids: list[str] | None = None
+    error: CustomToolErrorInfo | None = None
+
+
+class ToolCallArgumentDelta(BaseObj):
+    type: Literal["tool_call_argument_delta"] = (
+        StreamingType.TOOL_CALL_ARGUMENT_DELTA.value
+    )
+
+    tool_type: str
+    argument_deltas: dict[str, Any]
+
+
+################################################
+# File Reader Packets
+################################################
+class FileReaderStart(BaseObj):
+    type: Literal["file_reader_start"] = StreamingType.FILE_READER_START.value
+
+
+class FileReaderResult(BaseObj):
+    type: Literal["file_reader_result"] = StreamingType.FILE_READER_RESULT.value
+
+    file_name: str
+    file_id: str
+    start_char: int
+    end_char: int
+    total_chars: int
+    # Short previews of the retrieved text for the collapsed/expanded UI
+    preview_start: str = ""
+    preview_end: str = ""
+
+
+# Memory Tool Packets
+################################################
+class MemoryToolStart(BaseObj):
+    type: Literal["memory_tool_start"] = StreamingType.MEMORY_TOOL_START.value
+
+
+class MemoryToolDelta(BaseObj):
+    type: Literal["memory_tool_delta"] = StreamingType.MEMORY_TOOL_DELTA.value
+
+    memory_text: str
+    operation: Literal["add", "update"]
+    memory_id: int | None = None
+    index: int | None = None
+
+
+class MemoryToolNoAccess(BaseObj):
+    type: Literal["memory_tool_no_access"] = StreamingType.MEMORY_TOOL_NO_ACCESS.value
 
 
 ################################################
@@ -321,7 +393,13 @@ PacketObj = Union[
     PythonToolStart,
     PythonToolDelta,
     CustomToolStart,
+    CustomToolArgs,
     CustomToolDelta,
+    FileReaderStart,
+    FileReaderResult,
+    MemoryToolStart,
+    MemoryToolDelta,
+    MemoryToolNoAccess,
     # Reasoning Packets
     ReasoningStart,
     ReasoningDelta,
@@ -329,6 +407,7 @@ PacketObj = Union[
     # Citation Packets
     CitationInfo,
     ToolCallDebug,
+    ToolCallArgumentDelta,
     # Deep Research Packets
     DeepResearchPlanStart,
     DeepResearchPlanDelta,

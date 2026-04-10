@@ -5,9 +5,11 @@ from fastapi import Depends
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from onyx import __version__ as onyx_version
 from onyx.auth.users import current_admin_user
 from onyx.auth.users import current_user
 from onyx.auth.users import is_user_admin
+from onyx.configs.app_configs import DISABLE_VECTOR_DB
 from onyx.configs.constants import KV_REINDEX_KEY
 from onyx.configs.constants import NotificationType
 from onyx.db.engine.sql_engine import get_session
@@ -15,6 +17,7 @@ from onyx.db.models import User
 from onyx.db.notification import dismiss_all_notifications
 from onyx.db.notification import get_notifications
 from onyx.db.notification import update_notification_last_shown
+from onyx.hooks.utils import HOOKS_AVAILABLE
 from onyx.key_value_store.factory import get_kv_store
 from onyx.key_value_store.interface import KvKeyNotFoundError
 from onyx.server.features.build.utils import is_onyx_craft_enabled
@@ -77,6 +80,9 @@ def fetch_settings(
         notifications=settings_notifications,
         needs_reindexing=needs_reindexing,
         onyx_craft_enabled=onyx_craft_enabled_for_user,
+        vector_db_enabled=not DISABLE_VECTOR_DB,
+        hooks_enabled=HOOKS_AVAILABLE,
+        version=onyx_version,
     )
 
 

@@ -103,6 +103,11 @@ _EXPECTED_CONFLUENCE_GROUPS = [
         user_emails={"oauth@onyx.app"},
         gives_anyone_access=False,
     ),
+    ExternalUserGroupSet(
+        id="no yuhong allowed",
+        user_emails={"hagen@danswer.ai", "pablo@onyx.app", "chris@onyx.app"},
+        gives_anyone_access=False,
+    ),
 ]
 
 
@@ -129,6 +134,8 @@ def test_confluence_group_sync(
     )
     db_session.add(credential)
     db_session.flush()
+    # Expire the credential so it reloads from DB with SensitiveValue wrapper
+    db_session.expire(credential)
 
     cc_pair = ConnectorCredentialPair(
         connector_id=connector.id,

@@ -23,12 +23,15 @@ from onyx.server.features.build.api.models import DetailedSessionResponse
 from onyx.server.features.build.api.models import DirectoryListing
 from onyx.server.features.build.api.models import GenerateSuggestionsRequest
 from onyx.server.features.build.api.models import GenerateSuggestionsResponse
+from onyx.server.features.build.api.models import PptxPreviewResponse
 from onyx.server.features.build.api.models import PreProvisionedCheckResponse
 from onyx.server.features.build.api.models import SessionCreateRequest
 from onyx.server.features.build.api.models import SessionListResponse
 from onyx.server.features.build.api.models import SessionNameGenerateResponse
 from onyx.server.features.build.api.models import SessionResponse
 from onyx.server.features.build.api.models import SessionUpdateRequest
+from onyx.server.features.build.api.models import SetSessionSharingRequest
+from onyx.server.features.build.api.models import SetSessionSharingResponse
 from onyx.server.features.build.api.models import SuggestionBubble
 from onyx.server.features.build.api.models import SuggestionTheme
 from onyx.server.features.build.api.models import UploadResponse
@@ -37,6 +40,7 @@ from onyx.server.features.build.configs import SANDBOX_BACKEND
 from onyx.server.features.build.configs import SandboxBackend
 from onyx.server.features.build.db.build_session import allocate_nextjs_port
 from onyx.server.features.build.db.build_session import get_build_session
+from onyx.server.features.build.db.build_session import set_build_session_sharing_scope
 from onyx.server.features.build.db.sandbox import get_latest_snapshot_for_session
 from onyx.server.features.build.db.sandbox import get_sandbox_by_user_id
 from onyx.server.features.build.db.sandbox import update_sandbox_heartbeat
@@ -293,6 +297,25 @@ def update_session_name(
     return SessionResponse.from_model(session, sandbox)
 
 
+@router.patch("/{session_id}/public")
+def set_session_public(
+    session_id: UUID,
+    request: SetSessionSharingRequest,
+    user: User = Depends(current_user),
+    db_session: Session = Depends(get_session),
+) -> SetSessionSharingResponse:
+    """Set the sharing scope of a build session's webapp."""
+    updated = set_build_session_sharing_scope(
+        session_id, user.id, request.sharing_scope, db_session
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return SetSessionSharingResponse(
+        session_id=str(session_id),
+        sharing_scope=updated.sharing_scope,
+    )
+
+
 @router.delete("/{session_id}", response_model=None)
 def delete_session(
     session_id: UUID,
@@ -394,8 +417,7 @@ def restore_session(
 
             if not is_healthy:
                 logger.warning(
-                    f"Sandbox {sandbox.id} marked as RUNNING but pod is "
-                    f"unhealthy/missing. Entering recovery mode."
+                    f"Sandbox {sandbox.id} marked as RUNNING but pod is unhealthy/missing. Entering recovery mode."
                 )
                 # Terminate to clean up any lingering K8s resources
                 sandbox_manager.terminate(sandbox.id)
@@ -481,8 +503,7 @@ def restore_session(
                     db_session.commit()
         else:
             logger.warning(
-                f"Sandbox {sandbox.id} status is {sandbox.status} after "
-                f"re-provision, expected RUNNING"
+                f"Sandbox {sandbox.id} status is {sandbox.status} after re-provision, expected RUNNING"
             )
 
     except Exception as e:
@@ -660,6 +681,33 @@ def export_docx(
     )
 
 
+@router.get("/{session_id}/pptx-preview/{path:path}")
+def get_pptx_preview(
+    session_id: UUID,
+    path: str,
+    user: User = Depends(current_user),
+    db_session: Session = Depends(get_session),
+) -> PptxPreviewResponse:
+    """Generate slide image previews for a PPTX file."""
+    session_manager = SessionManager(db_session)
+
+    try:
+        result = session_manager.get_pptx_preview(session_id, user.id, path)
+    except ValueError as e:
+        error_message = str(e)
+        if (
+            "path traversal" in error_message.lower()
+            or "access denied" in error_message.lower()
+        ):
+            raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=400, detail=error_message)
+
+    if result is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    return PptxPreviewResponse(**result)
+
+
 @router.get("/{session_id}/webapp-info", response_model=WebappInfo)
 def get_webapp_info(
     session_id: UUID,
@@ -682,7 +730,7 @@ def get_webapp_info(
     return WebappInfo(**webapp_info)
 
 
-@router.get("/{session_id}/webapp/download")
+@router.get("/{session_id}/webapp-download")
 def download_webapp(
     session_id: UUID,
     user: User = Depends(current_user),
@@ -700,6 +748,43 @@ def download_webapp(
 
     if result is None:
         raise HTTPException(status_code=404, detail="Webapp not found")
+
+    zip_bytes, filename = result
+
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
+    )
+
+
+@router.get("/{session_id}/download-directory/{path:path}")
+def download_directory(
+    session_id: UUID,
+    path: str,
+    user: User = Depends(current_user),
+    db_session: Session = Depends(get_session),
+) -> Response:
+    """
+    Download a directory as a zip file.
+
+    Returns the specified directory as a zip archive.
+    """
+    user_id: UUID = user.id
+    session_manager = SessionManager(db_session)
+
+    try:
+        result = session_manager.download_directory(session_id, user_id, path)
+    except ValueError as e:
+        error_message = str(e)
+        if "path traversal" in error_message.lower():
+            raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=400, detail=error_message)
+
+    if result is None:
+        raise HTTPException(status_code=404, detail="Directory not found")
 
     zip_bytes, filename = result
 

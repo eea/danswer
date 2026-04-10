@@ -14,6 +14,7 @@ from redis.lock import Lock as RedisLock
 from sqlalchemy.orm import Session
 
 from onyx.background.celery.apps.app_base import task_logger
+from onyx.background.celery.celery_redis import celery_get_broker_client
 from onyx.background.celery.celery_redis import celery_get_queue_length
 from onyx.background.celery.celery_redis import celery_get_queued_task_ids
 from onyx.configs.app_configs import JOB_TIMEOUT
@@ -132,7 +133,6 @@ def revoke_tasks_blocking_deletion(
 def check_for_connector_deletion_task(self: Task, *, tenant_id: str) -> bool | None:
     r = get_redis_client()
     r_replica = get_redis_replica_client()
-    r_celery: Redis = self.app.broker_connection().channel().client  # type: ignore
 
     lock_beat: RedisLock = r.lock(
         OnyxRedisLocks.CHECK_CONNECTOR_DELETION_BEAT_LOCK,
@@ -149,6 +149,7 @@ def check_for_connector_deletion_task(self: Task, *, tenant_id: str) -> bool | N
         if not r.exists(OnyxRedisSignals.BLOCK_VALIDATE_CONNECTOR_DELETION_FENCES):
             # clear fences that don't have associated celery tasks in progress
             try:
+                r_celery = celery_get_broker_client(self.app)
                 validate_connector_deletion_fences(
                     tenant_id, r, r_replica, r_celery, lock_beat
                 )
@@ -307,14 +308,12 @@ def try_generate_document_cc_pair_cleanup_tasks(
 
         if redis_connector.prune.fenced:
             raise TaskDependencyError(
-                "Connector deletion - Delayed (pruning in progress): "
-                f"cc_pair={cc_pair_id}"
+                f"Connector deletion - Delayed (pruning in progress): cc_pair={cc_pair_id}"
             )
 
         if redis_connector.permissions.fenced:
             raise TaskDependencyError(
-                f"Connector deletion - Delayed (permissions in progress): "
-                f"cc_pair={cc_pair_id}"
+                f"Connector deletion - Delayed (permissions in progress): cc_pair={cc_pair_id}"
             )
 
         # add tasks to celery and build up the task set to monitor in redis
@@ -354,8 +353,7 @@ def try_generate_document_cc_pair_cleanup_tasks(
         #     return 0
 
         task_logger.info(
-            "RedisConnectorDeletion.generate_tasks finished. "
-            f"cc_pair={cc_pair_id} tasks_generated={tasks_generated}"
+            f"RedisConnectorDeletion.generate_tasks finished. cc_pair={cc_pair_id} tasks_generated={tasks_generated}"
         )
 
         # set this only after all tasks have been added
@@ -366,7 +364,9 @@ def try_generate_document_cc_pair_cleanup_tasks(
 
 
 def monitor_connector_deletion_taskset(
-    tenant_id: str, key_bytes: bytes, r: Redis  # noqa: ARG001
+    tenant_id: str,
+    key_bytes: bytes,
+    r: Redis,  # noqa: ARG001
 ) -> None:
     fence_key = key_bytes.decode("utf-8")
     cc_pair_id_str = RedisConnector.get_id_from_fence_key(fence_key)
@@ -690,8 +690,7 @@ def validate_connector_deletion_fence(
         tasks_not_in_celery += 1
 
     task_logger.info(
-        "validate_connector_deletion_fence task check: "
-        f"tasks_scanned={tasks_scanned} tasks_not_in_celery={tasks_not_in_celery}"
+        f"validate_connector_deletion_fence task check: tasks_scanned={tasks_scanned} tasks_not_in_celery={tasks_not_in_celery}"
     )
 
     # we're active if there are still tasks to run and those tasks all exist in celery

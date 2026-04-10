@@ -13,6 +13,7 @@ Usage examples::
     # custom settings
     python alembic/run_multitenant_migrations.py -j 8 -b 100
 """
+
 from __future__ import annotations
 
 import argparse
@@ -21,15 +22,14 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, NamedTuple
+from typing import NamedTuple
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from sqlalchemy import text
 
-from onyx.db.engine.sql_engine import is_valid_schema_name
 from onyx.db.engine.sql_engine import SqlEngine
 from onyx.db.engine.tenant_utils import get_all_tenant_ids
+from onyx.db.engine.tenant_utils import get_schemas_needing_migration
 from shared_configs.configs import TENANT_ID_PREFIX
 
 
@@ -105,56 +105,6 @@ def get_head_revision() -> str | None:
     return script.get_current_head()
 
 
-def get_schemas_needing_migration(
-    tenant_schemas: List[str], head_rev: str
-) -> List[str]:
-    """Return only schemas whose current alembic version is not at head."""
-    if not tenant_schemas:
-        return []
-
-    engine = SqlEngine.get_engine()
-
-    with engine.connect() as conn:
-        # Find which schemas actually have an alembic_version table
-        rows = conn.execute(
-            text(
-                "SELECT table_schema FROM information_schema.tables "
-                "WHERE table_name = 'alembic_version' "
-                "AND table_schema = ANY(:schemas)"
-            ),
-            {"schemas": tenant_schemas},
-        )
-        schemas_with_table = set(row[0] for row in rows)
-
-        # Schemas without the table definitely need migration
-        needs_migration = [s for s in tenant_schemas if s not in schemas_with_table]
-
-        if not schemas_with_table:
-            return needs_migration
-
-        # Validate schema names before interpolating into SQL
-        for schema in schemas_with_table:
-            if not is_valid_schema_name(schema):
-                raise ValueError(f"Invalid schema name: {schema}")
-
-        # Single query to get every schema's current revision at once.
-        # Use integer tags instead of interpolating schema names into
-        # string literals to avoid quoting issues.
-        schema_list = list(schemas_with_table)
-        union_parts = [
-            f'SELECT {i} AS idx, version_num FROM "{schema}".alembic_version'
-            for i, schema in enumerate(schema_list)
-        ]
-        rows = conn.execute(text(" UNION ALL ".join(union_parts)))
-        version_by_schema = {schema_list[row[0]]: row[1] for row in rows}
-
-        needs_migration.extend(
-            s for s in schemas_with_table if version_by_schema.get(s) != head_rev
-        )
-
-    return needs_migration
-
-
 def run_migrations_parallel(
     schemas: list[str],
     max_workers: int,
@@ -168,8 +118,7 @@ def run_migrations_parallel(
     batches = [schemas[i : i + batch_size] for i in range(0, len(schemas), batch_size)]
     total_batches = len(batches)
     print(
-        f"{len(schemas)} schemas in {total_batches} batch(es) "
-        f"with {max_workers} workers (batch size: {batch_size})...",
+        f"{len(schemas)} schemas in {total_batches} batch(es) with {max_workers} workers (batch size: {batch_size})...",
         flush=True,
     )
     all_success = True
@@ -217,8 +166,7 @@ def run_migrations_parallel(
                 with lock:
                     in_flight[batch_idx] = batch
                 print(
-                    f"Batch {batch_idx + 1}/{total_batches} started "
-                    f"({len(batch)} schemas): {', '.join(batch)}",
+                    f"Batch {batch_idx + 1}/{total_batches} started ({len(batch)} schemas): {', '.join(batch)}",
                     flush=True,
                 )
                 result = run_alembic_for_batch(batch)
@@ -252,7 +200,7 @@ def run_migrations_parallel(
 
                 except Exception as e:
                     print(
-                        f"Batch {batch_idx + 1}/{total_batches} " f"✗ exception: {e}",
+                        f"Batch {batch_idx + 1}/{total_batches} ✗ exception: {e}",
                         flush=True,
                     )
                     all_success = False
@@ -319,14 +267,12 @@ def main() -> int:
 
     if not schemas_to_migrate:
         print(
-            f"All {len(tenant_schemas)} tenants are already at head "
-            f"revision ({head_rev})."
+            f"All {len(tenant_schemas)} tenants are already at head revision ({head_rev})."
         )
         return 0
 
     print(
-        f"{len(schemas_to_migrate)}/{len(tenant_schemas)} tenants need "
-        f"migration (head: {head_rev})."
+        f"{len(schemas_to_migrate)}/{len(tenant_schemas)} tenants need migration (head: {head_rev})."
     )
 
     success = run_migrations_parallel(

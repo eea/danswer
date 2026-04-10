@@ -6,7 +6,6 @@ import {
 } from "@/lib/userSS";
 import { fetchSS } from "@/lib/utilsSS";
 import { User } from "@/lib/types";
-import { HealthCheckBanner } from "@/components/health/healthcheck";
 import { notFound } from 'next/navigation'
 import { fetchEEASettings } from "@/lib/eea/fetchEEASettings";
 //import { useRouter } from "next/navigation";
@@ -51,9 +50,6 @@ export default async function Page(props: { params: Promise<{ pageTitle: string 
   }
   return (
     <>
-      <div className="m-3">
-        <HealthCheckBanner />
-      </div>
       <Link href={"/chat"}>
             <button className="text-sm block w-52 py-2.5 flex px-2 text-left bg-background-200 hover:bg-background-200/80 cursor-pointer rounded">
               <SvgArrowLeft size={20} className="text-neutral" />

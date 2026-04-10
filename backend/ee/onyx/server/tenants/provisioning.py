@@ -29,10 +29,10 @@ from onyx.configs.app_configs import OPENAI_DEFAULT_API_KEY
 from onyx.configs.app_configs import OPENROUTER_DEFAULT_API_KEY
 from onyx.configs.app_configs import VERTEXAI_DEFAULT_CREDENTIALS
 from onyx.configs.app_configs import VERTEXAI_DEFAULT_LOCATION
-from onyx.configs.constants import MilestoneRecordType
 from onyx.db.engine.sql_engine import get_session_with_shared_schema
 from onyx.db.engine.sql_engine import get_session_with_tenant
 from onyx.db.image_generation import create_default_image_gen_config_from_api_key
+from onyx.db.llm import fetch_existing_llm_provider
 from onyx.db.llm import update_default_provider
 from onyx.db.llm import upsert_cloud_embedding_provider
 from onyx.db.llm import upsert_llm_provider
@@ -58,7 +58,6 @@ from onyx.server.manage.llm.models import LLMProviderUpsertRequest
 from onyx.server.manage.llm.models import ModelConfigurationUpsertRequest
 from onyx.setup import setup_onyx
 from onyx.utils.logger import setup_logger
-from onyx.utils.telemetry import mt_cloud_telemetry
 from shared_configs.configs import MULTI_TENANT
 from shared_configs.configs import POSTGRES_DEFAULT_SCHEMA
 from shared_configs.configs import TENANT_ID_PREFIX
@@ -70,7 +69,9 @@ logger = setup_logger()
 
 
 async def get_or_provision_tenant(
-    email: str, referral_source: str | None = None, request: Request | None = None
+    email: str,
+    referral_source: str | None = None,
+    request: Request | None = None,
 ) -> str:
     """
     Get existing tenant ID for an email or create a new tenant if none exists.
@@ -122,7 +123,8 @@ async def get_or_provision_tenant(
 
 
 async def create_tenant(
-    email: str, referral_source: str | None = None  # noqa: ARG001
+    email: str,
+    referral_source: str | None = None,  # noqa: ARG001
 ) -> str:
     """
     Create a new tenant on-demand when no pre-provisioned tenants are available.
@@ -302,12 +304,17 @@ def configure_default_api_keys(db_session: Session) -> None:
 
     has_set_default_provider = False
 
-    def _upsert(request: LLMProviderUpsertRequest) -> None:
+    def _upsert(request: LLMProviderUpsertRequest, default_model: str) -> None:
         nonlocal has_set_default_provider
         try:
+            existing = fetch_existing_llm_provider(
+                name=request.name, db_session=db_session
+            )
+            if existing:
+                request.id = existing.id
             provider = upsert_llm_provider(request, db_session)
             if not has_set_default_provider:
-                update_default_provider(provider.id, db_session)
+                update_default_provider(provider.id, default_model, db_session)
                 has_set_default_provider = True
         except Exception as e:
             logger.error(f"Failed to configure {request.provider} provider: {e}")
@@ -325,14 +332,13 @@ def configure_default_api_keys(db_session: Session) -> None:
             name="OpenAI",
             provider=OPENAI_PROVIDER_NAME,
             api_key=OPENAI_DEFAULT_API_KEY,
-            default_model_name=default_model_name,
             model_configurations=_build_model_configuration_upsert_requests(
                 OPENAI_PROVIDER_NAME, recommendations
             ),
             api_key_changed=True,
             is_auto_mode=True,
         )
-        _upsert(openai_provider)
+        _upsert(openai_provider, default_model_name)
 
         # Create default image generation config using the OpenAI API key
         try:
@@ -361,14 +367,13 @@ def configure_default_api_keys(db_session: Session) -> None:
             name="Anthropic",
             provider=ANTHROPIC_PROVIDER_NAME,
             api_key=ANTHROPIC_DEFAULT_API_KEY,
-            default_model_name=default_model_name,
             model_configurations=_build_model_configuration_upsert_requests(
                 ANTHROPIC_PROVIDER_NAME, recommendations
             ),
             api_key_changed=True,
             is_auto_mode=True,
         )
-        _upsert(anthropic_provider)
+        _upsert(anthropic_provider, default_model_name)
     else:
         logger.info(
             "ANTHROPIC_DEFAULT_API_KEY not set, skipping Anthropic provider configuration"
@@ -393,14 +398,13 @@ def configure_default_api_keys(db_session: Session) -> None:
             name="Google Vertex AI",
             provider=VERTEXAI_PROVIDER_NAME,
             custom_config=custom_config,
-            default_model_name=default_model_name,
             model_configurations=_build_model_configuration_upsert_requests(
                 VERTEXAI_PROVIDER_NAME, recommendations
             ),
             api_key_changed=True,
             is_auto_mode=True,
         )
-        _upsert(vertexai_provider)
+        _upsert(vertexai_provider, default_model_name)
     else:
         logger.info(
             "VERTEXAI_DEFAULT_CREDENTIALS not set, skipping Vertex AI provider configuration"
@@ -432,12 +436,11 @@ def configure_default_api_keys(db_session: Session) -> None:
             name="OpenRouter",
             provider=OPENROUTER_PROVIDER_NAME,
             api_key=OPENROUTER_DEFAULT_API_KEY,
-            default_model_name=default_model_name,
             model_configurations=model_configurations,
             api_key_changed=True,
             is_auto_mode=True,
         )
-        _upsert(openrouter_provider)
+        _upsert(openrouter_provider, default_model_name)
     else:
         logger.info(
             "OPENROUTER_DEFAULT_API_KEY not set, skipping OpenRouter provider configuration"
@@ -677,7 +680,9 @@ async def setup_tenant(tenant_id: str) -> None:
 
 
 async def assign_tenant_to_user(
-    tenant_id: str, email: str, referral_source: str | None = None  # noqa: ARG001
+    tenant_id: str,
+    email: str,
+    referral_source: str | None = None,  # noqa: ARG001
 ) -> None:
     """
     Assign a tenant to a user and perform necessary operations.
@@ -688,12 +693,6 @@ async def assign_tenant_to_user(
 
     try:
         add_users_to_tenant([email], tenant_id)
-
-        mt_cloud_telemetry(
-            tenant_id=tenant_id,
-            distinct_id=email,
-            event=MilestoneRecordType.TENANT_CREATED,
-        )
     except Exception:
         logger.exception(f"Failed to assign tenant {tenant_id} to user {email}")
         raise Exception("Failed to assign tenant to user")

@@ -1,3 +1,4 @@
+import hashlib
 import mimetypes
 from io import BytesIO
 from typing import Any
@@ -12,6 +13,7 @@ from onyx.configs.app_configs import CODE_INTERPRETER_BASE_URL
 from onyx.configs.app_configs import CODE_INTERPRETER_DEFAULT_TIMEOUT_MS
 from onyx.configs.app_configs import CODE_INTERPRETER_MAX_OUTPUT_LENGTH
 from onyx.configs.constants import FileOrigin
+from onyx.db.code_interpreter import fetch_code_interpreter_server
 from onyx.file_store.utils import build_full_frontend_file_url
 from onyx.file_store.utils import get_default_file_store
 from onyx.server.query_and_chat.placement import Placement
@@ -22,12 +24,22 @@ from onyx.tools.interface import Tool
 from onyx.tools.models import LlmPythonExecutionResult
 from onyx.tools.models import PythonExecutionFile
 from onyx.tools.models import PythonToolOverrideKwargs
+from onyx.tools.models import PythonToolRichResponse
 from onyx.tools.models import ToolCallException
 from onyx.tools.models import ToolResponse
 from onyx.tools.tool_implementations.python.code_interpreter_client import (
     CodeInterpreterClient,
 )
 from onyx.tools.tool_implementations.python.code_interpreter_client import FileInput
+from onyx.tools.tool_implementations.python.code_interpreter_client import (
+    StreamErrorEvent,
+)
+from onyx.tools.tool_implementations.python.code_interpreter_client import (
+    StreamOutputEvent,
+)
+from onyx.tools.tool_implementations.python.code_interpreter_client import (
+    StreamResultEvent,
+)
 from onyx.utils.logger import setup_logger
 
 
@@ -51,9 +63,7 @@ def _truncate_output(output: str, max_length: int, label: str = "output") -> str
     truncated = output[:max_length]
     if len(output) > max_length:
         truncated += (
-            "\n... [output truncated, "
-            f"{len(output) - max_length} "
-            "characters omitted]"
+            f"\n... [output truncated, {len(output) - max_length} characters omitted]"
         )
         logger.debug(f"Truncated {label}: {truncated}")
     return truncated
@@ -74,6 +84,14 @@ class PythonTool(Tool[PythonToolOverrideKwargs]):
     def __init__(self, tool_id: int, emitter: Emitter) -> None:
         super().__init__(emitter=emitter)
         self._id = tool_id
+        # Cache of (filename, content_hash) -> ci_file_id to avoid re-uploading
+        # the same file on every tool call iteration within the same agent session.
+        # Filename is included in the key so two files with identical bytes but
+        # different names each get their own upload slot.
+        # TTL assumption: code-interpreter file TTLs (typically hours) greatly
+        # exceed the lifetime of a single agent session (at most MAX_LLM_CYCLES
+        # iterations, typically a few minutes), so stale-ID eviction is not needed.
+        self._uploaded_file_cache: dict[tuple[str, str], str] = {}
 
     @property
     def id(self) -> int:
@@ -94,8 +112,14 @@ class PythonTool(Tool[PythonToolOverrideKwargs]):
     @override
     @classmethod
     def is_available(cls, db_session: Session) -> bool:
-        is_available = bool(CODE_INTERPRETER_BASE_URL)
-        return is_available
+        if not CODE_INTERPRETER_BASE_URL:
+            return False
+        server = fetch_code_interpreter_server(db_session)
+        if not server.server_enabled:
+            return False
+
+        with CodeInterpreterClient() as client:
+            return client.health(use_cache=True)
 
     def tool_definition(self) -> dict:
         return {
@@ -159,166 +183,206 @@ class PythonTool(Tool[PythonToolOverrideKwargs]):
             )
         )
 
-        # Create Code Interpreter client
-        client = CodeInterpreterClient()
-
-        # Stage chat files for execution
-        files_to_stage: list[FileInput] = []
-        for ind, chat_file in enumerate(chat_files):
-            file_name = chat_file.filename or f"file_{ind}"
-            try:
-                # Upload to Code Interpreter
-                ci_file_id = client.upload_file(chat_file.content, file_name)
-
-                # Stage for execution
-                files_to_stage.append({"path": file_name, "file_id": ci_file_id})
-
-                logger.info(f"Staged file for Python execution: {file_name}")
-
-            except Exception as e:
-                logger.warning(f"Failed to stage file {file_name}: {e}")
-
-        try:
-            logger.debug(f"Executing code: {code}")
-
-            # Execute code with timeout
-            response = client.execute(
-                code=code,
-                timeout_ms=CODE_INTERPRETER_DEFAULT_TIMEOUT_MS,
-                files=files_to_stage or None,
-            )
-
-            # Truncate output for LLM consumption
-            truncated_stdout = _truncate_output(
-                response.stdout, CODE_INTERPRETER_MAX_OUTPUT_LENGTH, "stdout"
-            )
-            truncated_stderr = _truncate_output(
-                response.stderr, CODE_INTERPRETER_MAX_OUTPUT_LENGTH, "stderr"
-            )
-
-            # Handle generated files
-            generated_files: list[PythonExecutionFile] = []
-            generated_file_ids: list[str] = []
-            file_ids_to_cleanup: list[str] = []
-            file_store = get_default_file_store()
-
-            for workspace_file in response.files:
-                if workspace_file.kind != "file" or not workspace_file.file_id:
-                    continue
-
+        # Create Code Interpreter client — context manager ensures
+        # session.close() is called on every exit path.
+        with CodeInterpreterClient() as client:
+            # Stage chat files for execution
+            files_to_stage: list[FileInput] = []
+            for ind, chat_file in enumerate(chat_files):
+                file_name = chat_file.filename or f"file_{ind}"
                 try:
-                    # Download file from Code Interpreter
-                    file_content = client.download_file(workspace_file.file_id)
+                    content_hash = hashlib.sha256(chat_file.content).hexdigest()
+                    cache_key = (file_name, content_hash)
+                    ci_file_id = self._uploaded_file_cache.get(cache_key)
+                    if ci_file_id is None:
+                        # Upload to Code Interpreter
+                        ci_file_id = client.upload_file(chat_file.content, file_name)
+                        self._uploaded_file_cache[cache_key] = ci_file_id
 
-                    # Determine MIME type from file extension
-                    filename = workspace_file.path.split("/")[-1]
-                    mime_type, _ = mimetypes.guess_type(filename)
-                    # Default to binary if we can't determine the type
-                    mime_type = mime_type or "application/octet-stream"
+                    # Stage for execution
+                    files_to_stage.append({"path": file_name, "file_id": ci_file_id})
 
-                    # Save to Onyx file store
-                    onyx_file_id = file_store.save_file(
-                        content=BytesIO(file_content),
-                        display_name=filename,
-                        file_origin=FileOrigin.CHAT_UPLOAD,
-                        file_type=mime_type,
+                    logger.info(f"Staged file for Python execution: {file_name}")
+
+                except Exception as e:
+                    logger.warning(f"Failed to stage file {file_name}: {e}")
+
+            try:
+                logger.debug(f"Executing code: {code}")
+
+                # Execute code with streaming (falls back to batch if unavailable)
+                stdout_parts: list[str] = []
+                stderr_parts: list[str] = []
+                result_event: StreamResultEvent | None = None
+
+                for event in client.execute_streaming(
+                    code=code,
+                    timeout_ms=CODE_INTERPRETER_DEFAULT_TIMEOUT_MS,
+                    files=files_to_stage or None,
+                ):
+                    if isinstance(event, StreamOutputEvent):
+                        if event.stream == "stdout":
+                            stdout_parts.append(event.data)
+                        else:
+                            stderr_parts.append(event.data)
+                        # Emit incremental delta to frontend
+                        self.emitter.emit(
+                            Packet(
+                                placement=placement,
+                                obj=PythonToolDelta(
+                                    stdout=(
+                                        event.data if event.stream == "stdout" else ""
+                                    ),
+                                    stderr=(
+                                        event.data if event.stream == "stderr" else ""
+                                    ),
+                                ),
+                            )
+                        )
+                    elif isinstance(event, StreamResultEvent):
+                        result_event = event
+                    elif isinstance(event, StreamErrorEvent):
+                        raise RuntimeError(f"Code interpreter error: {event.message}")
+
+                if result_event is None:
+                    raise RuntimeError(
+                        "Code interpreter stream ended without a result event"
                     )
 
-                    generated_files.append(
-                        PythonExecutionFile(
-                            filename=filename,
-                            file_link=build_full_frontend_file_url(onyx_file_id),
+                full_stdout = "".join(stdout_parts)
+                full_stderr = "".join(stderr_parts)
+
+                # Truncate output for LLM consumption
+                truncated_stdout = _truncate_output(
+                    full_stdout, CODE_INTERPRETER_MAX_OUTPUT_LENGTH, "stdout"
+                )
+                truncated_stderr = _truncate_output(
+                    full_stderr, CODE_INTERPRETER_MAX_OUTPUT_LENGTH, "stderr"
+                )
+
+                # Handle generated files
+                generated_files: list[PythonExecutionFile] = []
+                generated_file_ids: list[str] = []
+                file_ids_to_cleanup: list[str] = []
+                file_store = get_default_file_store()
+
+                for workspace_file in result_event.files:
+                    if workspace_file.kind != "file" or not workspace_file.file_id:
+                        continue
+
+                    try:
+                        # Download file from Code Interpreter
+                        file_content = client.download_file(workspace_file.file_id)
+
+                        # Determine MIME type from file extension
+                        filename = workspace_file.path.split("/")[-1]
+                        mime_type, _ = mimetypes.guess_type(filename)
+                        # Default to binary if we can't determine the type
+                        mime_type = mime_type or "application/octet-stream"
+
+                        # Save to Onyx file store
+                        onyx_file_id = file_store.save_file(
+                            content=BytesIO(file_content),
+                            display_name=filename,
+                            file_origin=FileOrigin.CHAT_UPLOAD,
+                            file_type=mime_type,
+                        )
+
+                        generated_files.append(
+                            PythonExecutionFile(
+                                filename=filename,
+                                file_link=build_full_frontend_file_url(onyx_file_id),
+                            )
+                        )
+                        generated_file_ids.append(onyx_file_id)
+
+                        # Mark for cleanup
+                        file_ids_to_cleanup.append(workspace_file.file_id)
+
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to handle generated file {workspace_file.path}: {e}"
+                        )
+
+                # Cleanup Code Interpreter files (generated files)
+                for ci_file_id in file_ids_to_cleanup:
+                    try:
+                        client.delete_file(ci_file_id)
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to delete Code Interpreter generated file {ci_file_id}: {e}"
+                        )
+
+                # Note: staged input files are intentionally not deleted here because
+                # _uploaded_file_cache reuses their file_ids across iterations. They are
+                # orphaned when the session ends, but the code interpreter cleans up
+                # stale files on its own TTL.
+
+                # Emit file_ids once files are processed
+                if generated_file_ids:
+                    self.emitter.emit(
+                        Packet(
+                            placement=placement,
+                            obj=PythonToolDelta(file_ids=generated_file_ids),
                         )
                     )
-                    generated_file_ids.append(onyx_file_id)
 
-                    # Mark for cleanup
-                    file_ids_to_cleanup.append(workspace_file.file_id)
-
-                except Exception as e:
-                    logger.error(
-                        f"Failed to handle generated file {workspace_file.path}: {e}"
-                    )
-
-            # Cleanup Code Interpreter files (generated files)
-            for ci_file_id in file_ids_to_cleanup:
-                try:
-                    client.delete_file(ci_file_id)
-                except Exception as e:
-                    logger.error(
-                        f"Failed to delete Code Interpreter generated file {ci_file_id}: {e}"
-                    )
-
-            # Cleanup staged input files
-            for file_mapping in files_to_stage:
-                try:
-                    client.delete_file(file_mapping["file_id"])
-                except Exception as e:
-                    logger.error(
-                        f"Failed to delete Code Interpreter staged file {file_mapping['file_id']}: {e}"
-                    )
-
-            # Emit delta with stdout/stderr and generated files
-            self.emitter.emit(
-                Packet(
-                    placement=placement,
-                    obj=PythonToolDelta(
-                        stdout=truncated_stdout,
-                        stderr=truncated_stderr,
-                        file_ids=generated_file_ids,
-                    ),
+                # Build result
+                result = LlmPythonExecutionResult(
+                    stdout=truncated_stdout,
+                    stderr=truncated_stderr,
+                    exit_code=result_event.exit_code,
+                    timed_out=result_event.timed_out,
+                    generated_files=generated_files,
+                    error=(None if result_event.exit_code == 0 else truncated_stderr),
                 )
-            )
 
-            # Build result
-            result = LlmPythonExecutionResult(
-                stdout=truncated_stdout,
-                stderr=truncated_stderr,
-                exit_code=response.exit_code,
-                timed_out=response.timed_out,
-                generated_files=generated_files,
-                error=None if response.exit_code == 0 else truncated_stderr,
-            )
+                # Serialize result for LLM
+                adapter = TypeAdapter(LlmPythonExecutionResult)
+                llm_response = adapter.dump_json(result).decode()
 
-            # Serialize result for LLM
-            adapter = TypeAdapter(LlmPythonExecutionResult)
-            llm_response = adapter.dump_json(result).decode()
-
-            return ToolResponse(
-                rich_response=None,  # No rich response needed for Python tool
-                llm_facing_response=llm_response,
-            )
-
-        except Exception as e:
-            logger.error(f"Python execution failed: {e}")
-            error_msg = str(e)
-
-            # Emit error delta
-            self.emitter.emit(
-                Packet(
-                    placement=placement,
-                    obj=PythonToolDelta(
-                        stdout="",
-                        stderr=error_msg,
-                        file_ids=[],
+                return ToolResponse(
+                    rich_response=PythonToolRichResponse(
+                        generated_files=generated_files,
                     ),
+                    llm_facing_response=llm_response,
                 )
-            )
 
-            # Return error result
-            result = LlmPythonExecutionResult(
-                stdout="",
-                stderr=error_msg,
-                exit_code=-1,
-                timed_out=False,
-                generated_files=[],
-                error=error_msg,
-            )
+            except Exception as e:
+                logger.error(f"Python execution failed: {e}")
+                error_msg = str(e)
 
-            adapter = TypeAdapter(LlmPythonExecutionResult)
-            llm_response = adapter.dump_json(result).decode()
+                # Emit error delta
+                self.emitter.emit(
+                    Packet(
+                        placement=placement,
+                        obj=PythonToolDelta(
+                            stdout="",
+                            stderr=error_msg,
+                            file_ids=[],
+                        ),
+                    )
+                )
 
-            return ToolResponse(
-                rich_response=None,
-                llm_facing_response=llm_response,
-            )
+                # Return error result
+                result = LlmPythonExecutionResult(
+                    stdout="",
+                    stderr=error_msg,
+                    exit_code=-1,
+                    timed_out=False,
+                    generated_files=[],
+                    error=error_msg,
+                )
+
+                adapter = TypeAdapter(LlmPythonExecutionResult)
+                llm_response = adapter.dump_json(result).decode()
+
+                return ToolResponse(
+                    rich_response=None,
+                    llm_facing_response=llm_response,
+                )
+
+    @classmethod
+    @override
+    def should_emit_argument_deltas(cls) -> bool:
+        return True

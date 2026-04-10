@@ -46,6 +46,7 @@ from onyx.document_index.vespa_constants import METADATA
 from onyx.document_index.vespa_constants import METADATA_LIST
 from onyx.document_index.vespa_constants import METADATA_SUFFIX
 from onyx.document_index.vespa_constants import NUM_THREADS
+from onyx.document_index.vespa_constants import PERSONAS
 from onyx.document_index.vespa_constants import PRIMARY_OWNERS
 from onyx.document_index.vespa_constants import SECONDARY_OWNERS
 from onyx.document_index.vespa_constants import SECTION_CONTINUATION
@@ -218,6 +219,7 @@ def _index_vespa_chunk(
         # still called `image_file_name` in Vespa for backwards compatibility
         IMAGE_FILE_NAME: chunk.image_file_id,
         USER_PROJECT: chunk.user_project if chunk.user_project is not None else [],
+        PERSONAS: chunk.personas if chunk.personas is not None else [],
         BOOST: chunk.boost,
         AGGREGATED_CHUNK_BOOST_FACTOR: chunk.aggregated_chunk_boost_factor,
     }
@@ -254,8 +256,7 @@ def _index_vespa_chunk(
                     continue
                 else:
                     raise RuntimeError(
-                        f"Failed to index document '{document.id}' after {INDEXING_MAX_RETRIES} attempts "
-                        f"due to rate limiting"
+                        f"Failed to index document '{document.id}' after {INDEXING_MAX_RETRIES} attempts due to rate limiting"
                     ) from e
             elif e.response.status_code == HTTPStatus.INSUFFICIENT_STORAGE:
                 logger.error(

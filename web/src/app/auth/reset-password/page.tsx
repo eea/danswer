@@ -3,13 +3,16 @@ import React, { useState, useEffect } from "react";
 import { resetPassword } from "../forgot-password/utils";
 import AuthFlowContainer from "@/components/auth/AuthFlowContainer";
 import Title from "@/components/ui/title";
-import Text from "@/components/ui/text";
+import { Text } from "@opal/components";
+import { markdown } from "@opal/utils";
+import Spacer from "@/refresh-components/Spacer";
 import Link from "next/link";
-import Button from "@/refresh-components/buttons/Button";
+import { Button } from "@opal/components";
+import { Disabled } from "@opal/core";
 import { Form, Formik } from "formik";
 import * as Yup from "yup";
 import { TextFormField } from "@/components/Field";
-import { usePopup } from "@/components/admin/connectors/Popup";
+import { toast } from "@/hooks/useToast";
 import { Spinner } from "@/components/Spinner";
 import { redirect, useSearchParams } from "next/navigation";
 import {
@@ -19,7 +22,6 @@ import {
 import Cookies from "js-cookie";
 
 const ResetPasswordPage: React.FC = () => {
-  const { popup, setPopup } = usePopup();
   const [isWorking, setIsWorking] = useState(false);
   const searchParams = useSearchParams();
   const token = searchParams?.get("token");
@@ -46,7 +48,6 @@ const ResetPasswordPage: React.FC = () => {
           <Title className="mb-2 mx-auto font-bold">Reset Password</Title>
         </div>
         {isWorking && <Spinner />}
-        {popup}
         <Formik
           initialValues={{
             password: "",
@@ -60,34 +61,25 @@ const ResetPasswordPage: React.FC = () => {
           })}
           onSubmit={async (values) => {
             if (!token) {
-              setPopup({
-                type: "error",
-                message: "Invalid or missing reset token.",
-              });
+              toast.error("Invalid or missing reset token.");
               return;
             }
             setIsWorking(true);
             try {
               await resetPassword(token, values.password);
-              setPopup({
-                type: "success",
-                message: "Password reset successfully. Redirecting to login...",
-              });
+              toast.success(
+                "Password reset successfully. Redirecting to login..."
+              );
               setTimeout(() => {
                 redirect("/auth/login");
               }, 1000);
             } catch (error) {
               if (error instanceof Error) {
-                setPopup({
-                  type: "error",
-                  message:
-                    error.message || "An error occurred during password reset.",
-                });
+                toast.error(
+                  error.message || "An error occurred during password reset."
+                );
               } else {
-                setPopup({
-                  type: "error",
-                  message: "An unexpected error occurred. Please try again.",
-                });
+                toast.error("An unexpected error occurred. Please try again.");
               }
             } finally {
               setIsWorking(false);
@@ -110,23 +102,20 @@ const ResetPasswordPage: React.FC = () => {
               />
 
               <div className="flex">
-                <Button
-                  type="submit"
-                  disabled={isSubmitting}
-                  className="mx-auto w-full"
-                >
-                  Reset Password
-                </Button>
+                <Disabled disabled={isSubmitting}>
+                  <Button type="submit" width="full">
+                    Reset Password
+                  </Button>
+                </Disabled>
               </div>
             </Form>
           )}
         </Formik>
+        <Spacer rem={1} />
         <div className="flex">
-          <Text className="mt-4 mx-auto">
-            <Link href="/auth/login" className="text-link font-medium">
-              Back to Login
-            </Link>
-          </Text>
+          <div className="mx-auto">
+            <Text as="p">{markdown("[Back to Login](/auth/login)")}</Text>
+          </div>
         </div>
       </div>
     </AuthFlowContainer>

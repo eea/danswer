@@ -3,16 +3,16 @@
 import React, { useState } from "react";
 import type { IconProps } from "@opal/types";
 import { cn, noProp } from "@/lib/utils";
-import { Disabled } from "@/refresh-components/Disabled";
+import { Disabled } from "@opal/core";
 import Text from "@/refresh-components/texts/Text";
-import Button from "@/refresh-components/buttons/Button";
-import IconButton from "@/refresh-components/buttons/IconButton";
+import { Button } from "@opal/components";
 import SelectButton from "@/refresh-components/buttons/SelectButton";
 import {
   SvgArrowExchange,
   SvgArrowRightCircle,
   SvgCheckSquare,
   SvgSettings,
+  SvgUnplug,
 } from "@opal/icons";
 
 const containerClasses = {
@@ -36,6 +36,7 @@ export interface SelectProps
   onSelect?: () => void;
   onDeselect?: () => void;
   onEdit?: () => void;
+  onDisconnect?: () => void;
 
   // Labels (customizable)
   connectLabel?: string;
@@ -60,6 +61,7 @@ export default function Select({
   onSelect,
   onDeselect,
   onEdit,
+  onDisconnect,
   connectLabel = "Connect",
   selectLabel = "Set as Default",
   selectedLabel = "Current Default",
@@ -69,7 +71,7 @@ export default function Select({
   disabled,
   ...rest
 }: SelectProps) {
-  const sizeClass = medium ? "h-[3.75rem]" : "h-[4.25rem]";
+  const sizeClass = medium ? "h-[3.75rem]" : "min-h-[3.75rem] max-h-[5.25rem]";
   const containerClass = containerClasses[status];
   const [isHovered, setIsHovered] = useState(false);
 
@@ -122,70 +124,102 @@ export default function Select({
         </div>
 
         {/* Right section - Actions */}
-        <div className="flex items-center justify-end gap-1">
+        <div className="flex flex-col h-full items-end justify-between gap-1">
           {/* Disconnected: Show Connect button */}
           {isDisconnected && (
-            <Button
-              action={false}
-              tertiary
-              disabled={disabled || !onConnect}
-              onClick={noProp(onConnect)}
-              rightIcon={SvgArrowExchange}
-            >
-              {connectLabel}
-            </Button>
+            <Disabled disabled={disabled || !onConnect}>
+              <Button
+                prominence="tertiary"
+                onClick={noProp(onConnect)}
+                rightIcon={SvgArrowExchange}
+              >
+                {connectLabel}
+              </Button>
+            </Disabled>
           )}
 
           {/* Connected: Show select icon + settings icon */}
           {isConnected && (
             <>
-              <SelectButton
-                action
-                folded
-                transient={isHovered}
-                disabled={disabled || !onSelect}
-                onClick={onSelect}
-                rightIcon={SvgArrowRightCircle}
-              >
-                {selectLabel}
-              </SelectButton>
-              {onEdit && (
-                <IconButton
-                  icon={SvgSettings}
-                  tooltip="Edit"
-                  internal
-                  tertiary
-                  disabled={disabled}
-                  onClick={noProp(onEdit)}
-                  aria-label={`Edit ${title}`}
-                />
-              )}
+              <Disabled disabled={disabled || !onSelect}>
+                <SelectButton
+                  action
+                  folded
+                  transient={isHovered}
+                  onClick={onSelect}
+                  rightIcon={SvgArrowRightCircle}
+                >
+                  {selectLabel}
+                </SelectButton>
+              </Disabled>
+              <div className="flex px-1 gap-1">
+                {onDisconnect && (
+                  <Disabled disabled={disabled}>
+                    <Button
+                      icon={SvgUnplug}
+                      tooltip="Disconnect"
+                      prominence="tertiary"
+                      size="sm"
+                      onClick={noProp(onDisconnect)}
+                      aria-label={`Disconnect ${title}`}
+                    />
+                  </Disabled>
+                )}
+                {onEdit && (
+                  <Disabled disabled={disabled}>
+                    <Button
+                      icon={SvgSettings}
+                      tooltip="Edit"
+                      prominence="tertiary"
+                      size="sm"
+                      onClick={noProp(onEdit)}
+                      aria-label={`Edit ${title}`}
+                    />
+                  </Disabled>
+                )}
+              </div>
             </>
           )}
 
           {/* Selected: Show "Current Default" label + settings icon */}
           {isSelected && (
             <>
-              <SelectButton
-                action
-                engaged
-                disabled={disabled}
-                onClick={onDeselect}
-                leftIcon={SvgCheckSquare}
-              >
-                {selectedLabel}
-              </SelectButton>
-              {onEdit && (
-                <IconButton
-                  icon={SvgSettings}
-                  tooltip="Edit"
-                  internal
-                  tertiary
-                  disabled={disabled}
-                  onClick={noProp(onEdit)}
-                  aria-label={`Edit ${title}`}
-                />
-              )}
+              <Disabled disabled={disabled}>
+                <SelectButton
+                  action
+                  engaged
+                  onClick={onDeselect}
+                  leftIcon={SvgCheckSquare}
+                >
+                  {selectedLabel}
+                </SelectButton>
+              </Disabled>
+              <div className="flex px-1 gap-1">
+                {onDisconnect && (
+                  <Disabled disabled={disabled}>
+                    <Button
+                      icon={SvgUnplug}
+                      tooltip="Disconnect"
+                      prominence="tertiary"
+                      size="sm"
+                      onClick={noProp(onDisconnect)}
+                      aria-label={`Disconnect ${title}`}
+                    />
+                  </Disabled>
+                )}
+                {onEdit && (
+                  <Disabled disabled={disabled}>
+                    <Button
+                      icon={SvgSettings}
+                      tooltip="Edit"
+                      prominence="tertiary"
+                      size="sm"
+                      onClick={noProp(onEdit)}
+                      aria-label={`Edit ${title}`}
+                    />
+                  </Disabled>
+                )}
+              </div>
             </>
           )}
         </div>

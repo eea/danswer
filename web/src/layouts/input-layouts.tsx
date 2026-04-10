@@ -1,16 +1,25 @@
 "use client";
 
+import type { RichStr, WithoutStyles } from "@opal/types";
+import { resolveStr } from "@opal/components/text/InlineMarkdown";
 import Text from "@/refresh-components/texts/Text";
+import Separator from "@/refresh-components/Separator";
 import { SvgXOctagon, SvgAlertCircle } from "@opal/icons";
 import { useField, useFormikContext } from "formik";
 import { Section } from "@/layouts/general-layouts";
+import { Content } from "@opal/layouts";
 import Label from "@/refresh-components/form/Label";
 
-interface OrientationLayoutProps extends TitleLayoutProps {
+interface OrientationLayoutProps {
   name?: string;
   disabled?: boolean;
   nonInteractive?: boolean;
   children?: React.ReactNode;
+  title: string | RichStr;
+  titleSuffix?: string;
+  description?: string | RichStr;
+  optional?: boolean;
+  sizePreset?: "main-content" | "main-ui";
 }
 
 /**
@@ -36,7 +45,7 @@ interface OrientationLayoutProps extends TitleLayoutProps {
  * ```
  */
 export interface VerticalLayoutProps extends OrientationLayoutProps {
-  subDescription?: React.ReactNode;
+  subDescription?: string | RichStr;
 }
 function VerticalInputLayout({
   name,
@@ -44,16 +53,27 @@ function VerticalInputLayout({
   nonInteractive,
   children,
   subDescription,
-  ...titleLayoutProps
+  title,
+  titleSuffix,
+  description,
+  optional,
+  sizePreset = "main-content",
 }: VerticalLayoutProps) {
   const content = (
     <Section gap={0.25} alignItems="start">
-      <TitleLayout {...titleLayoutProps} />
+      <Content
+        title={title}
+        titleSuffix={titleSuffix}
+        description={description}
+        optional={optional}
+        sizePreset={sizePreset}
+        variant="section"
+      />
       {children}
       {name && <ErrorLayout name={name} />}
       {subDescription && (
         <Text secondaryBody text03>
-          {subDescription}
+          {resolveStr(subDescription)}
         </Text>
       )}
     </Section>
@@ -110,7 +130,11 @@ function HorizontalInputLayout({
   nonInteractive,
   children,
   center,
-  ...titleLayoutProps
+  title,
+  titleSuffix,
+  description,
+  optional,
+  sizePreset = "main-content",
 }: HorizontalLayoutProps) {
   const content = (
     <Section gap={0.25} alignItems="start">
@@ -119,10 +143,18 @@ function HorizontalInputLayout({
         justifyContent="between"
         alignItems={center ? "center" : "start"}
       >
-        <div className="flex flex-col self-stretch flex-[2]">
-          <TitleLayout {...titleLayoutProps} />
+        <div className="flex flex-col flex-1 min-w-0 self-stretch">
+          <Content
+            title={title}
+            titleSuffix={titleSuffix}
+            description={description}
+            optional={optional}
+            sizePreset={sizePreset}
+            variant="section"
+            widthVariant="full"
+          />
         </div>
-        <div className="flex flex-col flex-[1] items-end">{children}</div>
+        <div className="flex flex-col items-end">{children}</div>
       </Section>
       {name && <ErrorLayout name={name} />}
     </Section>
@@ -133,80 +165,6 @@ function HorizontalInputLayout({
     <Label name={name} disabled={disabled}>
       {content}
     </Label>
-  );
-}
-
-/**
- * TitleLayout - A reusable title/description component for form fields
- *
- * Renders a title with an optional description and "Optional" indicator.
- * This is a pure presentational component — it does not render a `<label>`
- * element. Label semantics are handled by the parent orientation layout
- * (Vertical/Horizontal) or by the caller.
- *
- * Exported as `Title` for convenient usage.
- *
- * @param title - The main label text
- * @param description - Additional helper text shown below the title
- * @param optional - Whether to show "(Optional)" indicator
- * @param center - If true, centers the title and description text. Default: false
- *
- * @example
- * ```tsx
- * import { Title } from "@/layouts/input-layouts";
- *
- * <Title
- *   name="username"
- *   title="Username"
- *   description="Choose a unique username"
- *   optional
- * />
- * ```
- */
-type TitleLayoutVariants = "primary" | "secondary";
-export interface TitleLayoutProps {
-  title: string;
-  description?: string;
-  optional?: boolean;
-  center?: boolean;
-  variant?: TitleLayoutVariants;
-}
-function TitleLayout({
-  title,
-  description,
-  optional,
-  center,
-  variant = "primary",
-}: TitleLayoutProps) {
-  return (
-    <Section gap={0} height="fit">
-      <Section
-        flexDirection="row"
-        justifyContent={center ? "center" : "start"}
-        gap={0.25}
-      >
-        <Text
-          mainContentEmphasis={variant === "primary"}
-          mainUiAction={variant === "secondary"}
-          text04
-        >
-          {title}
-        </Text>
-        {optional && (
-          <Text text03 mainContentMuted>
-            (Optional)
-          </Text>
-        )}
-      </Section>
-
-      {description && (
-        <Section alignItems={center ? "center" : "start"}>
-          <Text secondaryBody text03>
-            {description}
-          </Text>
-        </Section>
-      )}
-    </Section>
   );
 }
 
@@ -277,10 +235,27 @@ function ErrorTextLayout({ children, type = "error" }: ErrorTextLayoutProps) {
   );
 }
 
+/**
+ * FieldSeparator - A horizontal rule with inline padding, used to visually separate field groups.
+ */
+function FieldSeparator() {
+  return <Separator noPadding className="p-2" />;
+}
+
+/**
+ * FieldPadder -  Wraps a field in standard horizontal + vertical padding (`p-2 w-full`).
+ */
+type FieldPadderProps = WithoutStyles<React.HTMLAttributes<HTMLDivElement>>;
+function FieldPadder(props: FieldPadderProps) {
+  return <div {...props} className="p-2 w-full" />;
+}
+
 export {
   VerticalInputLayout as Vertical,
   HorizontalInputLayout as Horizontal,
-  TitleLayout as Title,
   ErrorLayout as Error,
   ErrorTextLayout,
+  FieldSeparator,
+  FieldPadder,
+  type FieldPadderProps,
 };

@@ -4,7 +4,9 @@ from tests.integration.common_utils.managers.persona import PersonaManager
 from tests.integration.common_utils.test_models import DATestUser
 
 
-def test_unified_assistant(reset: None, admin_user: DATestUser) -> None:  # noqa: ARG001
+def test_unified_assistant(
+    reset: None, admin_user: DATestUser  # noqa: ARG001
+) -> None:  # noqa: ARG001
     """Combined test verifying unified assistant existence, tools, and starter messages."""
     # Fetch all personas
     personas = PersonaManager.get_all(admin_user)
@@ -31,9 +33,8 @@ def test_unified_assistant(reset: None, admin_user: DATestUser) -> None:  # noqa
         "search, web browsing, and image generation"
         in unified_assistant.description.lower()
     )
-    assert unified_assistant.is_default_persona is True
-    assert unified_assistant.is_visible is True
-    assert unified_assistant.num_chunks == 25
+    assert unified_assistant.is_featured is True
+    assert unified_assistant.is_listed is True
 
     # Verify tools
     tools = unified_assistant.tools

@@ -3,16 +3,15 @@
 import { OnyxIcon, OnyxLogoTypeIcon } from "@/components/icons/icons";
 import { EEAIcon, EEALogoTypeIcon } from "../components/EEA_Logo";
 import { useSettingsContext } from "@/providers/SettingsProvider";
-import Image from "next/image";
 import {
-  LOGO_FOLDED_SIZE_PX,
-  LOGO_UNFOLDED_SIZE_PX,
+  DEFAULT_LOGO_SIZE_PX,
   NEXT_PUBLIC_DO_NOT_USE_TOGGLE_OFF_DANSWER_POWERED,
 } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 import Text from "@/refresh-components/texts/Text";
 import Truncated from "@/refresh-components/texts/Truncated";
 import { useMemo } from "react";
+import { SvgOnyxLogo, SvgOnyxLogoTyped } from "@opal/icons";
 
 export interface LogoProps {
   folded?: boolean;
@@ -21,37 +20,42 @@ export interface LogoProps {
 }
 
 export default function Logo({ folded, size, className }: LogoProps) {
-  const foldedSize = size ?? LOGO_FOLDED_SIZE_PX;
-  const unfoldedSize = size ?? LOGO_UNFOLDED_SIZE_PX;
+  const resolvedSize = size ?? DEFAULT_LOGO_SIZE_PX;
   const settings = useSettingsContext();
   const logoDisplayStyle = settings.enterpriseSettings?.logo_display_style;
   const applicationName = settings.enterpriseSettings?.application_name;
 
-  const logo = useMemo(
-    () =>
-      settings.enterpriseSettings?.use_custom_logo ? (
-        <div
-          className={cn(
-            "aspect-square rounded-full overflow-hidden relative flex-shrink-0",
-            className
-          )}
-          style={{ height: foldedSize, width: foldedSize }}
-        >
-          <Image
-            alt="Logo"
-            src="/api/enterprise-settings/logo"
-            fill
-            className="object-cover object-center"
-            sizes={`${foldedSize}px`}
-          />
-        </div>
-      ) : (
-        <EEAIcon
-          size={foldedSize}
-          className={cn("flex-shrink-0", className)}
-        />
-      ),
-    [className, foldedSize, settings.enterpriseSettings?.use_custom_logo]
+  // Cache-buster: the logo URL never changes (/api/enterprise-settings/logo)
+  // so the browser serves the in-memory cached image even after an admin
+  // uploads a new one. Generating a fresh timestamp each time enterprise
+  // settings are revalidated by SWR appends a unique query param to force
+  // the browser to re-fetch the image.
+  const logoBuster = useMemo(
+    () => Date.now(),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [settings.enterpriseSettings]
+  );
+
+  const logo = settings.enterpriseSettings?.use_custom_logo ? (
+    <div
+      className={cn(
+        "aspect-square rounded-full overflow-hidden relative flex-shrink-0",
+        className
+      )}
+      style={{ height: resolvedSize }}
+    >
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        alt="Logo"
+        src={`/api/enterprise-settings/logo?v=${logoBuster}`}
+        className="object-cover object-center w-full h-full"
+      />
+    </div>
+  ) : (
+    <EEAIcon
+      size={resolvedSize}
+      className={cn("flex-shrink-0", className)}
+    />
   );
 
   const renderNameAndPoweredBy = (opts: {
@@ -59,27 +63,25 @@ export default function Logo({ folded, size, className }: LogoProps) {
     includeName: boolean;
   }) => {
     return (
-      <div className="flex flex-col min-w-0">
-        <div className="flex flex-row items-center gap-2 min-w-0">
-          {opts.includeLogo && logo}
-          {opts.includeName && !folded && (
-            <div className="flex-1 min-w-0">
+      <div className="flex min-w-0 gap-2">
+        {opts.includeLogo && logo}
+        {!folded && (
+          /* H3 text is 4px larger (28px) than the Logo icon (24px), so negative margin hack. */
+          <div className="flex flex-1 flex-col -mt-0.5">
+            {opts.includeName && (
               <Truncated headingH3>{applicationName}</Truncated>
-            </div>
-          )}
-        </div>
-        {!NEXT_PUBLIC_DO_NOT_USE_TOGGLE_OFF_DANSWER_POWERED && !folded && (
-          <Text
-            secondaryBody
-            text03
-            className={cn(
-              "line-clamp-1 truncate",
-              opts.includeLogo && opts.includeName && "ml-[33px]"
             )}
-            nowrap
-          >
-            Powered by Onyx
-          </Text>
+            {!NEXT_PUBLIC_DO_NOT_USE_TOGGLE_OFF_DANSWER_POWERED && (
+              <Text
+                secondaryBody
+                text03
+                className={"line-clamp-1 truncate"}
+                nowrap
+              >
+                Powered by Onyx
+              </Text>
+            )}
+          </div>
         )}
       </div>
     );
@@ -99,8 +101,8 @@ export default function Logo({ folded, size, className }: LogoProps) {
   return applicationName ? (
     renderNameAndPoweredBy({ includeLogo: true, includeName: true })
   ) : folded ? (
-    <EEAIcon size={foldedSize} className={cn("flex-shrink-0", className)} />
+    <EEAIcon size={resolvedSize} className={cn("flex-shrink-0", className)} />
   ) : (
-    <EEALogoTypeIcon size={unfoldedSize} className={className} />
+    <EEALogoTypeIcon size={resolvedSize} className={className} />
   );
 }

@@ -30,7 +30,12 @@ data:
   REDIS_HOST: {{ if .Values.redis.host }}{{ .Values.redis.host }}{{ else }}{{ printf "%s-redis" (include "onyx.fullname" .) }}{{ end }}
   {{- end }}
   MODEL_SERVER_HOST: "{{ include "onyx.fullname" . }}-inference-model-service"
+  {{- if .Values.vectorDB.enabled }}
   INDEXING_MODEL_SERVER_HOST: "{{ include "onyx.fullname" . }}-indexing-model-service"
+  DISABLE_VECTOR_DB: "false"
+  {{- else }}
+  DISABLE_VECTOR_DB: "true"
+  {{- end }}
 {{- range $key, $value := .Values.configMap }}
 {{- if not (empty $value) }}
   {{ $key }}: "{{ $value }}"

@@ -50,14 +50,14 @@ jobs:
           persist-credentials: false
 
       - name: Setup node
-        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f
         with:
           node-version: 24
           cache: "npm" # zizmor: ignore[cache-poisoning]
           cache-dependency-path: ./desktop/package-lock.json
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@4be9e76fd7c4901c61fb841f559994984270fce7
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
@@ -105,7 +105,7 @@ jobs:
 
       - name: Upload build artifacts
         if: always()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
         with:
           name: desktop-build-${{ matrix.platform }}-${{ github.run_id }}
           path: |

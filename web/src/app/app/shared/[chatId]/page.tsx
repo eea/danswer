@@ -4,14 +4,14 @@ import type { Route } from "next";
 import { requireAuth } from "@/lib/auth/requireAuth";
 import SharedChatDisplay from "@/app/app/shared/[chatId]/SharedChatDisplay";
 import * as AppLayouts from "@/layouts/app-layouts";
-import { Persona } from "@/app/admin/assistants/interfaces";
+import { Persona } from "@/app/admin/agents/interfaces";
 
 // This is used for rendering a persona in the shared chat display
 export function constructMiniFiedPersona(name: string, id: number): Persona {
   return {
     id,
     name,
-    is_visible: true,
+    is_listed: true,
     is_public: true,
     display_priority: 0,
     description: "",
@@ -20,7 +20,7 @@ export function constructMiniFiedPersona(name: string, id: number): Persona {
     owner: null,
     starter_messages: null,
     builtin_persona: false,
-    is_default_persona: false,
+    is_featured: false,
     users: [],
     groups: [],
     user_file_ids: [],

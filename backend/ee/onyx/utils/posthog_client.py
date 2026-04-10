@@ -9,6 +9,7 @@ from ee.onyx.configs.app_configs import POSTHOG_API_KEY
 from ee.onyx.configs.app_configs import POSTHOG_DEBUG_LOGS_ENABLED
 from ee.onyx.configs.app_configs import POSTHOG_HOST
 from onyx.utils.logger import setup_logger
+from shared_configs.configs import MULTI_TENANT
 
 logger = setup_logger()
 
@@ -18,12 +19,19 @@ def posthog_on_error(error: Any, items: Any) -> None:
     logger.error(f"PostHog error: {error}, items: {items}")
 
 
-posthog = Posthog(
-    project_api_key=POSTHOG_API_KEY,
-    host=POSTHOG_HOST,
-    debug=POSTHOG_DEBUG_LOGS_ENABLED,
-    on_error=posthog_on_error,
-)
+posthog: Posthog | None = None
+if POSTHOG_API_KEY:
+    posthog = Posthog(
+        project_api_key=POSTHOG_API_KEY,
+        host=POSTHOG_HOST,
+        debug=POSTHOG_DEBUG_LOGS_ENABLED,
+        on_error=posthog_on_error,
+    )
+elif MULTI_TENANT:
+    logger.warning(
+        "POSTHOG_API_KEY is not set but MULTI_TENANT is enabled — "
+        "PostHog telemetry and feature flags will be disabled"
+    )
 
 # For cross referencing between cloud and www Onyx sites
 # NOTE: These clients are separate because they are separate posthog projects.
@@ -60,7 +68,7 @@ def capture_and_sync_with_alternate_posthog(
         logger.error(f"Error capturing marketing posthog event: {e}")
 
     try:
-        if cloud_user_id := props.get("onyx_cloud_user_id"):
+        if posthog and (cloud_user_id := props.get("onyx_cloud_user_id")):
             cloud_props = props.copy()
             cloud_props.pop("onyx_cloud_user_id", None)
 
@@ -72,15 +80,45 @@ def capture_and_sync_with_alternate_posthog(
         logger.error(f"Error identifying cloud posthog user: {e}")
 
 
+def alias_user(distinct_id: str, anonymous_id: str) -> None:
+    """Link an anonymous distinct_id to an identified user, merging person profiles.
+
+    No-ops when the IDs match (e.g. returning users whose PostHog cookie
+    already contains their identified user ID).
+    """
+    if not posthog or anonymous_id == distinct_id:
+        return
+
+    try:
+        posthog.alias(previous_id=anonymous_id, distinct_id=distinct_id)
+        posthog.flush()
+    except Exception as e:
+        logger.error(f"Error aliasing PostHog user: {e}")
+
+
+def get_anon_id_from_request(request: Any) -> str | None:
+    """Extract the anonymous distinct_id from the app PostHog cookie on a request."""
+    if not POSTHOG_API_KEY:
+        return None
+
+    cookie_name = f"ph_{POSTHOG_API_KEY}_posthog"
+    if (cookie_value := request.cookies.get(cookie_name)) and (
+        parsed := parse_posthog_cookie(cookie_value)
+    ):
+        return parsed.get("distinct_id")
+
+    return None
+
+
 def get_marketing_posthog_cookie_name() -> str | None:
     if not MARKETING_POSTHOG_API_KEY:
         return None
     return f"onyx_custom_ph_{MARKETING_POSTHOG_API_KEY}_posthog"
 
 
-def parse_marketing_cookie(cookie_value: str) -> dict[str, Any] | None:
+def parse_posthog_cookie(cookie_value: str) -> dict[str, Any] | None:
     """
-    Parse the URL-encoded JSON marketing cookie.
+    Parse a URL-encoded JSON PostHog cookie
 
     Expected format (URL-encoded):
     {"distinct_id":"...", "featureFlags":{"landing_page_variant":"..."}, ...}
@@ -94,7 +132,7 @@ def parse_marketing_cookie(cookie_value: str) -> dict[str, Any] | None:
         cookie_data = json.loads(decoded_cookie)
 
         distinct_id = cookie_data.get("distinct_id")
-        if not distinct_id:
+        if not distinct_id or not isinstance(distinct_id, str):
             return None
 
         return cookie_data

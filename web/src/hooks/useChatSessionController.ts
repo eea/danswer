@@ -29,7 +29,7 @@ import { useForcedTools } from "@/lib/hooks/useForcedTools";
 import { ProjectFile } from "@/app/app/projects/projectsService";
 import { getSessionProjectTokenCount } from "@/app/app/projects/projectsService";
 import { getProjectFilesForSession } from "@/app/app/projects/projectsService";
-import { ChatInputBarHandle } from "@/app/app/components/input/ChatInputBar";
+import { AppInputBarHandle } from "@/sections/input/AppInputBar";
 
 interface UseChatSessionControllerProps {
   existingChatSessionId: string | null;
@@ -38,7 +38,7 @@ interface UseChatSessionControllerProps {
   firstMessage?: string;
 
   // UI state setters
-  setSelectedAssistantFromId: (assistantId: number | null) => void;
+  setSelectedAgentFromId: (agentId: number | null) => void;
   setSelectedDocuments: (documents: OnyxDocument[]) => void;
   setCurrentMessageFiles: (
     files: ProjectFile[] | ((prev: ProjectFile[]) => ProjectFile[])
@@ -47,7 +47,7 @@ interface UseChatSessionControllerProps {
   // Refs
   chatSessionIdRef: React.RefObject<string | null>;
   loadedIdSessionRef: React.RefObject<string | null>;
-  chatInputBarRef: React.RefObject<ChatInputBarHandle | null>;
+  chatInputBarRef: React.RefObject<AppInputBarHandle | null>;
   isInitialLoad: React.RefObject<boolean>;
   submitOnLoadPerformed: React.RefObject<boolean>;
 
@@ -61,12 +61,17 @@ interface UseChatSessionControllerProps {
   }) => Promise<void>;
 }
 
+export type SessionFetchError = {
+  type: "not_found" | "access_denied" | "unknown";
+  detail: string;
+} | null;
+
 export default function useChatSessionController({
   existingChatSessionId,
   searchParams,
   filterManager,
   firstMessage,
-  setSelectedAssistantFromId,
+  setSelectedAgentFromId,
   setSelectedDocuments,
   setCurrentMessageFiles,
   chatSessionIdRef,
@@ -80,6 +85,8 @@ export default function useChatSessionController({
   const [currentSessionFileTokenCount, setCurrentSessionFileTokenCount] =
     useState<number>(0);
   const [projectFiles, setProjectFiles] = useState<ProjectFile[]>([]);
+  const [sessionFetchError, setSessionFetchError] =
+    useState<SessionFetchError>(null);
   // Store actions
   const updateSessionAndMessageTree = useChatSessionStore(
     (state) => state.updateSessionAndMessageTree
@@ -151,12 +158,14 @@ export default function useChatSessionController({
     }
 
     async function initialSessionFetch() {
+      setSessionFetchError(null);
+
       if (existingChatSessionId === null) {
         // Clear the current session in the store to show intro messages
         setCurrentSession(null);
 
-        // Reset the selected assistant back to default
-        setSelectedAssistantFromId(null);
+        // Reset the selected agent back to default
+        setSelectedAgentFromId(null);
         updateCurrentChatSessionSharedStatus(ChatSessionSharedStatus.Private);
 
         // If we're supposed to submit on initial load, then do that here
@@ -178,13 +187,46 @@ export default function useChatSessionController({
       setCurrentSession(existingChatSessionId);
       setIsFetchingChatMessages(existingChatSessionId, true);
 
-      const response = await fetch(
-        `/api/chat/get-chat-session/${existingChatSessionId}`
-      );
+      let response: Response;
+      try {
+        response = await fetch(
+          `/api/chat/get-chat-session/${existingChatSessionId}`
+        );
+      } catch (error) {
+        setIsFetchingChatMessages(existingChatSessionId, false);
+        console.error("Failed to fetch chat session", {
+          chatSessionId: existingChatSessionId,
+          error,
+        });
+        setSessionFetchError({
+          type: "unknown",
+          detail: "Failed to load chat session. Please check your connection.",
+        });
+        return;
+      }
+
+      if (!response.ok) {
+        setIsFetchingChatMessages(existingChatSessionId, false);
+        let detail = "An unexpected error occurred.";
+        try {
+          const errorBody = await response.json();
+          detail = errorBody.detail || detail;
+        } catch {
+          // ignore parse errors
+        }
+        const type =
+          response.status === 404
+            ? "not_found"
+            : response.status === 403
+              ? "access_denied"
+              : "unknown";
+        setSessionFetchError({ type, detail });
+        return;
+      }
 
       const session = await response.json();
       const chatSession = session as BackendChatSession;
-      setSelectedAssistantFromId(chatSession.persona_id);
+      setSelectedAgentFromId(chatSession.persona_id);
 
       // Ensure the current session is set to the actual session ID from the response
       setCurrentSession(chatSession.chat_session_id);
@@ -356,5 +398,6 @@ export default function useChatSessionController({
     currentSessionFileTokenCount,
     onMessageSelection,
     projectFiles,
+    sessionFetchError,
   };
 }

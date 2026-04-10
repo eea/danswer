@@ -3,6 +3,7 @@
 from onyx.server.manage.llm.utils import generate_bedrock_display_name
 from onyx.server.manage.llm.utils import generate_ollama_display_name
 from onyx.server.manage.llm.utils import infer_vision_support
+from onyx.server.manage.llm.utils import is_embedding_model
 from onyx.server.manage.llm.utils import is_reasoning_model
 from onyx.server.manage.llm.utils import is_valid_bedrock_model
 from onyx.server.manage.llm.utils import strip_openrouter_vendor_prefix
@@ -175,6 +176,14 @@ class TestInferVisionSupport:
         """Test Nova Pro has vision."""
         assert infer_vision_support("amazon.nova-pro-v1") is True
 
+    def test_bifrost_claude_has_vision(self) -> None:
+        """Test Bifrost Claude models are recognized as vision-capable."""
+        assert infer_vision_support("anthropic/claude-3-5-sonnet") is True
+
+    def test_bifrost_gpt4o_has_vision(self) -> None:
+        """Test Bifrost GPT-4o models are recognized as vision-capable."""
+        assert infer_vision_support("openai/gpt-4o") is True
+
     def test_mistral_no_vision(self) -> None:
         """Test Mistral doesn't have vision (not in known list)."""
         assert infer_vision_support("mistral.mistral-large") is False
@@ -209,3 +218,35 @@ class TestIsReasoningModel:
             is_reasoning_model("anthropic/claude-3-5-sonnet", "Claude 3.5 Sonnet")
             is False
         )
+
+
+class TestIsEmbeddingModel:
+    """Tests for embedding model detection."""
+
+    def test_openai_embedding_ada(self) -> None:
+        assert is_embedding_model("text-embedding-ada-002") is True
+
+    def test_openai_embedding_3_small(self) -> None:
+        assert is_embedding_model("text-embedding-3-small") is True
+
+    def test_openai_embedding_3_large(self) -> None:
+        assert is_embedding_model("text-embedding-3-large") is True
+
+    def test_cohere_embed_model(self) -> None:
+        assert is_embedding_model("embed-english-v3.0") is True
+
+    def test_bedrock_titan_embed(self) -> None:
+        assert is_embedding_model("amazon.titan-embed-text-v1") is True
+
+    def test_gpt4o_not_embedding(self) -> None:
+        assert is_embedding_model("gpt-4o") is False
+
+    def test_gpt4_not_embedding(self) -> None:
+        assert is_embedding_model("gpt-4") is False
+
+    def test_dall_e_not_embedding(self) -> None:
+        assert is_embedding_model("dall-e-3") is False
+
+    def test_unknown_custom_model_not_embedding(self) -> None:
+        """Custom/local models not in litellm's model DB should default to False."""
+        assert is_embedding_model("my-custom-local-model-v1") is False

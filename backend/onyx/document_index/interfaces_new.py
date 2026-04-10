@@ -148,6 +148,7 @@ class MetadataUpdateRequest(BaseModel):
     hidden: bool | None = None
     secondary_index_updated: bool | None = None
     project_ids: set[int] | None = None
+    persona_ids: set[int] | None = None
 
 
 class IndexRetrievalFilters(BaseModel):
@@ -371,6 +372,47 @@ class HybridCapable(abc.ABC):
                 to query if not set.
             query_type: Semantic or keyword type query; may use different
                 scoring logic for each.
+            filters: Filters for things like permissions, source type, time,
+                etc.
+            num_to_retrieve: Number of highest matching chunks to return.
+
+        Returns:
+            Score-ranked (highest first) list of highest matching chunks.
+        """
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def keyword_retrieval(
+        self,
+        query: str,
+        filters: IndexFilters,
+        num_to_retrieve: int,
+    ) -> list[InferenceChunk]:
+        """Runs keyword-only search and returns a list of inference chunks.
+
+        Args:
+            query: User query.
+            filters: Filters for things like permissions, source type, time,
+                etc.
+            num_to_retrieve: Number of highest matching chunks to return.
+
+        Returns:
+            Score-ranked (highest first) list of highest matching chunks.
+        """
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def semantic_retrieval(
+        self,
+        query_embedding: Embedding,
+        filters: IndexFilters,
+        num_to_retrieve: int,
+    ) -> list[InferenceChunk]:
+        """Runs semantic-only search and returns a list of inference chunks.
+
+        Args:
+            query_embedding: Vector representation of the query. Must be of the
+                correct dimensionality for the primary index.
             filters: Filters for things like permissions, source type, time,
                 etc.
             num_to_retrieve: Number of highest matching chunks to return.

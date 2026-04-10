@@ -8,7 +8,6 @@ from uuid import UUID
 from fastapi import HTTPException
 from sqlalchemy import delete
 from sqlalchemy import desc
-from sqlalchemy import exists
 from sqlalchemy import func
 from sqlalchemy import nullsfirst
 from sqlalchemy import or_
@@ -16,10 +15,10 @@ from sqlalchemy import Row
 from sqlalchemy import select
 from sqlalchemy import update
 from sqlalchemy.exc import MultipleResultsFound
+from sqlalchemy.orm import joinedload
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm import Session
 
-from onyx.chat.models import DocumentRelevance
 from onyx.configs.chat_configs import HARD_DELETE_CHATS
 from onyx.configs.constants import MessageType
 from onyx.context.search.models import InferenceSection
@@ -29,6 +28,7 @@ from onyx.db.models import ChatMessage
 from onyx.db.models import ChatMessage__SearchDoc
 from onyx.db.models import ChatSession
 from onyx.db.models import ChatSessionSharedStatus
+from onyx.db.models import Persona
 from onyx.db.models import SearchDoc as DBSearchDoc
 from onyx.db.models import ToolCall
 from onyx.db.models import User
@@ -39,6 +39,7 @@ from onyx.llm.override_models import LLMOverride
 from onyx.llm.override_models import PromptOverride
 from onyx.server.query_and_chat.models import ChatMessageDetail
 from onyx.utils.logger import setup_logger
+from onyx.utils.postgres_sanitization import sanitize_string
 
 
 logger = setup_logger()
@@ -53,8 +54,21 @@ def get_chat_session_by_id(
     db_session: Session,
     include_deleted: bool = False,
     is_shared: bool = False,
+    eager_load_persona: bool = False,
 ) -> ChatSession:
     stmt = select(ChatSession).where(ChatSession.id == chat_session_id)
+
+    if eager_load_persona:
+        stmt = stmt.options(
+            joinedload(ChatSession.persona).options(
+                selectinload(Persona.tools),
+                selectinload(Persona.user_files),
+                selectinload(Persona.document_sets),
+                selectinload(Persona.attached_documents),
+                selectinload(Persona.hierarchy_nodes),
+            ),
+            joinedload(ChatSession.project),
+        )
 
     if is_shared:
         stmt = stmt.where(ChatSession.shared_status == ChatSessionSharedStatus.PUBLIC)
@@ -99,6 +113,7 @@ def get_chat_sessions_by_user(
     db_session: Session,
     include_onyxbot_flows: bool = False,
     limit: int = 50,
+    before: datetime | None = None,
     project_id: int | None = None,
     only_non_project_chats: bool = False,
     include_failed_chats: bool = False,
@@ -113,32 +128,50 @@ def get_chat_sessions_by_user(
     if deleted is not None:
         stmt = stmt.where(ChatSession.deleted == deleted)
 
-    if limit:
-        stmt = stmt.limit(limit)
+    if before is not None:
+        stmt = stmt.where(ChatSession.time_updated < before)
 
     if project_id is not None:
         stmt = stmt.where(ChatSession.project_id == project_id)
     elif only_non_project_chats:
         stmt = stmt.where(ChatSession.project_id.is_(None))
 
-    if not include_failed_chats:
-        non_system_message_exists_subq = (
-            exists()
-            .where(ChatMessage.chat_session_id == ChatSession.id)
-            .where(ChatMessage.message_type != MessageType.SYSTEM)
-            .correlate(ChatSession)
-        )
-
-        # Leeway for newly created chats that don't have messages yet
-        time = datetime.now(timezone.utc) - timedelta(minutes=5)
-        recently_created = ChatSession.time_created >= time
-
-        stmt = stmt.where(or_(non_system_message_exists_subq, recently_created))
+    # When filtering out failed chats, we apply the limit in Python after
+    # filtering rather than in SQL, since the post-filter may remove rows.
+    if limit and include_failed_chats:
+        stmt = stmt.limit(limit)
 
     result = db_session.execute(stmt)
-    chat_sessions = result.scalars().all()
+    chat_sessions = list(result.scalars().all())
 
-    return list(chat_sessions)
+    if not include_failed_chats and chat_sessions:
+        # Filter out "failed" sessions (those with only SYSTEM messages)
+        # using a separate efficient query instead of a correlated EXISTS
+        # subquery, which causes full sequential scans of chat_message.
+        leeway = datetime.now(timezone.utc) - timedelta(minutes=5)
+        session_ids = [cs.id for cs in chat_sessions if cs.time_created < leeway]
+
+        if session_ids:
+            valid_session_ids_stmt = (
+                select(ChatMessage.chat_session_id)
+                .where(ChatMessage.chat_session_id.in_(session_ids))
+                .where(ChatMessage.message_type != MessageType.SYSTEM)
+                .distinct()
+            )
+            valid_session_ids = set(
+                db_session.execute(valid_session_ids_stmt).scalars().all()
+            )
+
+            chat_sessions = [
+                cs
+                for cs in chat_sessions
+                if cs.time_created >= leeway or cs.id in valid_session_ids
+            ]
+
+        if limit:
+            chat_sessions = chat_sessions[:limit]
+
+    return chat_sessions
 
 
 def delete_orphaned_search_docs(db_session: Session) -> None:
@@ -672,79 +705,43 @@ def set_as_latest_chat_message(
     db_session.commit()
 
 
-def update_search_docs_table_with_relevance(
-    db_session: Session,
-    reference_db_search_docs: list[DBSearchDoc],
-    relevance_summary: DocumentRelevance,
-) -> None:
-    for search_doc in reference_db_search_docs:
-        relevance_data = relevance_summary.relevance_summaries.get(
-            search_doc.document_id
-        )
-        if relevance_data is not None:
-            db_session.execute(
-                update(DBSearchDoc)
-                .where(DBSearchDoc.id == search_doc.id)
-                .values(
-                    is_relevant=relevance_data.relevant,
-                    relevance_explanation=relevance_data.content,
-                )
-            )
-    db_session.commit()
-
-
-def _sanitize_for_postgres(value: str) -> str:
-    """Remove NUL (0x00) characters from strings as PostgreSQL doesn't allow them."""
-    sanitized = value.replace("\x00", "")
-    if value and not sanitized:
-        logger.warning("Sanitization removed all characters from string")
-    return sanitized
-
-
-def _sanitize_list_for_postgres(values: list[str]) -> list[str]:
-    """Remove NUL (0x00) characters from all strings in a list."""
-    return [_sanitize_for_postgres(v) for v in values]
-
-
 def create_db_search_doc(
     server_search_doc: ServerSearchDoc,
     db_session: Session,
     commit: bool = True,
 ) -> DBSearchDoc:
-    # Sanitize string fields to remove NUL characters (PostgreSQL doesn't allow them)
     db_search_doc = DBSearchDoc(
-        document_id=_sanitize_for_postgres(server_search_doc.document_id),
+        document_id=sanitize_string(server_search_doc.document_id),
         chunk_ind=server_search_doc.chunk_ind,
-        semantic_id=_sanitize_for_postgres(server_search_doc.semantic_identifier),
+        semantic_id=sanitize_string(server_search_doc.semantic_identifier),
         link=(
-            _sanitize_for_postgres(server_search_doc.link)
+            sanitize_string(server_search_doc.link)
             if server_search_doc.link is not None
             else None
         ),
-        blurb=_sanitize_for_postgres(server_search_doc.blurb),
+        blurb=sanitize_string(server_search_doc.blurb),
         source_type=server_search_doc.source_type,
         boost=server_search_doc.boost,
         hidden=server_search_doc.hidden,
         doc_metadata=server_search_doc.metadata,
         is_relevant=server_search_doc.is_relevant,
         relevance_explanation=(
-            _sanitize_for_postgres(server_search_doc.relevance_explanation)
+            sanitize_string(server_search_doc.relevance_explanation)
             if server_search_doc.relevance_explanation is not None
             else None
         ),
-        # For docs further down that aren't reranked, we can't use the retrieval score
         score=server_search_doc.score or 0.0,
-        match_highlights=_sanitize_list_for_postgres(
-            server_search_doc.match_highlights
-        ),
+        match_highlights=[
+            sanitize_string(h) for h in server_search_doc.match_highlights
+        ],
         updated_at=server_search_doc.updated_at,
         primary_owners=(
-            _sanitize_list_for_postgres(server_search_doc.primary_owners)
+            [sanitize_string(o) for o in server_search_doc.primary_owners]
             if server_search_doc.primary_owners is not None
             else None
         ),
         secondary_owners=(
-            _sanitize_list_for_postgres(server_search_doc.secondary_owners)
+            [sanitize_string(o) for o in server_search_doc.secondary_owners]
             if server_search_doc.secondary_owners is not None
             else None
         ),
@@ -839,7 +836,7 @@ def translate_db_message_to_chat_message_detail(
         for db_doc in chat_message.search_docs
     ]
     top_documents = sorted(
-        top_documents, key=lambda doc: (doc.score or 0.0), reverse=True
+        top_documents, key=lambda doc: doc.score or 0.0, reverse=True
     )
     chat_msg_detail = ChatMessageDetail(
         chat_session_id=chat_message.chat_session_id,

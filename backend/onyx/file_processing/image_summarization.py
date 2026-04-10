@@ -15,7 +15,7 @@ from onyx.llm.models import TextContentPart
 from onyx.llm.models import UserMessage
 from onyx.llm.utils import llm_response_to_string
 from onyx.tracing.llm_utils import llm_generation_span
-from onyx.tracing.llm_utils import record_llm_span_output
+from onyx.tracing.llm_utils import record_llm_response
 from onyx.utils.b64 import get_image_type_from_bytes
 from onyx.utils.logger import setup_logger
 
@@ -88,9 +88,13 @@ def summarize_image_with_error_handling(
     try:
         return summarize_image_pipeline(llm, image_data, user_prompt, system_prompt)
     except UnsupportedImageFormatError:
+        magic_hex = image_data[:8].hex() if image_data else "empty"
         logger.info(
-            "Skipping image summarization due to unsupported MIME type for %s",
+            "Skipping image summarization due to unsupported MIME type "
+            "for %s (magic_bytes=%s, size=%d bytes)",
             context_name,
+            magic_hex,
+            len(image_data),
         )
         return None
 
@@ -128,15 +132,29 @@ def _summarize_image(
         ) as span_generation:
             # Note: We don't include the actual image in the span input to avoid bloating traces
             response = llm.invoke(messages)
+            record_llm_response(span_generation, response)
             summary = llm_response_to_string(response)
-            record_llm_span_output(span_generation, summary, response.usage)
 
         return summary
 
     except Exception as e:
-        error_msg = f"Summarization failed. Messages: {messages}"
-        error_msg = error_msg[:1024]
-        raise ValueError(error_msg) from e
+        # Extract structured details from LiteLLM exceptions when available,
+        # rather than dumping the full messages payload (which contains base64
+        # image data and produces enormous, unreadable error logs).
+        str_e = str(e)
+        if len(str_e) > 512:
+            str_e = str_e[:512] + "... (truncated)"
+        parts = [f"Summarization failed: {type(e).__name__}: {str_e}"]
+        status_code = getattr(e, "status_code", None)
+        llm_provider = getattr(e, "llm_provider", None)
+        model = getattr(e, "model", None)
+        if status_code is not None:
+            parts.append(f"status_code={status_code}")
+        if llm_provider is not None:
+            parts.append(f"llm_provider={llm_provider}")
+        if model is not None:
+            parts.append(f"model={model}")
+        raise ValueError(" | ".join(parts)) from e
 
 
 def _encode_image_for_llm_prompt(image_data: bytes) -> str:

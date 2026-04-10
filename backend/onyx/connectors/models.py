@@ -385,6 +385,7 @@ class IndexingDocument(Document):
 class SlimDocument(BaseModel):
     id: str
     external_access: ExternalAccess | None = None
+    parent_hierarchy_raw_node_id: str | None = None
 
 
 class HierarchyNode(BaseModel):
@@ -483,8 +484,9 @@ class ConnectorStopSignal(Exception):
 
 
 class OnyxMetadata(BaseModel):
-    # Note that doc_id cannot be overriden here as it may cause issues
-    # with the display functionalities in the UI. Ask @chris if clarification is needed.
+    # Careful overriding the document_id, may cause visual issues in the UI.
+    # Kept here for API based use cases mostly
+    document_id: str | None = None
     source_type: DocumentSource | None = None
     link: str | None = None
     file_display_name: str | None = None

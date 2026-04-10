@@ -2,7 +2,6 @@ from collections.abc import Sequence
 from datetime import datetime
 from enum import Enum
 from typing import Any
-from uuid import UUID
 
 from pydantic import BaseModel
 from pydantic import Field
@@ -98,8 +97,13 @@ class BaseFilters(BaseModel):
 
 
 class UserFileFilters(BaseModel):
-    user_file_ids: list[UUID] | None = None
-    project_id: int | None = None
+    # Scopes search to user files tagged with a given project/persona in Vespa.
+    # These are NOT simply the IDs of the current project or persona — they are
+    # only set when the persona's/project's user files overflowed the LLM
+    # context window and must be searched via vector DB instead of being loaded
+    # directly into the prompt.
+    project_id_filter: int | None = None
+    persona_id_filter: int | None = None
 
 
 class AssistantKnowledgeFilters(BaseModel):
@@ -140,7 +144,7 @@ class ChunkContext(BaseModel):
 
     @field_validator("chunks_above", "chunks_below")
     @classmethod
-    def check_non_negative(cls, value: int, field: Any) -> int:
+    def check_non_negative(cls, value: int | None, field: Any) -> int | None:
         if value is not None and value < 0:
             raise ValueError(f"{field.name} must be non-negative")
         return value
@@ -475,3 +479,16 @@ class RerankMetricsContainer(BaseModel):
 
     metrics: list[ChunkMetric]
     raw_similarity_scores: list[float]
+
+
+class PersonaSearchInfo(BaseModel):
+    """Snapshot of persona data needed by the search pipeline.
+
+    Extracted from the ORM Persona before the DB session is released so that
+    SearchTool and search_pipeline never lazy-load relationships post-commit.
+    """
+
+    document_set_names: list[str]
+    search_start_date: datetime | None
+    attached_document_ids: list[str]
+    hierarchy_node_ids: list[int]

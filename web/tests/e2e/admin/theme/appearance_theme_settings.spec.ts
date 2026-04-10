@@ -1,7 +1,7 @@
 import { test, expect } from "@tests/e2e/fixtures/eeFeatures";
 import { loginAs } from "@tests/e2e/utils/auth";
 
-test.describe("Appearance Theme Settings", () => {
+test.describe("Appearance Theme Settings @exclusive", () => {
   const TEST_VALUES = {
     applicationName: `TestApp${Date.now()}`,
     greetingMessage: "Welcome to our test application",
@@ -36,11 +36,17 @@ test.describe("Appearance Theme Settings", () => {
 
   test.afterEach(async ({ page }) => {
     // Reset settings to defaults
-    await page.goto("http://localhost:3000/admin/theme");
+    await page.goto("/admin/theme");
     await page.waitForLoadState("networkidle");
 
-    // Clear form fields
+    // If the form isn't visible (e.g. EE license not active, or test failed
+    // before navigating here), skip cleanup — there's nothing to reset.
     const appNameInput = page.locator('[data-label="application-name-input"]');
+    if (!(await appNameInput.isVisible({ timeout: 3000 }).catch(() => false))) {
+      return;
+    }
+
+    // Clear form fields
     await appNameInput.clear();
 
     const greetingInput = page.locator('[data-label="greeting-message-input"]');
@@ -56,8 +62,8 @@ test.describe("Appearance Theme Settings", () => {
     const noticeToggle = page.locator(
       '[data-label="first-visit-notice-toggle"]'
     );
-    const isChecked = await noticeToggle.getAttribute("data-state");
-    if (isChecked === "checked") {
+    const isChecked = await noticeToggle.getAttribute("aria-checked");
+    if (isChecked === "true") {
       await noticeToggle.click();
       await page.waitForTimeout(300);
     }
@@ -82,11 +88,7 @@ test.describe("Appearance Theme Settings", () => {
   test("admin configures branding and verifies across pages", async ({
     page,
   }) => {
-    // 1. Navigate to theme page
-    await page.goto("http://localhost:3000/admin/theme");
-    await page.waitForLoadState("networkidle");
-
-    // 2. Fill in Application Name
+    // 1. Fill in Application Name (page already navigated in beforeEach)
     const appNameInput = page.locator('[data-label="application-name-input"]');
     await appNameInput.fill(TEST_VALUES.applicationName);
 
@@ -123,8 +125,8 @@ test.describe("Appearance Theme Settings", () => {
 
     // 9. Enable Consent Requirement (only if not already enabled)
     const consentToggle = page.locator('[data-label="require-consent-toggle"]');
-    const consentState = await consentToggle.getAttribute("data-state");
-    if (consentState !== "checked") {
+    const consentState = await consentToggle.getAttribute("aria-checked");
+    if (consentState !== "true") {
       await consentToggle.click();
     }
 
@@ -166,7 +168,7 @@ test.describe("Appearance Theme Settings", () => {
     await page.evaluate(() => {
       localStorage.removeItem("allUsersInitialPopupFlowCompleted");
     });
-    await page.goto("http://localhost:3000/app");
+    await page.goto("/app");
     await page.waitForLoadState("networkidle");
 
     // 16. Handle consent modal

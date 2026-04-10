@@ -8,10 +8,10 @@ RUN cat /tmp/chromium-linux.zip.part.* > /tmp/chromium-linux.zip
 
 LABEL com.danswer.maintainer="founders@onyx.app"
 LABEL com.danswer.description="This image is the web/frontend container of Onyx which \
-contains code for both the Community and Enterprise editions of Onyx. If you do not \
-have a contract or agreement with DanswerAI, you are not permitted to use the Enterprise \
-Edition features outside of personal development or testing purposes. Please reach out to \
-founders@onyx.app for more information. Please visit https://github.com/onyx-dot-app/onyx"
+    contains code for both the Community and Enterprise editions of Onyx. If you do not \
+    have a contract or agreement with DanswerAI, you are not permitted to use the Enterprise \
+    Edition features outside of personal development or testing purposes. Please reach out to \
+    founders@onyx.app for more information. Please visit https://github.com/onyx-dot-app/onyx"
 
 # Build argument for Craft support (disabled by default)
 # Use --build-arg ENABLE_CRAFT=true to include Node.js and opencode CLI
@@ -44,53 +44,54 @@ RUN sed -i '/debian-security/!s/deb.debian.org/ftp.us.debian.org/g' /etc/apt/sou
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        cmake \
-        curl \
-        zip \
-        unzip \
-        ca-certificates \
-        libgnutls30 \
-        libblkid1 \
-        libmount1 \
-        libsmartcols1 \
-        libuuid1 \
-        libxmlsec1-dev \
-        pkg-config \
-        procps \
-        tini \
-        gcc \
-        nano \
-        vim \
-        libjemalloc2 \
-        && \
+    cmake \
+    curl \
+    zip \
+    unzip \
+    ca-certificates \
+    libgnutls30 \
+    libblkid1 \
+    libmount1 \
+    libsmartcols1 \
+    libuuid1 \
+    libxmlsec1-dev \
+    pkg-config \
+    # Install procps so kubernetes exec sessions can use ps aux for debugging
+    procps \
+    tini \
+    gcc \
+    nano \
+    vim \
+    libjemalloc2 \
+    && \
     rm -rf /var/lib/apt/lists/* && \
     apt-get clean
 
 
 # Extract playwright browsers and cleanup archives in same layer
 RUN mkdir -p ~/.cache/ms-playwright/ffmpeg-1009 \
- && unzip /tmp/ffmpeg-linux.zip -d ~/.cache/ms-playwright/ffmpeg-1009 \
- && touch ~/.cache/ms-playwright/ffmpeg-1009/INSTALLATION_COMPLETE \
- && mkdir -p ~/.cache/ms-playwright/chromium-1097 \
- && unzip /tmp/chromium-linux.zip -d ~/.cache/ms-playwright/chromium-1097 \
- && touch ~/.cache/ms-playwright/chromium-1097/INSTALLATION_COMPLETE \
- && rm -f /tmp/ffmpeg-linux.zip /tmp/chromium-linux.zip /tmp/chromium-linux.zip.part.*
+    && unzip /tmp/ffmpeg-linux.zip -d ~/.cache/ms-playwright/ffmpeg-1009 \
+    && touch ~/.cache/ms-playwright/ffmpeg-1009/INSTALLATION_COMPLETE \
+    && mkdir -p ~/.cache/ms-playwright/chromium-1097 \
+    && unzip /tmp/chromium-linux.zip -d ~/.cache/ms-playwright/chromium-1097 \
+    && touch ~/.cache/ms-playwright/chromium-1097/INSTALLATION_COMPLETE \
+    && rm -f /tmp/ffmpeg-linux.zip /tmp/chromium-linux.zip /tmp/chromium-linux.zip.part.*
 
 # Conditionally install Node.js 20 for Craft (required for Next.js)
 # Only installed when ENABLE_CRAFT=true
 RUN if [ "$ENABLE_CRAFT" = "true" ]; then \
-        echo "Installing Node.js 20 for Craft support..." && \
-        curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-        apt-get install -y nodejs && \
-        rm -rf /var/lib/apt/lists/*; \
+    echo "Installing Node.js 20 for Craft support..." && \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
+    rm -rf /var/lib/apt/lists/*; \
     fi
 
 # Conditionally install opencode CLI for Craft agent functionality
 # Only installed when ENABLE_CRAFT=true
 # TODO: download a specific, versioned release of the opencode CLI
 RUN if [ "$ENABLE_CRAFT" = "true" ]; then \
-        echo "Installing opencode CLI for Craft support..." && \
-        curl -fsSL https://opencode.ai/install | bash; \
+    echo "Installing opencode CLI for Craft support..." && \
+    curl -fsSL https://opencode.ai/install | bash; \
     fi
 ENV PATH="/root/.opencode/bin:${PATH}"
 
@@ -99,8 +100,8 @@ ENV PATH="/root/.opencode/bin:${PATH}"
 COPY ./requirements/default.txt /tmp/requirements.txt
 COPY ./requirements/ee.txt /tmp/ee-requirements.txt
 RUN uv pip install --system --no-cache-dir --upgrade \
-        -r /tmp/requirements.txt \
-        -r /tmp/ee-requirements.txt && \
+    -r /tmp/requirements.txt \
+    -r /tmp/ee-requirements.txt && \
     pip uninstall -y py && \
     playwright install chromium && \
     playwright install-deps chromium && \
@@ -113,19 +114,19 @@ RUN uv pip install --system --no-cache-dir --upgrade \
     # perl-base could only be removed with --allow-remove-essential
     apt-get update && \
     apt-get remove -y --allow-remove-essential --no-install-recommends \
-        perl-base \
-        xserver-common \
-        xvfb \
-        cmake \
-        libldap-2.5-0 \
-        libxmlsec1-dev \
-        pkg-config \
-        gcc && \
+    perl-base \
+    xserver-common \
+    xvfb \
+    cmake \
+    libldap-2.5-0 \
+    libxmlsec1-dev \
+    pkg-config \
+    gcc && \
     # Install here to avoid some packages being cleaned up above
     apt-get install -y --no-install-recommends \
-        libxmlsec1-openssl \
-        # Install postgresql-client for easy manual tests
-        postgresql-client && \
+    libxmlsec1-openssl \
+    # Install postgresql-client for easy manual tests
+    postgresql-client && \
     apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/* && \
     rm -rf ~/.cache/uv /tmp/*.txt && \
@@ -134,16 +135,16 @@ RUN uv pip install --system --no-cache-dir --upgrade \
 # Pre-download all models/data in single layer and cleanup Python cache
 # NLTK data for read-only filesystems, tokenizers, and tiktoken encodings
 RUN python -c "import nltk; \
-nltk.download('stopwords', download_dir='/usr/share/nltk_data', quiet=True); \
-nltk.download('punkt_tab', download_dir='/usr/share/nltk_data', quiet=True);" && \
-python -c "from tokenizers import Tokenizer; \
-Tokenizer.from_pretrained('nomic-ai/nomic-embed-text-v1')" && \
-python -c "import tiktoken; \
-tiktoken.get_encoding('cl100k_base')" && \
-chown -R onyx:onyx /usr/share/nltk_data /usr/share/huggingface /usr/share/tiktoken_cache && \
-find /usr/local/lib/python3.11 -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true && \
-find /usr/local/lib/python3.11 -type f -name '*.pyc' -delete 2>/dev/null || true && \
-find /usr/local/lib/python3.11 -type f -name '*.pyo' -delete 2>/dev/null || true
+    nltk.download('stopwords', download_dir='/usr/share/nltk_data', quiet=True); \
+    nltk.download('punkt_tab', download_dir='/usr/share/nltk_data', quiet=True);" && \
+    python -c "from tokenizers import Tokenizer; \
+    Tokenizer.from_pretrained('nomic-ai/nomic-embed-text-v1')" && \
+    python -c "import tiktoken; \
+    tiktoken.get_encoding('cl100k_base')" && \
+    chown -R onyx:onyx /usr/share/nltk_data /usr/share/huggingface /usr/share/tiktoken_cache && \
+    find /usr/local/lib/python3.11 -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true && \
+    find /usr/local/lib/python3.11 -type f -name '*.pyc' -delete 2>/dev/null || true && \
+    find /usr/local/lib/python3.11 -type f -name '*.pyo' -delete 2>/dev/null || true
 # nltk.download('wordnet', quiet=True); introduce this back if lemmatization is needed
 
 USER onyx
@@ -170,13 +171,14 @@ COPY --chown=onyx:onyx ./scripts/debugging /app/scripts/debugging
 COPY --chown=onyx:onyx ./scripts/force_delete_connector_by_id.py /app/scripts/force_delete_connector_by_id.py
 COPY --chown=onyx:onyx ./scripts/supervisord_entrypoint.sh /app/scripts/supervisord_entrypoint.sh
 COPY --chown=onyx:onyx ./scripts/setup_craft_templates.sh /app/scripts/setup_craft_templates.sh
+COPY --chown=onyx:onyx ./scripts/reencrypt_secrets.py /app/scripts/reencrypt_secrets.py
 RUN chmod +x /app/scripts/supervisord_entrypoint.sh /app/scripts/setup_craft_templates.sh
 
 # Run Craft template setup at build time when ENABLE_CRAFT=true
 # This pre-bakes demo data, Python venv, and npm dependencies into the image
 RUN if [ "$ENABLE_CRAFT" = "true" ]; then \
-        echo "Running Craft template setup at build time..." && \
-        ENABLE_CRAFT=true /app/scripts/setup_craft_templates.sh; \
+    echo "Running Craft template setup at build time..." && \
+    ENABLE_CRAFT=true /app/scripts/setup_craft_templates.sh; \
     fi
 
 # Set Craft template paths to the in-image locations

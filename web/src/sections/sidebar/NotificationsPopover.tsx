@@ -3,17 +3,14 @@
 import useSWR from "swr";
 import { useRouter } from "next/navigation";
 import { Route } from "next";
-import { usePostHog } from "posthog-js/react";
-import {
-  Notification,
-  NotificationType,
-} from "@/app/admin/settings/interfaces";
+import { track, AnalyticsEvent } from "@/lib/analytics";
+import { Notification, NotificationType } from "@/interfaces/settings";
 import { errorHandlingFetcher } from "@/lib/fetcher";
 import Text from "@/refresh-components/texts/Text";
 import LineItem from "@/refresh-components/buttons/LineItem";
 import { SvgSparkle, SvgRefreshCw, SvgX } from "@opal/icons";
 import { IconProps } from "@opal/types";
-import IconButton from "@/refresh-components/buttons/IconButton";
+import { Button } from "@opal/components";
 import SimpleLoader from "@/refresh-components/loaders/SimpleLoader";
 import { Section } from "@/layouts/general-layouts";
 import Separator from "@/refresh-components/Separator";
@@ -41,7 +38,6 @@ export default function NotificationsPopover({
   onShowBuildIntro,
 }: NotificationsPopoverProps) {
   const router = useRouter();
-  const posthog = usePostHog();
   const {
     data: notifications,
     mutate,
@@ -65,7 +61,7 @@ export default function NotificationsPopover({
 
     // Track release notes clicks
     if (notification.notif_type === NotificationType.RELEASE_NOTES) {
-      posthog?.capture("release_notification_clicked", {
+      track(AnalyticsEvent.RELEASE_NOTIFICATION_CLICKED, {
         version: notification.additional_data?.version,
       });
     }
@@ -108,7 +104,7 @@ export default function NotificationsPopover({
     <Section gap={0.5} padding={0.25}>
       <Section flexDirection="row" justifyContent="between" padding={0.5}>
         <Text headingH3>Notifications</Text>
-        <IconButton icon={SvgX} internal onClick={onClose} />
+        <Button icon={SvgX} prominence="tertiary" size="sm" onClick={onClose} />
       </Section>
 
       <Separator noPadding className="px-2" />
@@ -140,8 +136,9 @@ export default function NotificationsPopover({
                   strikethrough={notification.dismissed}
                   rightChildren={
                     !notification.dismissed ? (
-                      <IconButton
-                        internal
+                      <Button
+                        prominence="tertiary"
+                        size="sm"
                         icon={SvgX}
                         onClick={(e) => handleDismiss(notification.id, e)}
                         tooltip="Dismiss"

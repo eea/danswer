@@ -68,6 +68,7 @@ from onyx.server.features.build.db.sandbox import create_sandbox__no_commit
 from onyx.server.features.build.db.sandbox import get_running_sandbox_count_by_tenant
 from onyx.server.features.build.db.sandbox import get_sandbox_by_session_id
 from onyx.server.features.build.db.sandbox import get_sandbox_by_user_id
+from onyx.server.features.build.db.sandbox import get_snapshots_for_session
 from onyx.server.features.build.db.sandbox import update_sandbox_heartbeat
 from onyx.server.features.build.db.sandbox import update_sandbox_status__no_commit
 from onyx.server.features.build.sandbox import get_sandbox_manager
@@ -75,6 +76,9 @@ from onyx.server.features.build.sandbox.kubernetes.internal.acp_exec_client impo
     SSEKeepalive,
 )
 from onyx.server.features.build.sandbox.models import LLMProviderConfig
+from onyx.server.features.build.sandbox.tasks.tasks import (
+    _get_disabled_user_library_paths,
+)
 from onyx.server.features.build.session.prompts import BUILD_NAMING_SYSTEM_PROMPT
 from onyx.server.features.build.session.prompts import BUILD_NAMING_USER_PROMPT
 from onyx.server.features.build.session.prompts import (
@@ -83,7 +87,7 @@ from onyx.server.features.build.session.prompts import (
 from onyx.server.features.build.session.prompts import FOLLOWUP_SUGGESTIONS_USER_PROMPT
 from onyx.tracing.framework.create import ensure_trace
 from onyx.tracing.llm_utils import llm_generation_span
-from onyx.tracing.llm_utils import record_llm_span_output
+from onyx.tracing.llm_utils import record_llm_response
 from onyx.utils.logger import setup_logger
 from shared_configs.configs import MULTI_TENANT
 from shared_configs.contextvars import get_current_tenant_id
@@ -337,8 +341,7 @@ class SessionManager:
                 )
             else:
                 logger.warning(
-                    f"Requested provider type {requested_provider_type} not found, "
-                    f"falling back to default"
+                    f"Requested provider type {requested_provider_type} not found, falling back to default"
                 )
 
         # Fallback to system default
@@ -349,7 +352,11 @@ class SessionManager:
         return LLMProviderConfig(
             provider=default_model.llm_provider.provider,
             model_name=default_model.name,
-            api_key=default_model.llm_provider.api_key,
+            api_key=(
+                default_model.llm_provider.api_key.get_value(apply_mask=False)
+                if default_model.llm_provider.api_key
+                else None
+            ),
             api_base=default_model.llm_provider.api_base,
         )
 
@@ -454,8 +461,7 @@ class SessionManager:
         self._db_session.flush()
         session_id = str(build_session.id)
         logger.info(
-            f"Created build session {session_id} for user {user_id} "
-            f"(port: {nextjs_port})"
+            f"Created build session {session_id} for user {user_id} (port: {nextjs_port})"
         )
 
         # Check if user already has a sandbox (one sandbox per user model)
@@ -473,8 +479,7 @@ class SessionManager:
             ):
                 # Re-provision sandbox (pod doesn't exist or failed)
                 logger.info(
-                    f"Re-provisioning {sandbox.status.value} sandbox {sandbox_id} "
-                    f"for user {user_id}"
+                    f"Re-provisioning {sandbox.status.value} sandbox {sandbox_id} for user {user_id}"
                 )
                 sandbox_info = self._sandbox_manager.provision(
                     sandbox_id=sandbox_id,
@@ -490,8 +495,7 @@ class SessionManager:
                 # Verify pod is healthy before reusing (use short timeout for quick check)
                 if not self._sandbox_manager.health_check(sandbox_id, timeout=5.0):
                     logger.warning(
-                        f"Sandbox {sandbox_id} marked as {sandbox.status} but pod is "
-                        f"unhealthy/missing. Entering recovery mode."
+                        f"Sandbox {sandbox_id} marked as {sandbox.status} but pod is unhealthy/missing. Entering recovery mode."
                     )
                     # Terminate to clean up any lingering K8s resources
                     self._sandbox_manager.terminate(sandbox_id)
@@ -516,8 +520,7 @@ class SessionManager:
                     )
                 else:
                     logger.info(
-                        f"Reusing existing sandbox {sandbox_id} (status: {sandbox.status}) "
-                        f"for new session {session_id}"
+                        f"Reusing existing sandbox {sandbox_id} (status: {sandbox.status}) for new session {session_id}"
                     )
             else:
                 # PROVISIONING status - sandbox is being created by another request
@@ -559,6 +562,18 @@ class SessionManager:
         user_name = user.personal_name if user else None
         user_role = user.personal_role if user else None
 
+        # Get excluded user library paths (files with sync_disabled=True)
+        # Only query if not using demo data (user library only applies to user files)
+        excluded_user_library_paths: list[str] | None = None
+        if not demo_data_enabled:
+            excluded_user_library_paths = _get_disabled_user_library_paths(
+                self._db_session, str(user_id)
+            )
+            if excluded_user_library_paths:
+                logger.debug(
+                    f"Excluding {len(excluded_user_library_paths)} disabled user library paths"
+                )
+
         self._sandbox_manager.setup_session_workspace(
             sandbox_id=sandbox.id,
             session_id=build_session.id,
@@ -571,7 +586,9 @@ class SessionManager:
             user_work_area=user_work_area,
             user_level=user_level,
             use_demo_data=demo_data_enabled,
+            excluded_user_library_paths=excluded_user_library_paths,
         )
+
         sandbox_id = sandbox.id
         logger.info(
             f"Successfully created session {session_id} with workspace in sandbox {sandbox.id}"
@@ -625,15 +642,28 @@ class SessionManager:
 
             if sandbox and sandbox.status.is_active():
                 # Quick health check to verify sandbox is actually responsive
-                if self._sandbox_manager.health_check(sandbox.id, timeout=5.0):
+                # AND verify the session workspace still exists on disk
+                # (it may have been wiped if the sandbox was re-provisioned)
+                is_healthy = self._sandbox_manager.health_check(sandbox.id, timeout=5.0)
+                workspace_exists = (
+                    is_healthy
+                    and self._sandbox_manager.session_workspace_exists(
+                        sandbox.id, existing.id
+                    )
+                )
+                if is_healthy and workspace_exists:
                     logger.info(
                         f"Returning existing empty session {existing.id} for user {user_id}"
                     )
                     return existing
+                elif not is_healthy:
+                    logger.warning(
+                        f"Empty session {existing.id} has unhealthy sandbox {sandbox.id}. Deleting and creating fresh session."
+                    )
                 else:
                     logger.warning(
-                        f"Empty session {existing.id} has unhealthy sandbox {sandbox.id}. "
-                        f"Deleting and creating fresh session."
+                        f"Empty session {existing.id} workspace missing in sandbox "
+                        f"{sandbox.id}. Deleting and creating fresh session."
                     )
             else:
                 logger.warning(
@@ -834,10 +864,8 @@ class SessionManager:
                     response = llm.invoke(
                         prompt_messages, reasoning_effort=ReasoningEffort.OFF
                     )
+                    record_llm_response(span_generation, response)
                     generated_name = llm_response_to_string(response).strip().strip('"')
-                    record_llm_span_output(
-                        span_generation, generated_name, response.usage
-                    )
 
             # Ensure the name isn't too long (max 50 chars)
             if len(generated_name) > 50:
@@ -894,8 +922,8 @@ class SessionManager:
                         reasoning_effort=ReasoningEffort.OFF,
                         max_tokens=500,
                     )
+                    record_llm_response(span_generation, response)
                     raw_output = llm_response_to_string(response).strip()
-                    record_llm_span_output(span_generation, raw_output, response.usage)
 
             return self._parse_suggestions(raw_output)
         except Exception as e:
@@ -1015,6 +1043,23 @@ class SessionManager:
                 # Log but don't fail - session can still be deleted even if
                 # workspace cleanup fails (e.g., if pod is already terminated)
                 logger.warning(f"Failed to cleanup session workspace {session_id}: {e}")
+
+        # Delete snapshot files from S3 before removing DB records
+        snapshots = get_snapshots_for_session(self._db_session, session_id)
+        if snapshots:
+            from onyx.file_store.file_store import get_default_file_store
+            from onyx.server.features.build.sandbox.manager.snapshot_manager import (
+                SnapshotManager,
+            )
+
+            snapshot_manager = SnapshotManager(get_default_file_store())
+            for snapshot in snapshots:
+                try:
+                    snapshot_manager.delete_snapshot(snapshot.storage_path)
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to delete snapshot file {snapshot.storage_path}: {e}"
+                    )
 
         # Delete session (uses flush, caller commits)
         return delete_build_session__no_commit(session_id, user_id, self._db_session)
@@ -1157,8 +1202,7 @@ class SessionManager:
         # The log file auto-rotates to keep only the last N lines (default 5000).
         # Add a prominent separator for visual identification of new message streams.
         log_separator(
-            f"NEW MESSAGE STREAM - Session: {str(session_id)[:8]} - "
-            f"User: {str(user_id)[:8]}"
+            f"NEW MESSAGE STREAM - Session: {str(session_id)[:8]} - User: {str(user_id)[:8]}"
         )
         packet_logger.log_raw(
             "STREAM-START",
@@ -1662,6 +1706,62 @@ class SessionManager:
         docx_filename = filename.rsplit(".", 1)[0] + ".docx"
         return (docx_bytes, docx_filename)
 
+    def get_pptx_preview(
+        self,
+        session_id: UUID,
+        user_id: UUID,
+        path: str,
+    ) -> dict[str, Any] | None:
+        """
+        Generate slide image previews for a PPTX file.
+
+        Converts the PPTX to individual JPEG slide images using
+        soffice + pdftoppm, with caching to avoid re-conversion.
+
+        Args:
+            session_id: The session UUID
+            user_id: The user ID to verify ownership
+            path: Relative path to the PPTX file within session workspace
+
+        Returns:
+            Dict with slide_count, slide_paths, and cached flag,
+            or None if session not found.
+
+        Raises:
+            ValueError: If path is invalid or conversion fails
+        """
+        import hashlib
+
+        # Verify session ownership
+        session = get_build_session(session_id, user_id, self._db_session)
+        if session is None:
+            return None
+
+        sandbox = get_sandbox_by_user_id(self._db_session, user_id)
+        if sandbox is None:
+            return None
+
+        # Validate file extension
+        if not path.lower().endswith(".pptx"):
+            raise ValueError("Only .pptx files are supported for preview")
+
+        # Compute cache directory from path hash
+        path_hash = hashlib.sha256(path.encode()).hexdigest()[:12]
+        cache_dir = f"outputs/.pptx-preview/{path_hash}"
+
+        slide_paths, cached = self._sandbox_manager.generate_pptx_preview(
+            sandbox_id=sandbox.id,
+            session_id=session_id,
+            pptx_path=path,
+            cache_dir=cache_dir,
+        )
+
+        return {
+            "slide_count": len(slide_paths),
+            "slide_paths": slide_paths,
+            "cached": cached,
+        }
+
     def get_webapp_info(
         self,
         session_id: UUID,
@@ -1690,6 +1790,7 @@ class SessionManager:
                 "webapp_url": None,
                 "status": "no_sandbox",
                 "ready": False,
+                "sharing_scope": session.sharing_scope,
             }
 
         # Return the proxy URL - the proxy handles routing to the correct sandbox
@@ -1702,11 +1803,21 @@ class SessionManager:
             # Quick health check: can the API server reach the NextJS dev server?
             ready = self._check_nextjs_ready(sandbox.id, session.nextjs_port)
 
+            # If not ready, ask the sandbox manager to ensure Next.js is running.
+            # For the local backend this triggers a background restart so that the
+            # frontend poll loop eventually sees ready=True without the user having
+            # to manually recreate the session.
+            if not ready:
+                self._sandbox_manager.ensure_nextjs_running(
+                    sandbox.id, session_id, session.nextjs_port
+                )
+
         return {
             "has_webapp": session.nextjs_port is not None,
             "webapp_url": webapp_url,
             "status": sandbox.status.value,
             "ready": ready,
+            "sharing_scope": session.sharing_scope,
         }
 
     def _check_nextjs_ready(self, sandbox_id: UUID, port: int) -> bool:
@@ -1817,6 +1928,94 @@ class SessionManager:
 
         return zip_buffer.getvalue(), filename
 
+    def download_directory(
+        self,
+        session_id: UUID,
+        user_id: UUID,
+        path: str,
+    ) -> tuple[bytes, str] | None:
+        """
+        Create a zip file of an arbitrary directory in the session workspace.
+
+        Args:
+            session_id: The session UUID
+            user_id: The user ID to verify ownership
+            path: Relative path to the directory (within session workspace)
+
+        Returns:
+            Tuple of (zip_bytes, filename) or None if session not found
+
+        Raises:
+            ValueError: If path traversal attempted or path is not a directory
+        """
+        # Verify session ownership
+        session = get_build_session(session_id, user_id, self._db_session)
+        if session is None:
+            return None
+
+        sandbox = get_sandbox_by_user_id(self._db_session, user_id)
+        if sandbox is None:
+            return None
+
+        # Check if directory exists
+        try:
+            self._sandbox_manager.list_directory(
+                sandbox_id=sandbox.id,
+                session_id=session_id,
+                path=path,
+            )
+        except ValueError:
+            return None
+
+        # Recursively collect all files
+        def collect_files(dir_path: str) -> list[tuple[str, str]]:
+            """Collect all files recursively, returning (full_path, arcname) tuples."""
+            files: list[tuple[str, str]] = []
+            try:
+                entries = self._sandbox_manager.list_directory(
+                    sandbox_id=sandbox.id,
+                    session_id=session_id,
+                    path=dir_path,
+                )
+                for entry in entries:
+                    if entry.is_directory:
+                        files.extend(collect_files(entry.path))
+                    else:
+                        # arcname is relative to the target directory
+                        prefix_len = len(path) + 1  # +1 for trailing slash
+                        arcname = entry.path[prefix_len:]
+                        files.append((entry.path, arcname))
+            except ValueError:
+                pass
+            return files
+
+        file_list = collect_files(path)
+
+        # Create zip file in memory
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+            for full_path, arcname in file_list:
+                try:
+                    content = self._sandbox_manager.read_file(
+                        sandbox_id=sandbox.id,
+                        session_id=session_id,
+                        path=full_path,
+                    )
+                    zip_file.writestr(arcname, content)
+                except ValueError:
+                    pass
+
+        zip_buffer.seek(0)
+
+        # Use the directory name for the zip filename
+        dir_name = Path(path).name
+        safe_name = "".join(
+            c if c.isalnum() or c in ("-", "_", ".") else "_" for c in dir_name
+        )
+        filename = f"{safe_name}.zip"
+
+        return zip_buffer.getvalue(), filename
+
     # =========================================================================
     # File System Operations
     # =========================================================================
@@ -1851,11 +2050,18 @@ class SessionManager:
             return None
 
         # Use sandbox manager to list directory (works for both local and K8s)
-        raw_entries = self._sandbox_manager.list_directory(
-            sandbox_id=sandbox.id,
-            session_id=session_id,
-            path=path,
-        )
+        # If the directory doesn't exist (e.g., session workspace not yet loaded),
+        # return an empty listing rather than erroring out.
+        try:
+            raw_entries = self._sandbox_manager.list_directory(
+                sandbox_id=sandbox.id,
+                session_id=session_id,
+                path=path,
+            )
+        except ValueError as e:
+            if "path traversal" in str(e).lower():
+                raise
+            return DirectoryListing(path=path, entries=[])
 
         # Filter hidden files and directories
         entries: list[FileSystemEntry] = [

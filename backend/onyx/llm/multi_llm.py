@@ -1,4 +1,8 @@
+import os
+import threading
 from collections.abc import Iterator
+from contextlib import contextmanager
+from contextlib import nullcontext
 from typing import Any
 from typing import cast
 from typing import TYPE_CHECKING
@@ -38,16 +42,19 @@ from onyx.llm.well_known_providers.constants import AWS_SECRET_ACCESS_KEY_KWARG
 from onyx.llm.well_known_providers.constants import (
     AWS_SECRET_ACCESS_KEY_KWARG_ENV_VAR_FORMAT,
 )
+from onyx.llm.well_known_providers.constants import LM_STUDIO_API_KEY_CONFIG_KEY
 from onyx.llm.well_known_providers.constants import OLLAMA_API_KEY_CONFIG_KEY
 from onyx.llm.well_known_providers.constants import VERTEX_CREDENTIALS_FILE_KWARG
 from onyx.llm.well_known_providers.constants import (
     VERTEX_CREDENTIALS_FILE_KWARG_ENV_VAR_FORMAT,
 )
 from onyx.llm.well_known_providers.constants import VERTEX_LOCATION_KWARG
-from onyx.server.utils import mask_string
+from onyx.utils.encryption import mask_string
 from onyx.utils.logger import setup_logger
 
 logger = setup_logger()
+
+_env_lock = threading.Lock()
 
 if TYPE_CHECKING:
     from litellm import CustomStreamWrapper
@@ -57,6 +64,10 @@ if TYPE_CHECKING:
 _LLM_PROMPT_LONG_TERM_LOG_CATEGORY = "llm_prompt"
 LEGACY_MAX_TOKENS_KWARG = "max_tokens"
 STANDARD_MAX_TOKENS_KWARG = "max_completion_tokens"
+_VERTEX_ANTHROPIC_MODELS_REJECTING_OUTPUT_CONFIG = (
+    "claude-opus-4-5",
+    "claude-opus-4-6",
+)
 
 
 class LLMTimeoutError(Exception):
@@ -80,6 +91,143 @@ def _prompt_to_dicts(prompt: LanguageModelInput) -> list[dict[str, Any]]:
     if isinstance(prompt, list):
         return [msg.model_dump(exclude_none=True) for msg in prompt]
     return [prompt.model_dump(exclude_none=True)]
+
+
+def _normalize_content(raw: Any) -> str:
+    """Normalize a message content field to a plain string.
+
+    Content can be a string, None, or a list of content-block dicts
+    (e.g. [{"type": "text", "text": "..."}]).
+    """
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, list):
+        return "\n".join(
+            block.get("text", "") if isinstance(block, dict) else str(block)
+            for block in raw
+        )
+    return str(raw)
+
+
+def _strip_tool_content_from_messages(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Convert tool-related messages to plain text.
+
+    Bedrock's Converse API requires toolConfig when messages contain
+    toolUse/toolResult content blocks. When no tools are provided for the
+    current request, we must convert any tool-related history into plain text
+    to avoid the "toolConfig field must be defined" error.
+
+    This is the same approach used by _OllamaHistoryMessageFormatter.
+    """
+    result: list[dict[str, Any]] = []
+    for msg in messages:
+        role = msg.get("role")
+        tool_calls = msg.get("tool_calls")
+
+        if role == "assistant" and tool_calls:
+            # Convert structured tool calls to text representation
+            tool_call_lines = []
+            for tc in tool_calls:
+                func = tc.get("function", {})
+                name = func.get("name", "unknown")
+                args = func.get("arguments", "{}")
+                tc_id = tc.get("id", "")
+                tool_call_lines.append(
+                    f"[Tool Call] name={name} id={tc_id} args={args}"
+                )
+
+            existing_content = _normalize_content(msg.get("content"))
+            parts = (
+                [existing_content] + tool_call_lines
+                if existing_content
+                else tool_call_lines
+            )
+            new_msg = {
+                "role": "assistant",
+                "content": "\n".join(parts),
+            }
+            result.append(new_msg)
+
+        elif role == "tool":
+            # Convert tool response to user message with text content
+            tool_call_id = msg.get("tool_call_id", "")
+            content = _normalize_content(msg.get("content"))
+            tool_result_text = f"[Tool Result] id={tool_call_id}\n{content}"
+            # Merge into previous user message if it is also a converted
+            # tool result to avoid consecutive user messages (Bedrock requires
+            # strict user/assistant alternation).
+            if (
+                result
+                and result[-1]["role"] == "user"
+                and "[Tool Result]" in result[-1].get("content", "")
+            ):
+                result[-1]["content"] += "\n\n" + tool_result_text
+            else:
+                result.append({"role": "user", "content": tool_result_text})
+
+        else:
+            result.append(msg)
+
+    return result
+
+
+def _fix_tool_user_message_ordering(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Insert a synthetic assistant message between tool and user messages.
+
+    Some models (e.g. Mistral on Azure) require strict message ordering where
+    a user message cannot immediately follow a tool message. This function
+    inserts a minimal assistant message to bridge the gap.
+    """
+    if len(messages) < 2:
+        return messages
+
+    result: list[dict[str, Any]] = [messages[0]]
+    for msg in messages[1:]:
+        prev_role = result[-1].get("role")
+        curr_role = msg.get("role")
+        if prev_role == "tool" and curr_role == "user":
+            result.append({"role": "assistant", "content": "Noted. Continuing."})
+        result.append(msg)
+    return result
+
+
+def _messages_contain_tool_content(messages: list[dict[str, Any]]) -> bool:
+    """Check if any messages contain tool-related content blocks."""
+    for msg in messages:
+        if msg.get("role") == "tool":
+            return True
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            return True
+    return False
+
+
+def _prompt_contains_tool_call_history(prompt: LanguageModelInput) -> bool:
+    """Check if the prompt contains any assistant messages with tool_calls.
+
+    When Anthropic's extended thinking is enabled, the API requires every
+    assistant message to start with a thinking block before any tool_use
+    blocks.  Since we don't preserve thinking_blocks (they carry
+    cryptographic signatures that can't be reconstructed), we must skip
+    the thinking param whenever history contains prior tool-calling turns.
+    """
+    from onyx.llm.models import AssistantMessage
+
+    msgs = prompt if isinstance(prompt, list) else [prompt]
+    return any(isinstance(msg, AssistantMessage) and msg.tool_calls for msg in msgs)
+
+
+def _is_vertex_model_rejecting_output_config(model_name: str) -> bool:
+    normalized_model_name = model_name.lower()
+    return any(
+        blocked_model in normalized_model_name
+        for blocked_model in _VERTEX_ANTHROPIC_MODELS_REJECTING_OUTPUT_CONFIG
+    )
 
 
 class LitellmLLM(LLM):
@@ -139,6 +287,9 @@ class LitellmLLM(LLM):
                 elif model_provider == LlmProviderNames.OLLAMA_CHAT:
                     if k == OLLAMA_API_KEY_CONFIG_KEY:
                         model_kwargs["api_key"] = v
+                elif model_provider == LlmProviderNames.LM_STUDIO:
+                    if k == LM_STUDIO_API_KEY_CONFIG_KEY:
+                        model_kwargs["api_key"] = v
                 elif model_provider == LlmProviderNames.BEDROCK:
                     if k == AWS_REGION_NAME_KWARG:
                         model_kwargs[k] = v
@@ -155,6 +306,19 @@ class LitellmLLM(LLM):
                     elif k == AWS_SECRET_ACCESS_KEY_KWARG_ENV_VAR_FORMAT:
                         model_kwargs[AWS_SECRET_ACCESS_KEY_KWARG] = v
 
+        # LM Studio: LiteLLM defaults to "fake-api-key" when no key is provided,
+        # which LM Studio rejects. Ensure we always pass an explicit key (or empty
+        # string) to prevent LiteLLM from injecting its fake default.
+        if model_provider == LlmProviderNames.LM_STUDIO:
+            model_kwargs.setdefault("api_key", "")
+
+            # Users provide the server root (e.g. http://localhost:1234) but LiteLLM
+            # needs /v1 for OpenAI-compatible calls.
+            if self._api_base is not None:
+                base = self._api_base.rstrip("/")
+                self._api_base = base if base.endswith("/v1") else f"{base}/v1"
+                model_kwargs["api_base"] = self._api_base
+
         # Default vertex_location to "global" if not provided for Vertex AI
         # Latest gemini models are only available through the global region
         if (
@@ -162,6 +326,24 @@ class LitellmLLM(LLM):
             and VERTEX_LOCATION_KWARG not in model_kwargs
         ):
             model_kwargs[VERTEX_LOCATION_KWARG] = "global"
+
+        # Bifrost and OpenAI-compatible: OpenAI-compatible proxies that send
+        # model names directly to the endpoint. We route through LiteLLM's
+        # openai provider with the server's base URL, and ensure /v1 is appended.
+        if model_provider in (
+            LlmProviderNames.BIFROST,
+            LlmProviderNames.OPENAI_COMPATIBLE,
+        ):
+            self._custom_llm_provider = "openai"
+            # LiteLLM's OpenAI client requires an api_key to be set.
+            # Many OpenAI-compatible servers don't need auth, so supply a
+            # placeholder to prevent LiteLLM from raising AuthenticationError.
+            if not self._api_key:
+                model_kwargs.setdefault("api_key", "not-needed")
+            if self._api_base is not None:
+                base = self._api_base.rstrip("/")
+                self._api_base = base if base.endswith("/v1") else f"{base}/v1"
+                model_kwargs["api_base"] = self._api_base
 
         # This is needed for Ollama to do proper function calling
         if model_provider == LlmProviderNames.OLLAMA_CHAT and api_base is not None:
@@ -260,10 +442,11 @@ class LitellmLLM(LLM):
         is_ollama = self._model_provider == LlmProviderNames.OLLAMA_CHAT
         is_mistral = self._model_provider == LlmProviderNames.MISTRAL
         is_vertex_ai = self._model_provider == LlmProviderNames.VERTEX_AI
-        # Vertex Anthropic Opus 4.5 rejects output_config.
-        # Keep this guard until LiteLLM/Vertex accept the field for this model.
-        is_vertex_opus_4_5 = (
-            is_vertex_ai and "claude-opus-4-5" in self.config.model_name.lower()
+        # Some Vertex Anthropic models reject output_config.
+        # Keep this guard until LiteLLM/Vertex accept the field for these models.
+        is_vertex_model_rejecting_output_config = (
+            is_vertex_ai
+            and _is_vertex_model_rejecting_output_config(self.config.model_name)
         )
 
         #########################
@@ -273,14 +456,23 @@ class LitellmLLM(LLM):
         optional_kwargs: dict[str, Any] = {}
 
         # Model name
+        is_openai_compatible_proxy = self._model_provider in (
+            LlmProviderNames.BIFROST,
+            LlmProviderNames.OPENAI_COMPATIBLE,
+        )
         model_provider = (
             f"{self.config.model_provider}/responses"
             if is_openai_model  # Uses litellm's completions -> responses bridge
             else self.config.model_provider
         )
-        model = (
-            f"{model_provider}/{self.config.deployment_name or self.config.model_name}"
-        )
+        if is_openai_compatible_proxy:
+            # OpenAI-compatible proxies (Bifrost, generic OpenAI-compatible
+            # servers) expect model names sent directly to their endpoint.
+            # We use custom_llm_provider="openai" so LiteLLM doesn't try
+            # to route based on the provider prefix.
+            model = self.config.deployment_name or self.config.model_name
+        else:
+            model = f"{model_provider}/{self.config.deployment_name or self.config.model_name}"
 
         # Tool choice
         if is_claude_model and tool_choice == ToolChoiceOptions.REQUIRED:
@@ -295,7 +487,7 @@ class LitellmLLM(LLM):
         # Temperature
         temperature = 1 if is_reasoning else self._temperature
 
-        if stream and not is_vertex_opus_4_5:
+        if stream and not is_vertex_model_rejecting_output_config:
             optional_kwargs["stream_options"] = {"include_usage": True}
 
         # Note, there is a reasoning_effort parameter in LiteLLM but it is completely jank and does not work for any
@@ -304,7 +496,7 @@ class LitellmLLM(LLM):
             is_reasoning
             # The default of this parameter not set is surprisingly not the equivalent of an Auto but is actually Off
             and reasoning_effort != ReasoningEffort.OFF
-            and not is_vertex_opus_4_5
+            and not is_vertex_model_rejecting_output_config
         ):
             if is_openai_model:
                 # OpenAI API does not accept reasoning params for GPT 5 chat models
@@ -321,7 +513,20 @@ class LitellmLLM(LLM):
                     reasoning_effort
                 )
 
-                if budget_tokens is not None:
+                # Anthropic requires every assistant message with tool_use
+                # blocks to start with a thinking block that carries a
+                # cryptographic signature.  We don't preserve those blocks
+                # across turns, so skip thinking when the history already
+                # contains tool-calling assistant messages.  LiteLLM's
+                # modify_params workaround doesn't cover all providers
+                # (notably Bedrock).
+                can_enable_thinking = (
+                    budget_tokens is not None
+                    and not _prompt_contains_tool_call_history(prompt)
+                )
+
+                if can_enable_thinking:
+                    assert budget_tokens is not None  # mypy
                     if max_tokens is not None:
                         # Anthropic has a weird rule where max token has to be at least as much as budget tokens if set
                         # and the minimum budget tokens is 1024
@@ -355,10 +560,14 @@ class LitellmLLM(LLM):
         if structured_response_format:
             optional_kwargs["response_format"] = structured_response_format
 
-        if not (is_claude_model or is_ollama or is_mistral):
+        if (
+            not (is_claude_model or is_ollama or is_mistral)
+            or is_openai_compatible_proxy
+        ):
             # Litellm bug: tool_choice is dropped silently if not specified here for OpenAI
             # However, this param breaks Anthropic and Mistral models,
-            # so it must be conditionally included.
+            # so it must be conditionally included unless the request is
+            # routed through Bifrost's OpenAI-compatible endpoint.
             # Additionally, tool_choice is not supported by Ollama and causes warnings if included.
             # See also, https://github.com/ollama/ollama/issues/11171
             optional_kwargs["allowed_openai_params"] = ["tool_choice"]
@@ -378,23 +587,63 @@ class LitellmLLM(LLM):
             if "api_key" not in passthrough_kwargs:
                 passthrough_kwargs["api_key"] = self._api_key or None
 
-            response = litellm.completion(
-                mock_response=get_llm_mock_response() or MOCK_LLM_RESPONSE,
-                model=model,
-                base_url=self._api_base or None,
-                api_version=self._api_version or None,
-                custom_llm_provider=self._custom_llm_provider or None,
-                messages=_prompt_to_dicts(prompt),
-                tools=tools,
-                tool_choice=tool_choice,
-                stream=stream,
-                temperature=temperature,
-                timeout=timeout_override or self._timeout,
-                max_tokens=max_tokens,
-                client=client,
-                **optional_kwargs,
-                **passthrough_kwargs,
+            # We only need to set environment variables if custom config is set
+            env_ctx = (
+                temporary_env_and_lock(self._custom_config)
+                if self._custom_config
+                else nullcontext()
             )
+            with env_ctx:
+                messages = _prompt_to_dicts(prompt)
+
+                # Bedrock's Converse API requires toolConfig when messages
+                # contain toolUse/toolResult content blocks. When no tools are
+                # provided for this request but the history contains tool
+                # content from previous turns, strip it to plain text.
+                is_bedrock = self._model_provider in {
+                    LlmProviderNames.BEDROCK,
+                    LlmProviderNames.BEDROCK_CONVERSE,
+                }
+                if (
+                    is_bedrock
+                    and not tools
+                    and _messages_contain_tool_content(messages)
+                ):
+                    messages = _strip_tool_content_from_messages(messages)
+
+                # Some models (e.g. Mistral) reject a user message
+                # immediately after a tool message. Insert a synthetic
+                # assistant bridge message to satisfy the ordering
+                # constraint. Check both the provider and the deployment/
+                # model name to catch Mistral hosted on Azure.
+                model_or_deployment = (
+                    self._deployment_name or self._model_version or ""
+                ).lower()
+                is_mistral_model = is_mistral or "mistral" in model_or_deployment
+                if is_mistral_model:
+                    messages = _fix_tool_user_message_ordering(messages)
+
+                # Only pass tool_choice when tools are present — some providers (e.g. Fireworks)
+                # reject requests where tool_choice is explicitly null.
+                if tools and tool_choice is not None:
+                    optional_kwargs["tool_choice"] = tool_choice
+
+                response = litellm.completion(
+                    mock_response=get_llm_mock_response() or MOCK_LLM_RESPONSE,
+                    model=model,
+                    base_url=self._api_base or None,
+                    api_version=self._api_version or None,
+                    custom_llm_provider=self._custom_llm_provider or None,
+                    messages=messages,
+                    tools=tools,
+                    stream=stream,
+                    temperature=temperature,
+                    timeout=timeout_override or self._timeout,
+                    max_tokens=max_tokens,
+                    client=client,
+                    **optional_kwargs,
+                    **passthrough_kwargs,
+                )
             return response
         except Exception as e:
             # for break pointing
@@ -475,13 +724,21 @@ class LitellmLLM(LLM):
             client = HTTPHandler(timeout=timeout_override or self._timeout)
 
         try:
-            response = cast(
-                LiteLLMModelResponse,
+            # When custom_config is set, env vars are temporarily injected
+            # under a global lock. Using stream=True here means the lock is
+            # only held during connection setup (not the full inference).
+            # The chunks are then collected outside the lock and reassembled
+            # into a single ModelResponse via stream_chunk_builder.
+            from litellm import stream_chunk_builder
+            from litellm import CustomStreamWrapper as LiteLLMCustomStreamWrapper
+
+            stream_response = cast(
+                LiteLLMCustomStreamWrapper,
                 self._completion(
                     prompt=prompt,
                     tools=tools,
                     tool_choice=tool_choice,
-                    stream=False,
+                    stream=True,
                     structured_response_format=structured_response_format,
                     timeout_override=timeout_override,
                     max_tokens=max_tokens,
@@ -490,6 +747,11 @@ class LitellmLLM(LLM):
                     user_identity=user_identity,
                     client=client,
                 ),
+            )
+            chunks = list(stream_response)
+            response = cast(
+                LiteLLMModelResponse,
+                stream_chunk_builder(chunks),
             )
 
             model_response = from_litellm_model_response(response)
@@ -581,3 +843,29 @@ class LitellmLLM(LLM):
         finally:
             if client is not None:
                 client.close()
+
+
+@contextmanager
+def temporary_env_and_lock(env_variables: dict[str, str]) -> Iterator[None]:
+    """
+    Temporarily sets the environment variables to the given values.
+    Code path is locked while the environment variables are set.
+    Then cleans up the environment and frees the lock.
+    """
+    with _env_lock:
+        logger.debug("Acquired lock in temporary_env_and_lock")
+        # Store original values (None if key didn't exist)
+        original_values: dict[str, str | None] = {
+            key: os.environ.get(key) for key in env_variables
+        }
+        try:
+            os.environ.update(env_variables)
+            yield
+        finally:
+            for key, original_value in original_values.items():
+                if original_value is None:
+                    os.environ.pop(key, None)  # Remove if it didn't exist before
+                else:
+                    os.environ[key] = original_value  # Restore original value
+
+    logger.debug("Released lock in temporary_env_and_lock")

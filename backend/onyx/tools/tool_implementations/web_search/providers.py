@@ -120,20 +120,24 @@ def build_search_provider_from_config(
             raise ValueError(
                 "Google PSE provider requires a search engine id (cx) in addition to the API key."
             )
-
         return GooglePSEClient(
             api_key=api_key,
             search_engine_id=search_engine_id,
             num_results=num_results,
             timeout_seconds=int(config.get("timeout_seconds") or 10),
         )
+
     raise ValueError(f"Unknown provider type: {provider_type.value}")
 
 
 def _build_search_provider(provider_model: InternetSearchProvider) -> WebSearchProvider:
     return build_search_provider_from_config(
         provider_type=WebSearchProviderType(provider_model.provider_type),
-        api_key=provider_model.api_key,
+        api_key=(
+            provider_model.api_key.get_value(apply_mask=False)
+            if provider_model.api_key
+            else None
+        ),
         config=provider_model.config or {},
     )
 
@@ -185,7 +189,11 @@ def get_default_content_provider() -> WebContentProvider:
         if provider_model:
             provider = build_content_provider_from_config(
                 provider_type=WebContentProviderType(provider_model.provider_type),
-                api_key=provider_model.api_key or "",
+                api_key=(
+                    provider_model.api_key.get_value(apply_mask=False)
+                    if provider_model.api_key
+                    else ""
+                ),
                 config=provider_model.config or WebContentProviderConfig(),
             )
             if provider:

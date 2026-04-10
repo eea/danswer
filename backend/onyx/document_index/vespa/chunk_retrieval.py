@@ -1,5 +1,6 @@
 import json
 import string
+import time
 from collections.abc import Callable
 from collections.abc import Mapping
 from datetime import datetime
@@ -10,11 +11,19 @@ from typing import cast
 import httpx
 from retry import retry
 
+from onyx.background.celery.tasks.opensearch_migration.constants import (
+    FINISHED_VISITING_SLICE_CONTINUATION_TOKEN,
+)
+from onyx.background.celery.tasks.opensearch_migration.transformer import (
+    FIELDS_NEEDED_FOR_TRANSFORMATION,
+)
 from onyx.configs.app_configs import LOG_VESPA_TIMING_INFORMATION
 from onyx.configs.app_configs import VESPA_LANGUAGE_OVERRIDE
+from onyx.configs.app_configs import VESPA_MIGRATION_REQUEST_TIMEOUT_S
 from onyx.context.search.models import IndexFilters
 from onyx.context.search.models import InferenceChunkUncleaned
 from onyx.document_index.interfaces import VespaChunkRequest
+from onyx.document_index.interfaces_new import TenantState
 from onyx.document_index.vespa.shared_utils.utils import get_vespa_http_client
 from onyx.document_index.vespa.shared_utils.vespa_request_builders import (
     build_vespa_filters,
@@ -273,6 +282,148 @@ def get_chunks_via_visit_api(
     return document_chunks
 
 
+def get_all_chunks_paginated(
+    index_name: str,
+    tenant_state: TenantState,
+    continuation_token_map: dict[int, str | None],
+    page_size: int,
+) -> tuple[list[dict], dict[int, str | None]]:
+    """Gets all chunks in Vespa matching the filters, paginated.
+
+    Uses the Visit API with slicing. Each continuation token map entry is for a
+    different slice. The number of entries determines the number of slices.
+
+    Args:
+        index_name: The name of the Vespa index to visit.
+        tenant_state: The tenant state to filter by.
+        continuation_token_map: Map of slice ID to a token returned by Vespa
+            representing a page offset. None to start from the beginning of the
+            slice.
+        page_size: Best-effort batch size for the visit. Defaults to 1,000.
+
+    Returns:
+        Tuple of (list of chunk dicts, next continuation token or None). The
+            continuation token is None when the visit is complete.
+    """
+
+    def _get_all_chunks_paginated_for_slice(
+        index_name: str,
+        tenant_state: TenantState,
+        slice_id: int,
+        total_slices: int,
+        continuation_token: str | None,
+        page_size: int,
+    ) -> tuple[list[dict], str | None]:
+        if continuation_token == FINISHED_VISITING_SLICE_CONTINUATION_TOKEN:
+            logger.debug(
+                f"Slice {slice_id} has finished visiting. Returning empty list and {FINISHED_VISITING_SLICE_CONTINUATION_TOKEN}."
+            )
+            return [], FINISHED_VISITING_SLICE_CONTINUATION_TOKEN
+
+        url = DOCUMENT_ID_ENDPOINT.format(index_name=index_name)
+
+        selection: str = f"{index_name}.large_chunk_reference_ids == null"
+        if MULTI_TENANT:
+            selection += f" and {index_name}.tenant_id=='{tenant_state.tenant_id}'"
+
+        field_set = f"{index_name}:" + ",".join(FIELDS_NEEDED_FOR_TRANSFORMATION)
+
+        params: dict[str, str | int | None] = {
+            "selection": selection,
+            "fieldSet": field_set,
+            "wantedDocumentCount": page_size,
+            "format.tensors": "short-value",
+            "slices": total_slices,
+            "sliceId": slice_id,
+        }
+        if continuation_token is not None:
+            params["continuation"] = continuation_token
+
+        response: httpx.Response | None = None
+        start_time = time.monotonic()
+        try:
+            with get_vespa_http_client(
+                timeout=VESPA_MIGRATION_REQUEST_TIMEOUT_S
+            ) as http_client:
+                response = http_client.get(url, params=params)
+                response.raise_for_status()
+        except httpx.HTTPError as e:
+            error_base = (
+                f"Failed to get chunks from Vespa slice {slice_id} with continuation token "
+                f"{continuation_token} in {time.monotonic() - start_time:.3f} seconds."
+            )
+            logger.exception(
+                f"Request URL: {e.request.url}\nRequest Headers: {e.request.headers}\nRequest Payload: {params}\n"
+            )
+            error_message = (
+                response.json().get("message") if response else "No response"
+            )
+            logger.error("Error message from response: %s", error_message)
+            raise httpx.HTTPError(error_base) from e
+
+        response_data = response.json()
+
+        # NOTE: If we see a falsey value for "continuation" in the response we
+        # assume we are done and return
+        # FINISHED_VISITING_SLICE_CONTINUATION_TOKEN instead.
+        next_continuation_token = (
+            response_data.get("continuation")
+            or FINISHED_VISITING_SLICE_CONTINUATION_TOKEN
+        )
+        chunks = [chunk["fields"] for chunk in response_data.get("documents", [])]
+        if next_continuation_token == FINISHED_VISITING_SLICE_CONTINUATION_TOKEN:
+            logger.debug(
+                f"Slice {slice_id} has finished visiting. Returning {len(chunks)} chunks and {next_continuation_token}."
+            )
+        return chunks, next_continuation_token
+
+    total_slices = len(continuation_token_map)
+    if total_slices < 1:
+        raise ValueError("continuation_token_map must have at least one entry.")
+    # We want to guarantee that these invocations are ordered by slice_id,
+    # because we read in the same order below when parsing parallel_results.
+    functions_with_args: list[tuple[Callable, tuple]] = [
+        (
+            _get_all_chunks_paginated_for_slice,
+            (
+                index_name,
+                tenant_state,
+                slice_id,
+                total_slices,
+                continuation_token,
+                page_size,
+            ),
+        )
+        for slice_id, continuation_token in sorted(continuation_token_map.items())
+    ]
+
+    parallel_results = run_functions_tuples_in_parallel(
+        functions_with_args, allow_failures=True
+    )
+    if len(parallel_results) != total_slices:
+        raise RuntimeError(
+            f"Expected {total_slices} parallel results, but got {len(parallel_results)}."
+        )
+
+    chunks: list[dict] = []
+    next_continuation_token_map: dict[int, str | None] = {
+        key: value for key, value in continuation_token_map.items()
+    }
+    for i, parallel_result in enumerate(parallel_results):
+        if i not in next_continuation_token_map:
+            raise RuntimeError(f"Slice {i} is not in the continuation token map.")
+        if parallel_result is None:
+            logger.error(
+                f"Failed to get chunks for slice {i} of {total_slices}. "
+                "The continuation token for this slice will not be updated."
+            )
+            continue
+        chunks.extend(parallel_result[0])
+        next_continuation_token_map[i] = parallel_result[1]
+
+    return chunks, next_continuation_token_map
+
+
 # TODO(rkuo): candidate for removal if not being used
 # @retry(tries=10, delay=1, backoff=2)
 # def get_all_vespa_ids_for_document_id(
@@ -350,20 +501,31 @@ def query_vespa(
             response = http_client.post(SEARCH_ENDPOINT, json=params)
             response.raise_for_status()
     except httpx.HTTPError as e:
-        error_base = "Failed to query Vespa"
-        logger.error(
-            f"{error_base}:\n"
-            f"Request URL: {e.request.url}\n"
-            f"Request Headers: {e.request.headers}\n"
-            f"Request Payload: {params}\n"
-            f"Exception: {str(e)}"
-            + (
-                f"\nResponse: {e.response.text}"
-                if isinstance(e, httpx.HTTPStatusError)
-                else ""
-            )
+        response_text = (
+            e.response.text if isinstance(e, httpx.HTTPStatusError) else None
         )
-        raise httpx.HTTPError(error_base) from e
+        status_code = (
+            e.response.status_code if isinstance(e, httpx.HTTPStatusError) else None
+        )
+        yql_value = params.get("yql", "")
+        yql_length = len(str(yql_value))
+
+        # Log each detail on its own line so log collectors capture them
+        # as separate entries rather than truncating a single multiline msg
+        logger.error(
+            f"Failed to query Vespa | "
+            f"status={status_code} | "
+            f"yql_length={yql_length} | "
+            f"exception={str(e)}"
+        )
+        if response_text:
+            logger.error(f"Vespa error response: {response_text[:1000]}")
+        logger.error(f"Vespa request URL: {e.request.url}")
+
+        # Re-raise with diagnostics so callers see what actually went wrong
+        raise httpx.HTTPError(
+            f"Failed to query Vespa (status={status_code}, " f"yql_length={yql_length})"
+        ) from e
 
     response_json: dict[str, Any] = response.json()
 

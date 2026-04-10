@@ -16,6 +16,10 @@ const buttonClassNames = {
     normal: "line-item-button-strikethrough",
     emphasized: "line-item-button-strikethrough-emphasized",
   },
+  disabled: {
+    normal: "line-item-button-disabled",
+    emphasized: "line-item-button-disabled-emphasized",
+  },
   danger: {
     normal: "line-item-button-danger",
     emphasized: "line-item-button-danger-emphasized",
@@ -28,34 +32,50 @@ const buttonClassNames = {
     normal: "line-item-button-muted",
     emphasized: "line-item-button-muted-emphasized",
   },
+  skeleton: {
+    normal: "line-item-button-skeleton",
+    emphasized: "line-item-button-skeleton-emphasized",
+  },
 } as const;
 
 const textClassNames = {
   main: "line-item-text-main",
   strikethrough: "line-item-text-strikethrough",
+  disabled: "line-item-text-disabled",
   danger: "line-item-text-danger",
   action: "line-item-text-action",
   muted: "line-item-text-muted",
+  skeleton: "line-item-text-skeleton",
 } as const;
 
 const iconClassNames = {
   main: "line-item-icon-main",
   strikethrough: "line-item-icon-strikethrough",
+  disabled: "line-item-icon-disabled",
   danger: "line-item-icon-danger",
   action: "line-item-icon-action",
   muted: "line-item-icon-muted",
+  skeleton: "line-item-icon-skeleton",
 } as const;
 
 export interface LineItemProps
   extends Omit<
-    WithoutStyles<React.HTMLAttributes<HTMLButtonElement>>,
+    WithoutStyles<React.HTMLAttributes<HTMLDivElement>>,
     "children"
   > {
+  /**
+   * Whether the row should behave like a standalone interactive button.
+   * Set to false when nested inside another interactive primitive
+   * (e.g. Radix Select.Item) to avoid nested focus targets.
+   */
+  interactive?: boolean;
   // line-item variants
   strikethrough?: boolean;
+  disabled?: boolean;
   danger?: boolean;
   action?: boolean;
   muted?: boolean;
+  skeleton?: boolean;
 
   // modifier (makes the background more pronounced when selected).
   emphasized?: boolean;
@@ -65,8 +85,10 @@ export interface LineItemProps
   description?: string;
   rightChildren?: React.ReactNode;
   href?: string;
-  ref?: React.Ref<HTMLButtonElement>;
-  children: React.ReactNode;
+  rel?: string;
+  target?: string;
+  ref?: React.Ref<HTMLDivElement>;
+  children?: React.ReactNode;
 }
 
 /**
@@ -116,84 +138,158 @@ export interface LineItemProps
  * ```
  *
  * @remarks
- * - Variants are mutually exclusive: only one of `strikethrough`, `danger`, `action`, or `muted` should be used
+ * - Variants are mutually exclusive: only one of `strikethrough`, `danger`, `action`, `muted`, or `skeleton` should be used
  * - The `selected` prop modifies text/icon colors for `main` and `danger` variants
  * - The `emphasized` prop adds background colors when combined with `selected`
  * - The component automatically adds a `data-selected="true"` attribute for custom styling
  */
 export default function LineItem({
+  interactive = true,
   selected,
   strikethrough,
+  disabled,
   danger,
   action,
   muted,
+  skeleton,
   emphasized,
   icon: Icon,
   description,
   children,
   rightChildren,
   href,
+  rel,
+  target,
   ref,
   ...props
 }: LineItemProps) {
-  // Determine variant (mutually exclusive, with priority order: strikethrough > danger > action > muted > main)
+  // Determine variant (mutually exclusive, with priority order: strikethrough > disabled > danger > action > muted > main)
   const variant = strikethrough
     ? "strikethrough"
-    : danger
-      ? "danger"
-      : action
-        ? "action"
-        : muted
-          ? "muted"
-          : "main";
+    : disabled
+      ? "disabled"
+      : danger
+        ? "danger"
+        : action
+          ? "action"
+          : muted
+            ? "muted"
+            : skeleton
+              ? "skeleton"
+              : "main";
 
   const emphasisKey = emphasized ? "emphasized" : "normal";
 
+  const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (disabled) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+    props.onClick?.(e);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!interactive) {
+      props.onKeyDown?.(e);
+      return;
+    }
+
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (!disabled) {
+        (e.currentTarget as HTMLDivElement).click();
+      }
+    } else if (e.key === " ") {
+      e.preventDefault();
+    }
+    props.onKeyDown?.(e);
+  };
+
+  const handleKeyUp = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!interactive) {
+      props.onKeyUp?.(e);
+      return;
+    }
+
+    if (e.key === " ") {
+      e.preventDefault();
+      if (!disabled) {
+        (e.currentTarget as HTMLDivElement).click();
+      }
+    }
+    props.onKeyUp?.(e);
+  };
+
   const content = (
-    <button
+    <div
       ref={ref}
+      role={interactive ? "button" : undefined}
+      tabIndex={interactive ? 0 : undefined}
+      aria-disabled={disabled || undefined}
       className={cn(
         "flex flex-row w-full items-start p-2 rounded-08 group/LineItem gap-2",
-        !!description ? "items-start" : "items-center",
+        !!(children && description) ? "items-start" : "items-center",
         buttonClassNames[variant][emphasisKey]
       )}
-      type="button"
       data-selected={selected}
       {...props}
+      onClick={handleClick}
+      onKeyDown={handleKeyDown}
+      onKeyUp={handleKeyUp}
     >
       {Icon && (
         <div
           className={cn(
             "flex flex-col justify-center items-center h-[1rem] min-w-[1rem]",
-            !!description && "mt-0.5"
+            !!(children && description) && "mt-0.5"
           )}
         >
           <Icon className={cn("h-[1rem] w-[1rem]", iconClassNames[variant])} />
         </div>
       )}
       <Section alignItems="start" gap={0}>
-        <Section flexDirection="row" gap={0.5}>
-          <Truncated
-            mainUiMuted
-            className={cn("text-left w-full", textClassNames[variant])}
-          >
-            {children}
-          </Truncated>
-          {rightChildren && (
-            <Section alignItems="end" width="fit">
-              {rightChildren}
+        {children ? (
+          <>
+            <Section flexDirection="row" gap={0.5}>
+              <Truncated
+                mainUiMuted
+                className={cn("text-left w-full", textClassNames[variant])}
+              >
+                {children}
+              </Truncated>
+              {rightChildren && (
+                <Section alignItems="end" width="fit">
+                  {rightChildren}
+                </Section>
+              )}
             </Section>
-          )}
-        </Section>
-        {description && (
-          <Truncated secondaryBody text03 className="text-left w-full">
-            {description}
-          </Truncated>
-        )}
+            {description && (
+              <Truncated secondaryBody text03 className="text-left w-full">
+                {description}
+              </Truncated>
+            )}
+          </>
+        ) : description ? (
+          <Section flexDirection="row" gap={0.5}>
+            <Truncated secondaryBody text03 className="text-left w-full">
+              {description}
+            </Truncated>
+            {rightChildren && (
+              <Section alignItems="end" width="fit">
+                {rightChildren}
+              </Section>
+            )}
+          </Section>
+        ) : null}
       </Section>
-    </button>
+    </div>
   );
 
   if (!href) return content;
-  return <Link href={href as Route}>{content}</Link>;
+  return (
+    <Link href={href as Route} rel={rel} target={target}>
+      {content}
+    </Link>
+  );
 }

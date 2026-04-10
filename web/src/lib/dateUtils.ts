@@ -35,6 +35,20 @@ export function getXYearsAgo(yearsAgo: number) {
   return yearsAgoDate;
 }
 
+export function normalizeDate(date: Date): Date {
+  const normalizedDate = new Date(date);
+  normalizedDate.setHours(0, 0, 0, 0);
+  return normalizedDate;
+}
+
+export function isAfterDate(date: Date, maxDate: Date): boolean {
+  return normalizeDate(date).getTime() > normalizeDate(maxDate).getTime();
+}
+
+export function isDateInFuture(date: Date): boolean {
+  return isAfterDate(date, new Date());
+}
+
 export const timestampToDateString = (timestamp: string) => {
   const date = new Date(timestamp);
   const year = date.getFullYear();
@@ -145,6 +159,22 @@ export const formatDateShort = (dateStr: string | null | undefined): string => {
     year: "numeric",
   });
 };
+
+export function formatMmDdYyyy(d: string): string {
+  const date = new Date(d);
+  return `${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}`;
+}
+
+/**
+ * Format a duration in seconds as MM:SS (e.g. 65 → "01:05").
+ */
+export function formatElapsedTime(totalSeconds: number): string {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes.toString().padStart(2, "0")}:${seconds
+    .toString()
+    .padStart(2, "0")}`;
+}
 
 export const getFormattedDateTime = (date: Date | null) => {
   if (!date) return null;

@@ -40,19 +40,7 @@
       }
     },
     {
-      "name": "Celery (lightweight mode)",
-      "configurations": [
-        "Celery primary",
-        "Celery background",
-        "Celery beat"
-      ],
-      "presentation": {
-        "group": "1"
-      },
-      "stopAll": true
-    },
-    {
-      "name": "Celery (standard mode)",
+      "name": "Celery",
       "configurations": [
         "Celery primary",
         "Celery light",
@@ -129,7 +117,8 @@
       "presentation": {
         "group": "2"
       },
-      "consoleTitle": "API Server Console"
+      "consoleTitle": "API Server Console",
+      "justMyCode": false
     },
     {
       "name": "Slack Bot",
@@ -246,41 +235,12 @@
         "--loglevel=INFO",
         "--hostname=light@%n",
         "-Q",
-        "vespa_metadata_sync,connector_deletion,doc_permissions_upsert,index_attempt_cleanup"
+        "vespa_metadata_sync,connector_deletion,doc_permissions_upsert,index_attempt_cleanup,opensearch_migration"
       ],
       "presentation": {
         "group": "2"
       },
       "consoleTitle": "Celery light Console"
-    },
-    {
-      "name": "Celery background",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "celery",
-      "cwd": "${workspaceFolder}/backend",
-      "envFile": "${workspaceFolder}/.vscode/.env",
-      "env": {
-        "LOG_LEVEL": "INFO",
-        "PYTHONUNBUFFERED": "1",
-        "PYTHONPATH": "."
-      },
-      "args": [
-        "-A",
-        "onyx.background.celery.versioned_apps.background",
-        "worker",
-        "--pool=threads",
-        "--concurrency=20",
-        "--prefetch-multiplier=4",
-        "--loglevel=INFO",
-        "--hostname=background@%n",
-        "-Q",
-        "vespa_metadata_sync,connector_deletion,doc_permissions_upsert,checkpoint_cleanup,index_attempt_cleanup,docprocessing,connector_doc_fetching,user_files_indexing,connector_pruning,connector_doc_permissions_sync,connector_external_group_sync,csv_generation,kg_processing,monitoring,user_file_processing,user_file_project_sync,user_file_delete"
-      ],
-      "presentation": {
-        "group": "2"
-      },
-      "consoleTitle": "Celery background Console"
     },
     {
       "name": "Celery heavy",
@@ -309,7 +269,8 @@
       "presentation": {
         "group": "2"
       },
-      "consoleTitle": "Celery heavy Console"
+      "consoleTitle": "Celery heavy Console",
+      "justMyCode": false
     },
     {
       "name": "Celery kg_processing",
@@ -396,7 +357,8 @@
       "presentation": {
         "group": "2"
       },
-      "consoleTitle": "Celery user_file_processing Console"
+      "consoleTitle": "Celery user_file_processing Console",
+      "justMyCode": false
     },
     {
       "name": "Celery docfetching",
@@ -419,7 +381,7 @@
         "--loglevel=INFO",
         "--hostname=docfetching@%n",
         "-Q",
-        "connector_doc_fetching,user_files_indexing"
+        "connector_doc_fetching"
       ],
       "presentation": {
         "group": "2"
@@ -454,7 +416,8 @@
       "presentation": {
         "group": "2"
       },
-      "consoleTitle": "Celery docprocessing Console"
+      "consoleTitle": "Celery docprocessing Console",
+      "justMyCode": false
     },
     {
       "name": "Celery beat",
@@ -519,21 +482,6 @@
       "runtimeExecutable": "bash",
       "runtimeArgs": [
         "${workspaceFolder}/backend/scripts/restart_containers.sh"
-      ],
-      "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal",
-      "presentation": {
-        "group": "3"
-      }
-    },
-    {
-      "name": "Clear and Restart OpenSearch Container",
-      // Generic debugger type, required arg but has no bearing on bash.
-      "type": "node",
-      "request": "launch",
-      "runtimeExecutable": "bash",
-      "runtimeArgs": [
-        "${workspaceFolder}/backend/scripts/restart_opensearch_container.sh"
       ],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",

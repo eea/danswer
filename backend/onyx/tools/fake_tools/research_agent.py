@@ -120,7 +120,7 @@ def generate_intermediate_report(
             custom_agent_prompt=None,
             simple_chat_history=history,
             reminder_message=reminder_message,
-            project_files=None,
+            context_files=None,
             available_tokens=llm.config.max_input_tokens,
         )
 
@@ -325,7 +325,7 @@ def run_research_agent_call(
                     custom_agent_prompt=None,
                     simple_chat_history=msg_history,
                     reminder_message=reminder_message,
-                    project_files=None,
+                    context_files=None,
                     available_tokens=llm.config.max_input_tokens,
                 )
 
@@ -446,7 +446,7 @@ def run_research_agent_call(
                         tool_calls=tool_calls,
                         tools=current_tools,
                         message_history=msg_history,
-                        memories=None,
+                        user_memory_context=None,
                         user_info=None,
                         citation_mapping=citation_mapping,
                         next_citation_num=citation_processor.get_next_citation_number(),
@@ -632,8 +632,7 @@ def _on_research_agent_timeout(
         RESEARCH_AGENT_TASK_KEY, "unknown"
     )
     logger.warning(
-        f"Research agent timed out after {RESEARCH_AGENT_TIMEOUT_SECONDS} seconds "
-        f"for task: {research_task}"
+        f"Research agent timed out after {RESEARCH_AGENT_TIMEOUT_SECONDS} seconds for task: {research_task}"
     )
     return ResearchAgentCallResult(
         intermediate_report=RESEARCH_AGENT_TIMEOUT_MESSAGE,
@@ -737,7 +736,7 @@ if __name__ == "__main__":
             llm.config.model_name, llm.config.model_provider
         )
 
-        persona = get_default_behavior_persona(db_session)
+        persona = get_default_behavior_persona(db_session, eager_load_for_tools=True)
         if persona is None:
             raise ValueError("No default persona found")
 

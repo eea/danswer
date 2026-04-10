@@ -7,13 +7,12 @@ import BackButton from "@/refresh-components/buttons/BackButton";
 //import { DocumentSetCreationForm } from "../DocumentSetCreationForm";
 import { errorHandlingFetcher } from "@/lib/fetcher";
 import useSWR from "swr";
-import { usePopup } from "@/components/admin/connectors/Popup";
+import { toast } from "@/hooks/useToast";
 import { LoadingAnimation } from "@/components/Loading";
 import { CPUIcon } from "@/components/icons/icons";
 // import { Text, Title, Button } from "@tremor/react";
 import Button from "@/refresh-components/buttons/Button";
-import Text from "@/components/ui/text";
-import Title from "@/components/ui/title";
+import Text from "@/refresh-components/texts/Text";
 
 import { Form, Formik, Field } from "formik";
 import { TextFormField } from "@/components/Field";
@@ -38,21 +37,19 @@ export default function Page(props: { params: Promise<{ pageTitle: string }> }) 
     let pages: any = config_json?.pages || {};
     initial_page_text = pages[initial_page_title];
   }
-  const { popup, setPopup } = usePopup();
   if (isLoading) {
     return <LoadingAnimation text="Loading" />;
   }
   return (
     <div>
-      {popup}
       <BackButton />
       <div className="mx-auto container">
         <AdminPageTitle
           title="Customize Layout"
           icon={<CPUIcon size={32} className="my-auto" />}
         />
-        <Title className="mb-2 mt-6">Customize footer:</Title>
-        <Text className="mb-2">
+        <h2 className="text-xl font-bold mb-2 mt-6">Customize footer:</h2>
+        <Text as="p" className="mb-2">
           Footer.
         </Text>
         <div className="border rounded-md border-border p-3">
@@ -67,7 +64,7 @@ export default function Page(props: { params: Promise<{ pageTitle: string }> }) 
                 }
               }
               if (isDuplicated){
-                setPopup({ message: "Duplicated page", type: "error" });
+                toast({ message: "Duplicated page", level: "error" });
                 return;
               } else{
                 let pages: any = config_json?.pages || {};
@@ -87,13 +84,13 @@ export default function Page(props: { params: Promise<{ pageTitle: string }> }) 
               });
               console.log(response);
               if (!response?.ok) {
-                setPopup({
+                toast({
                   message: `Error while saving the page: ${response.status} - ${response.statusText}`,
-                  type: "error",
+                  level: "error",
                 });
                 return;
               } else {
-                setPopup({ message: "Page saved", type: "success" });
+                toast({ message: "Page saved", level: "success" });
                 return;
               }
             }}

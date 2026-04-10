@@ -64,6 +64,7 @@ from onyx.prompts.contextual_retrieval import CONTEXTUAL_RAG_PROMPT1
 from onyx.prompts.contextual_retrieval import CONTEXTUAL_RAG_PROMPT2
 from onyx.prompts.contextual_retrieval import DOCUMENT_SUMMARY_PROMPT
 from onyx.utils.logger import setup_logger
+from onyx.utils.postgres_sanitization import sanitize_documents_for_postgres
 from onyx.utils.threadpool_concurrency import run_functions_tuples_in_parallel
 from onyx.utils.timing import log_function_time
 
@@ -228,6 +229,8 @@ def index_doc_batch_prepare(
 ) -> DocumentBatchPrepareContext | None:
     """Sets up the documents in the relational DB (source of truth) for permissions, metadata, etc.
     This preceeds indexing it into the actual document index."""
+    documents = sanitize_documents_for_postgres(documents)
+
     # Create a trimmed list of docs that don't have a newer updated at
     # Shortcuts the time-consuming flow on connector index retries
     document_ids: list[str] = [document.id for document in documents]
@@ -247,8 +250,7 @@ def index_doc_batch_prepare(
             doc.id for doc in documents if doc.id not in updatable_doc_ids
         ]
         logger.info(
-            f"Skipping {len(skipped_doc_ids)} documents "
-            f"because they are up to date. Skipped doc IDs: {skipped_doc_ids}"
+            f"Skipping {len(skipped_doc_ids)} documents because they are up to date. Skipped doc IDs: {skipped_doc_ids}"
         )
 
     # for all updatable docs, upsert into the DB
@@ -261,8 +263,7 @@ def index_doc_batch_prepare(
         )
 
     logger.info(
-        f"Upserted {len(updatable_docs)} changed docs out of "
-        f"{len(documents)} total docs into the DB"
+        f"Upserted {len(updatable_docs)} changed docs out of {len(documents)} total docs into the DB"
     )
 
     # for all docs, upsert the document to cc pair relationship
@@ -394,6 +395,12 @@ def process_image_sections(documents: list[Document]) -> list[IndexingDocument]:
         llm = get_default_llm_with_vision()
 
     if not llm:
+        if get_image_extraction_and_analysis_enabled():
+            logger.warning(
+                "Image analysis is enabled but no vision-capable LLM is "
+                "available — images will not be summarized. Configure a "
+                "vision model in the admin LLM settings."
+            )
         # Even without LLM, we still convert to IndexingDocument with base Sections
         return [
             IndexingDocument(

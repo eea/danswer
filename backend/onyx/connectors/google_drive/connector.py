@@ -46,6 +46,7 @@ from onyx.connectors.google_drive.file_retrieval import get_external_access_for_
 from onyx.connectors.google_drive.file_retrieval import get_files_in_shared_drive
 from onyx.connectors.google_drive.file_retrieval import get_folder_metadata
 from onyx.connectors.google_drive.file_retrieval import get_root_folder_id
+from onyx.connectors.google_drive.file_retrieval import get_shared_drive_name
 from onyx.connectors.google_drive.file_retrieval import has_link_only_permission
 from onyx.connectors.google_drive.models import DriveRetrievalStage
 from onyx.connectors.google_drive.models import GoogleDriveCheckpoint
@@ -156,10 +157,7 @@ def _is_shared_drive_root(folder: GoogleDriveFileType) -> bool:
         return False
 
     # For shared drive content, the root has id == driveId
-    if drive_id and folder_id == drive_id:
-        return True
-
-    return False
+    return bool(drive_id and folder_id == drive_id)
 
 
 def _public_access() -> ExternalAccess:
@@ -311,9 +309,7 @@ class GoogleDriveConnector(
     def primary_admin_email(self) -> str:
         if self._primary_admin_email is None:
             raise RuntimeError(
-                "Primary admin email missing, "
-                "should not call this property "
-                "before calling load_credentials"
+                "Primary admin email missing, should not call this property before calling load_credentials"
             )
         return self._primary_admin_email
 
@@ -321,9 +317,7 @@ class GoogleDriveConnector(
     def google_domain(self) -> str:
         if self._primary_admin_email is None:
             raise RuntimeError(
-                "Primary admin email missing, "
-                "should not call this property "
-                "before calling load_credentials"
+                "Primary admin email missing, should not call this property before calling load_credentials"
             )
         return self._primary_admin_email.split("@")[-1]
 
@@ -331,9 +325,7 @@ class GoogleDriveConnector(
     def creds(self) -> OAuthCredentials | ServiceAccountCredentials:
         if self._creds is None:
             raise RuntimeError(
-                "Creds missing, "
-                "should not call this property "
-                "before calling load_credentials"
+                "Creds missing, should not call this property before calling load_credentials"
             )
         return self._creds
 
@@ -616,6 +608,16 @@ class GoogleDriveConnector(
                 # empty parents due to permission limitations)
                 # Check shared drive root first (simple ID comparison)
                 if _is_shared_drive_root(folder):
+                    # files().get() returns 'Drive' for shared drive roots;
+                    # fetch the real name via drives().get().
+                    # Try both the retriever and admin since the admin may
+                    # not have access to private shared drives.
+                    drive_name = self._get_shared_drive_name(
+                        current_id, file.user_email
+                    )
+                    if drive_name:
+                        node.display_name = drive_name
+                    node.node_type = HierarchyNodeType.SHARED_DRIVE
                     reached_terminal = True
                     break
 
@@ -675,8 +677,7 @@ class GoogleDriveConnector(
             if best_folder is None:
                 best_folder = folder
                 logger.debug(
-                    f"Folder {folder_id} has no parents when fetched by {email}, "
-                    f"will try admin to check for parent access"
+                    f"Folder {folder_id} has no parents when fetched by {email}, will try admin to check for parent access"
                 )
 
         if best_folder:
@@ -686,9 +687,17 @@ class GoogleDriveConnector(
             return best_folder
 
         logger.debug(
-            f"All attempts failed to fetch folder {folder_id} "
-            f"(tried {retriever_email} and {self.primary_admin_email})"
+            f"All attempts failed to fetch folder {folder_id} (tried {retriever_email} and {self.primary_admin_email})"
         )
+        return None
+
+    def _get_shared_drive_name(self, drive_id: str, retriever_email: str) -> str | None:
+        """Fetch the name of a shared drive, trying both the retriever and admin."""
+        for email in {retriever_email, self.primary_admin_email}:
+            svc = get_drive_service(self.creds, email)
+            name = get_shared_drive_name(svc, drive_id)
+            if name:
+                return name
         return None
 
     def get_all_drive_ids(self) -> set[str]:
@@ -829,7 +838,6 @@ class GoogleDriveConnector(
         # - the current user's email is in the requested emails
         if curr_stage.stage == DriveRetrievalStage.MY_DRIVE_FILES:
             if self.include_my_drives or user_email in self._requested_my_drive_emails:
-
                 logger.info(
                     f"Getting all files in my drive as '{user_email}. Resuming: {resuming}. "
                     f"Stage completed until: {curr_stage.completed_until}. "
@@ -1088,8 +1096,7 @@ class GoogleDriveConnector(
             for user_email in all_org_emails
         ):
             logger.info(
-                "some users did not complete retrieval, "
-                "returning checkpoint for another run"
+                "some users did not complete retrieval, returning checkpoint for another run"
             )
             return
         checkpoint.completion_stage = DriveRetrievalStage.DONE
@@ -1498,7 +1505,6 @@ class GoogleDriveConnector(
         )
 
         try:
-
             # Build permission sync context if needed
             permission_sync_context = (
                 PermissionSyncContext(
@@ -1705,6 +1711,7 @@ class GoogleDriveConnector(
                         primary_admin_email=self.primary_admin_email,
                         google_domain=self.google_domain,
                     ),
+                    retriever_email=file.user_email,
                 ):
                     slim_batch.append(doc)
 
@@ -1773,8 +1780,7 @@ class GoogleDriveConnector(
 
         if self._primary_admin_email is None:
             raise ConnectorValidationError(
-                "Primary admin email not found in credentials. "
-                "Ensure DB_CREDENTIALS_PRIMARY_ADMIN_KEY is set."
+                "Primary admin email not found in credentials. Ensure DB_CREDENTIALS_PRIMARY_ADMIN_KEY is set."
             )
 
         try:
@@ -1807,8 +1813,7 @@ class GoogleDriveConnector(
             # Check for scope-related hints from the error message
             if MISSING_SCOPES_ERROR_STR in str(e):
                 raise InsufficientPermissionsError(
-                    "Google Drive credentials are missing required scopes. "
-                    f"{ONYX_SCOPE_INSTRUCTIONS}"
+                    f"Google Drive credentials are missing required scopes. {ONYX_SCOPE_INSTRUCTIONS}"
                 )
             raise ConnectorValidationError(
                 f"Unexpected error during Google Drive validation: {e}"
@@ -1951,9 +1956,11 @@ if __name__ == "__main__":
         ):
             if num % 200 == 0:
                 f.write(f"Processed {num} files\n")
-                f.write(f"Max file size: {max_fsize/1000_000:.2f} MB\n")
+                f.write(f"Max file size: {max_fsize / 1000_000:.2f} MB\n")
                 f.write(f"Time so far: {time.time() - start_time:.2f} seconds\n")
-                f.write(f"Docs per minute: {num/(time.time() - start_time)*60:.2f}\n")
+                f.write(
+                    f"Docs per minute: {num / (time.time() - start_time) * 60:.2f}\n"
+                )
                 biggest_fsize = max(biggest_fsize, max_fsize)
                 max_fsize = 0
             if isinstance(doc_or_failure, Document):
@@ -1961,5 +1968,5 @@ if __name__ == "__main__":
             elif isinstance(doc_or_failure, ConnectorFailure):
                 num_errors += 1
         print(f"Num errors: {num_errors}")
-        print(f"Biggest file size: {biggest_fsize/1000_000:.2f} MB")
+        print(f"Biggest file size: {biggest_fsize / 1000_000:.2f} MB")
         print(f"Time taken: {time.time() - start_time:.2f} seconds")

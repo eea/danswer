@@ -1,4 +1,6 @@
+import re
 from collections.abc import Iterator
+from pathlib import Path
 from uuid import UUID
 
 import httpx
@@ -7,16 +9,19 @@ from fastapi import Depends
 from fastapi import HTTPException
 from fastapi import Request
 from fastapi import Response
+from fastapi.responses import RedirectResponse
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from onyx.auth.users import current_user
+from onyx.auth.users import optional_user
 from onyx.configs.constants import DocumentSource
 from onyx.db.connector_credential_pair import get_connector_credential_pairs_for_user
 from onyx.db.engine.sql_engine import get_session
 from onyx.db.enums import ConnectorCredentialPairStatus
 from onyx.db.enums import IndexingStatus
 from onyx.db.enums import ProcessingMode
+from onyx.db.enums import SharingScope
 from onyx.db.index_attempt import get_latest_index_attempt_for_cc_pair_id
 from onyx.db.models import BuildSession
 from onyx.db.models import User
@@ -27,6 +32,7 @@ from onyx.server.features.build.api.models import BuildConnectorStatus
 from onyx.server.features.build.api.models import RateLimitResponse
 from onyx.server.features.build.api.rate_limit import get_user_rate_limit_status
 from onyx.server.features.build.api.sessions_api import router as sessions_router
+from onyx.server.features.build.api.user_library import router as user_library_router
 from onyx.server.features.build.db.sandbox import get_sandbox_by_user_id
 from onyx.server.features.build.sandbox import get_sandbox_manager
 from onyx.server.features.build.session.manager import SessionManager
@@ -34,6 +40,9 @@ from onyx.server.features.build.utils import is_onyx_craft_enabled
 from onyx.utils.logger import setup_logger
 
 logger = setup_logger()
+
+_TEMPLATES_DIR = Path(__file__).parent / "templates"
+_WEBAPP_HMR_FIXER_TEMPLATE = (_TEMPLATES_DIR / "webapp_hmr_fixer.js").read_text()
 
 
 def require_onyx_craft_enabled(user: User = Depends(current_user)) -> User:
@@ -51,9 +60,10 @@ def require_onyx_craft_enabled(user: User = Depends(current_user)) -> User:
 
 router = APIRouter(prefix="/build", dependencies=[Depends(require_onyx_craft_enabled)])
 
-# Include sub-routers for sessions and messages
+# Include sub-routers for sessions, messages, and user library
 router.include_router(sessions_router, tags=["build"])
 router.include_router(messages_router, tags=["build"])
+router.include_router(user_library_router, tags=["build"])
 
 
 # -----------------------------------------------------------------------------
@@ -86,14 +96,24 @@ def get_build_connectors(
     On the build configure page, all users (including admins) only see connectors
     they own/created. Users can create new connectors if they don't have one of a type.
     """
-    cc_pairs = get_connector_credential_pairs_for_user(
+    # Fetch both FILE_SYSTEM (standard connectors) and RAW_BINARY (User Library) connectors
+    file_system_cc_pairs = get_connector_credential_pairs_for_user(
         db_session=db_session,
         user=user,
         get_editable=False,
         eager_load_connector=True,
         eager_load_credential=True,
-        processing_mode=ProcessingMode.FILE_SYSTEM,  # Only show FILE_SYSTEM connectors
+        processing_mode=ProcessingMode.FILE_SYSTEM,
     )
+    raw_binary_cc_pairs = get_connector_credential_pairs_for_user(
+        db_session=db_session,
+        user=user,
+        get_editable=False,
+        eager_load_connector=True,
+        eager_load_credential=True,
+        processing_mode=ProcessingMode.RAW_BINARY,
+    )
+    cc_pairs = file_system_cc_pairs + raw_binary_cc_pairs
 
     # Filter to only show connectors created by the current user
     # All users (including admins) must create their own connectors on the build configure page
@@ -205,12 +225,15 @@ def get_build_connectors(
     return BuildConnectorListResponse(connectors=connectors)
 
 
-# Headers to skip when proxying (hop-by-hop headers)
+# Headers to skip when proxying.
+# Hop-by-hop headers must not be forwarded, and set-cookie is stripped to
+# prevent LLM-generated apps from setting cookies on the parent Onyx domain.
 EXCLUDED_HEADERS = {
     "content-encoding",
     "content-length",
     "transfer-encoding",
     "connection",
+    "set-cookie",
 }
 
 
@@ -220,18 +243,62 @@ def _stream_response(response: httpx.Response) -> Iterator[bytes]:
         yield chunk
 
 
+def _inject_hmr_fixer(content: bytes, session_id: str) -> bytes:
+    """Inject a script that stubs root-scoped Next HMR websocket connections."""
+    base = f"/api/build/sessions/{session_id}/webapp"
+    script = f"<script>{_WEBAPP_HMR_FIXER_TEMPLATE.replace('__WEBAPP_BASE__', base)}</script>"
+    text = content.decode("utf-8")
+    text = re.sub(
+        r"(<head\b[^>]*>)",
+        lambda m: m.group(0) + script,
+        text,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    return text.encode("utf-8")
+
+
 def _rewrite_asset_paths(content: bytes, session_id: str) -> bytes:
     """Rewrite Next.js asset paths to go through the proxy."""
-    import re
-
-    # Base path includes session_id for routing
     webapp_base_path = f"/api/build/sessions/{session_id}/webapp"
+    escaped_webapp_base_path = webapp_base_path.replace("/", r"\/")
+    hmr_paths = ("/_next/webpack-hmr", "/_next/hmr")
 
     text = content.decode("utf-8")
-    # Rewrite /_next/ paths to go through our proxy
-    text = text.replace("/_next/", f"{webapp_base_path}/_next/")
-    # Rewrite JSON data file fetch paths (e.g., /data.json, /data/tickets.json)
-    # Matches paths like "/filename.json" or "/path/to/file.json"
+    # Anchor on delimiter so already-prefixed URLs (from assetPrefix) aren't double-rewritten.
+    for delim in ('"', "'", "("):
+        text = text.replace(f"{delim}/_next/", f"{delim}{webapp_base_path}/_next/")
+        text = re.sub(
+            rf"{re.escape(delim)}https?://[^/\"')]+/_next/",
+            f"{delim}{webapp_base_path}/_next/",
+            text,
+        )
+        text = re.sub(
+            rf"{re.escape(delim)}wss?://[^/\"')]+/_next/",
+            f"{delim}{webapp_base_path}/_next/",
+            text,
+        )
+    text = text.replace(r"\/_next\/", rf"{escaped_webapp_base_path}\/_next\/")
+    text = re.sub(
+        r"https?:\\\/\\\/[^\"']+?\\\/_next\\\/",
+        rf"{escaped_webapp_base_path}\/_next\/",
+        text,
+    )
+    text = re.sub(
+        r"wss?:\\\/\\\/[^\"']+?\\\/_next\\\/",
+        rf"{escaped_webapp_base_path}\/_next\/",
+        text,
+    )
+    for hmr_path in hmr_paths:
+        escaped_hmr_path = hmr_path.replace("/", r"\/")
+        text = text.replace(
+            f"{webapp_base_path}{hmr_path}",
+            hmr_path,
+        )
+        text = text.replace(
+            f"{escaped_webapp_base_path}{escaped_hmr_path}",
+            escaped_hmr_path,
+        )
     text = re.sub(
         r'"(/(?:[a-zA-Z0-9_-]+/)*[a-zA-Z0-9_-]+\.json)"',
         f'"{webapp_base_path}\\1"',
@@ -242,9 +309,27 @@ def _rewrite_asset_paths(content: bytes, session_id: str) -> bytes:
         f"'{webapp_base_path}\\1'",
         text,
     )
-    # Rewrite favicon
     text = text.replace('"/favicon.ico', f'"{webapp_base_path}/favicon.ico')
     return text.encode("utf-8")
+
+
+def _rewrite_proxy_response_headers(
+    headers: dict[str, str], session_id: str
+) -> dict[str, str]:
+    """Rewrite response headers that can leak root-scoped asset URLs."""
+    link = headers.get("link")
+    if link:
+        webapp_base_path = f"/api/build/sessions/{session_id}/webapp"
+        rewritten_link = re.sub(
+            r"<https?://[^>]+/_next/",
+            f"<{webapp_base_path}/_next/",
+            link,
+        )
+        rewritten_link = rewritten_link.replace(
+            "</_next/", f"<{webapp_base_path}/_next/"
+        )
+        headers["link"] = rewritten_link
+    return headers
 
 
 # Content types that may contain asset path references that need rewriting
@@ -268,7 +353,7 @@ def _get_sandbox_url(session_id: UUID, db_session: Session) -> str:
         db_session: Database session
 
     Returns:
-        The internal URL to proxy requests to
+        Internal URL to proxy requests to
 
     Raises:
         HTTPException: If session not found, port not allocated, or sandbox not found
@@ -282,12 +367,10 @@ def _get_sandbox_url(session_id: UUID, db_session: Session) -> str:
     if session.user_id is None:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Get the user's sandbox to get the sandbox_id
     sandbox = get_sandbox_by_user_id(db_session, session.user_id)
     if sandbox is None:
         raise HTTPException(status_code=404, detail="Sandbox not found")
 
-    # Use sandbox manager to get the correct internal URL
     sandbox_manager = get_sandbox_manager()
     return sandbox_manager.get_webapp_url(sandbox.id, session.nextjs_port)
 
@@ -325,12 +408,17 @@ def _proxy_request(
                 for key, value in response.headers.items()
                 if key.lower() not in EXCLUDED_HEADERS
             }
+            response_headers = _rewrite_proxy_response_headers(
+                response_headers, str(session_id)
+            )
 
             content_type = response.headers.get("content-type", "")
 
             # For HTML/CSS/JS responses, rewrite asset paths
             if any(ct in content_type for ct in REWRITABLE_CONTENT_TYPES):
                 content = _rewrite_asset_paths(response.content, str(session_id))
+                if "text/html" in content_type:
+                    content = _inject_hmr_fixer(content, str(session_id))
                 return Response(
                     content=content,
                     status_code=response.status_code,
@@ -353,71 +441,74 @@ def _proxy_request(
         raise HTTPException(status_code=502, detail="Bad gateway")
 
 
-@router.get("/sessions/{session_id}/webapp", response_model=None)
-def get_webapp_root(
+def _check_webapp_access(
+    session_id: UUID, user: User | None, db_session: Session
+) -> BuildSession:
+    """Check if user can access a session's webapp.
+
+    - public_global: accessible by anyone (no auth required)
+    - public_org: accessible by any authenticated user
+    - private: only accessible by the session owner
+    """
+    session = db_session.get(BuildSession, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.sharing_scope == SharingScope.PUBLIC_GLOBAL:
+        return session
+    if user is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    if session.sharing_scope == SharingScope.PRIVATE and session.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return session
+
+
+_OFFLINE_HTML_PATH = _TEMPLATES_DIR / "webapp_offline.html"
+
+
+def _offline_html_response() -> Response:
+    """Return a branded Craft HTML page when the sandbox is not reachable.
+
+    Design mirrors the default Craft web template (outputs/web/app/page.tsx):
+    terminal window aesthetic with Minecraft-themed typing animation.
+
+    """
+    html = _OFFLINE_HTML_PATH.read_text()
+    return Response(content=html, status_code=503, media_type="text/html")
+
+
+# Public router for webapp proxy — no authentication required
+# (access controlled per-session via sharing_scope)
+public_build_router = APIRouter(prefix="/build")
+
+
+@public_build_router.get("/sessions/{session_id}/webapp", response_model=None)
+@public_build_router.get(
+    "/sessions/{session_id}/webapp/{path:path}", response_model=None
+)
+def get_webapp(
     session_id: UUID,
     request: Request,
-    _: User = Depends(current_user),
+    path: str = "",
+    user: User | None = Depends(optional_user),
     db_session: Session = Depends(get_session),
 ) -> StreamingResponse | Response:
-    """Proxy the root path of the webapp for a specific session."""
-    return _proxy_request("", request, session_id, db_session)
+    """Proxy the webapp for a specific session (root and subpaths).
 
-
-@router.get("/sessions/{session_id}/webapp/{path:path}", response_model=None)
-def get_webapp_path(
-    session_id: UUID,
-    path: str,
-    request: Request,
-    _: User = Depends(current_user),
-    db_session: Session = Depends(get_session),
-) -> StreamingResponse | Response:
-    """Proxy any subpath of the webapp (static assets, etc.) for a specific session."""
-    return _proxy_request(path, request, session_id, db_session)
-
-
-# Separate router for Next.js static assets at /_next/*
-# This is needed because Next.js apps may reference assets with root-relative paths
-# that don't get rewritten. The session_id is extracted from the Referer header.
-nextjs_assets_router = APIRouter()
-
-
-def _extract_session_from_referer(request: Request) -> UUID | None:
-    """Extract session_id from the Referer header.
-
-    Expects Referer to contain /api/build/sessions/{session_id}/webapp
+    Accessible without authentication when sharing_scope is public_global.
+    Returns a friendly offline page when the sandbox is not running.
     """
-    import re
-
-    referer = request.headers.get("referer", "")
-    match = re.search(r"/api/build/sessions/([a-f0-9-]+)/webapp", referer)
-    if match:
-        try:
-            return UUID(match.group(1))
-        except ValueError:
-            return None
-    return None
-
-
-@nextjs_assets_router.get("/_next/{path:path}", response_model=None)
-def get_nextjs_assets(
-    path: str,
-    request: Request,
-    _: User = Depends(current_user),
-    db_session: Session = Depends(get_session),
-) -> StreamingResponse | Response:
-    """Proxy Next.js static assets requested at root /_next/ path.
-
-    The session_id is extracted from the Referer header since these requests
-    come from within the iframe context.
-    """
-    session_id = _extract_session_from_referer(request)
-    if not session_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Could not determine session from request context",
-        )
-    return _proxy_request(f"_next/{path}", request, session_id, db_session)
+    try:
+        _check_webapp_access(session_id, user, db_session)
+    except HTTPException as e:
+        if e.status_code == 401:
+            return RedirectResponse(url="/auth/login", status_code=302)
+        raise
+    try:
+        return _proxy_request(path, request, session_id, db_session)
+    except HTTPException as e:
+        if e.status_code in (502, 503, 504):
+            return _offline_html_response()
+        raise
 
 
 # =============================================================================

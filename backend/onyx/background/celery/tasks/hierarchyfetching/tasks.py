@@ -29,6 +29,8 @@ from onyx.configs.constants import OnyxCeleryPriority
 from onyx.configs.constants import OnyxCeleryQueues
 from onyx.configs.constants import OnyxCeleryTask
 from onyx.configs.constants import OnyxRedisLocks
+from onyx.connectors.factory import ConnectorMissingException
+from onyx.connectors.factory import identify_connector_class
 from onyx.connectors.factory import instantiate_connector
 from onyx.connectors.interfaces import HierarchyConnector
 from onyx.connectors.models import HierarchyNode as PydanticHierarchyNode
@@ -40,6 +42,7 @@ from onyx.db.connector_credential_pair import get_connector_credential_pair_from
 from onyx.db.engine.sql_engine import get_session_with_current_tenant
 from onyx.db.enums import AccessType
 from onyx.db.enums import ConnectorCredentialPairStatus
+from onyx.db.hierarchy import upsert_hierarchy_node_cc_pair_entries
 from onyx.db.hierarchy import upsert_hierarchy_nodes_batch
 from onyx.db.models import ConnectorCredentialPair
 from onyx.redis.redis_hierarchy import cache_hierarchy_nodes_batch
@@ -52,6 +55,26 @@ logger = setup_logger()
 
 # Hierarchy fetching runs once per day (24 hours in seconds)
 HIERARCHY_FETCH_INTERVAL_SECONDS = 24 * 60 * 60
+
+
+def _connector_supports_hierarchy_fetching(
+    cc_pair: ConnectorCredentialPair,
+) -> bool:
+    """Return True only for connectors whose class implements HierarchyConnector."""
+    try:
+        connector_class = identify_connector_class(
+            cc_pair.connector.source,
+        )
+    except ConnectorMissingException as e:
+        task_logger.warning(
+            "Skipping hierarchy fetching enqueue for source=%s input_type=%s: %s",
+            cc_pair.connector.source,
+            cc_pair.connector.input_type,
+            str(e),
+        )
+        return False
+
+    return issubclass(connector_class, HierarchyConnector)
 
 
 def _is_hierarchy_fetching_due(cc_pair: ConnectorCredentialPair) -> bool:
@@ -126,9 +149,7 @@ def _try_creating_hierarchy_fetching_task(
             raise RuntimeError("send_task for hierarchy_fetching_task failed.")
 
         task_logger.info(
-            f"Created hierarchy fetching task: "
-            f"cc_pair={cc_pair.id} "
-            f"celery_task_id={custom_task_id}"
+            f"Created hierarchy fetching task: cc_pair={cc_pair.id} celery_task_id={custom_task_id}"
         )
 
         return custom_task_id
@@ -187,7 +208,10 @@ def check_for_hierarchy_fetching(self: Task, *, tenant_id: str) -> int | None:
                     cc_pair_id=cc_pair_id,
                 )
 
-                if not cc_pair or not _is_hierarchy_fetching_due(cc_pair):
+                if not cc_pair or not _connector_supports_hierarchy_fetching(cc_pair):
+                    continue
+
+                if not _is_hierarchy_fetching_due(cc_pair):
                     continue
 
                 task_id = _try_creating_hierarchy_fetching_task(
@@ -214,8 +238,7 @@ def check_for_hierarchy_fetching(self: Task, *, tenant_id: str) -> int | None:
 
     time_elapsed = time.monotonic() - time_start
     task_logger.info(
-        f"check_for_hierarchy_fetching finished: "
-        f"tasks_created={tasks_created} elapsed={time_elapsed:.2f}s"
+        f"check_for_hierarchy_fetching finished: tasks_created={tasks_created} elapsed={time_elapsed:.2f}s"
     )
     return tasks_created
 
@@ -289,6 +312,14 @@ def _run_hierarchy_extraction(
             is_connector_public=is_connector_public,
         )
 
+        upsert_hierarchy_node_cc_pair_entries(
+            db_session=db_session,
+            hierarchy_node_ids=[n.id for n in upserted_nodes],
+            connector_id=cc_pair.connector_id,
+            credential_id=cc_pair.credential_id,
+            commit=True,
+        )
+
         # Cache in Redis for fast ancestor resolution
         cache_entries = [
             HierarchyNodeCacheEntry.from_db_model(node) for node in upserted_nodes
@@ -333,8 +364,7 @@ def connector_hierarchy_fetching_task(
     from the connector source and stores it in the database.
     """
     task_logger.info(
-        f"connector_hierarchy_fetching_task starting: "
-        f"cc_pair={cc_pair_id} tenant={tenant_id}"
+        f"connector_hierarchy_fetching_task starting: cc_pair={cc_pair_id} tenant={tenant_id}"
     )
 
     try:
@@ -352,8 +382,7 @@ def connector_hierarchy_fetching_task(
 
             if cc_pair.status == ConnectorCredentialPairStatus.DELETING:
                 task_logger.info(
-                    f"Skipping hierarchy fetching for deleting connector: "
-                    f"cc_pair={cc_pair_id}"
+                    f"Skipping hierarchy fetching for deleting connector: cc_pair={cc_pair_id}"
                 )
                 return
 
@@ -366,8 +395,7 @@ def connector_hierarchy_fetching_task(
             )
 
             task_logger.info(
-                f"connector_hierarchy_fetching_task: "
-                f"Extracted {total_nodes} hierarchy nodes for cc_pair={cc_pair_id}"
+                f"connector_hierarchy_fetching_task: Extracted {total_nodes} hierarchy nodes for cc_pair={cc_pair_id}"
             )
 
             # Update the last fetch time to prevent re-running until next interval

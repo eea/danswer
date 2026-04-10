@@ -116,12 +116,15 @@ def get_connector_credential_pairs_for_user(
     order_by_desc: bool = False,
     source: DocumentSource | None = None,
     processing_mode: ProcessingMode | None = ProcessingMode.REGULAR,
+    defer_connector_config: bool = False,
 ) -> list[ConnectorCredentialPair]:
     """Get connector credential pairs for a user.
 
     Args:
         processing_mode: Filter by processing mode. Defaults to REGULAR to hide
             FILE_SYSTEM connectors from standard admin UI. Pass None to get all.
+        defer_connector_config: If True, skips loading Connector.connector_specific_config
+            to avoid fetching large JSONB blobs when they aren't needed.
     """
     if eager_load_user:
         assert (
@@ -130,7 +133,10 @@ def get_connector_credential_pairs_for_user(
     stmt = select(ConnectorCredentialPair).distinct()
 
     if eager_load_connector:
-        stmt = stmt.options(selectinload(ConnectorCredentialPair.connector))
+        connector_load = selectinload(ConnectorCredentialPair.connector)
+        if defer_connector_config:
+            connector_load = connector_load.defer(Connector.connector_specific_config)
+        stmt = stmt.options(connector_load)
 
     if eager_load_credential:
         load_opts = selectinload(ConnectorCredentialPair.credential)
@@ -170,6 +176,7 @@ def get_connector_credential_pairs_for_user_parallel(
     order_by_desc: bool = False,
     source: DocumentSource | None = None,
     processing_mode: ProcessingMode | None = ProcessingMode.REGULAR,
+    defer_connector_config: bool = False,
 ) -> list[ConnectorCredentialPair]:
     with get_session_with_current_tenant() as db_session:
         return get_connector_credential_pairs_for_user(
@@ -183,6 +190,7 @@ def get_connector_credential_pairs_for_user_parallel(
             order_by_desc=order_by_desc,
             source=source,
             processing_mode=processing_mode,
+            defer_connector_config=defer_connector_config,
         )
 
 
@@ -389,8 +397,7 @@ def update_connector_credential_pair_from_id(
     )
     if not cc_pair:
         logger.warning(
-            f"Attempted to update pair for Connector Credential Pair '{cc_pair_id}'"
-            f" but it does not exist"
+            f"Attempted to update pair for Connector Credential Pair '{cc_pair_id}' but it does not exist"
         )
         return
 
@@ -418,8 +425,7 @@ def update_connector_credential_pair(
     )
     if not cc_pair:
         logger.warning(
-            f"Attempted to update pair for connector id {connector_id} "
-            f"and credential id {credential_id}"
+            f"Attempted to update pair for connector id {connector_id} and credential id {credential_id}"
         )
         return
 
@@ -505,7 +511,7 @@ def add_credential_to_connector(
     user: User,
     connector_id: int,
     credential_id: int,
-    cc_pair_name: str | None,
+    cc_pair_name: str,
     access_type: AccessType,
     groups: list[int] | None,
     auto_sync_options: dict | None = None,
@@ -744,3 +750,31 @@ def resync_cc_pair(
     )
 
     db_session.commit()
+
+
+# ── Metrics query helpers ──────────────────────────────────────────────
+
+
+def get_connector_health_for_metrics(
+    db_session: Session,
+) -> list:  # Returns list of Row tuples
+    """Return connector health data for Prometheus metrics.
+
+    Each row is (cc_pair_id, status, in_repeated_error_state,
+    last_successful_index_time, name, source).
+    """
+    return (
+        db_session.query(
+            ConnectorCredentialPair.id,
+            ConnectorCredentialPair.status,
+            ConnectorCredentialPair.in_repeated_error_state,
+            ConnectorCredentialPair.last_successful_index_time,
+            ConnectorCredentialPair.name,
+            Connector.source,
+        )
+        .join(
+            Connector,
+            ConnectorCredentialPair.connector_id == Connector.id,
+        )
+        .all()
+    )

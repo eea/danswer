@@ -1,8 +1,15 @@
 import os
+
+# Set environment variables BEFORE any other imports to ensure they're picked up
+# by module-level code that reads env vars at import time
+# TODO(Nik): https://linear.app/onyx-app/issue/ENG-1/update-test-infra-to-use-test-license
+os.environ["LICENSE_ENFORCEMENT_ENABLED"] = "false"
+
 from collections.abc import AsyncGenerator
 from collections.abc import Generator
 from contextlib import asynccontextmanager
 from unittest.mock import MagicMock
+from unittest.mock import patch
 
 import pytest
 from dotenv import load_dotenv
@@ -12,7 +19,7 @@ from fastapi.testclient import TestClient
 from onyx.auth.users import current_admin_user
 from onyx.db.engine.sql_engine import get_session
 from onyx.db.models import UserRole
-from onyx.main import fetch_versioned_implementation
+from onyx.main import get_application
 from onyx.utils.logger import setup_logger
 
 logger = setup_logger()
@@ -21,7 +28,9 @@ load_dotenv()
 
 
 @asynccontextmanager
-async def test_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:  # noqa: ARG001
+async def test_lifespan(
+    app: FastAPI,  # noqa: ARG001
+) -> AsyncGenerator[None, None]:  # noqa: ARG001
     """No-op lifespan for tests that don't need database or other services."""
     yield
 
@@ -40,13 +49,12 @@ def mock_current_admin_user() -> MagicMock:
 
 @pytest.fixture(scope="function")
 def client() -> Generator[TestClient, None, None]:
-    # Set environment variables
-    os.environ["ENABLE_PAID_ENTERPRISE_EDITION_FEATURES"] = "True"
-
-    # Initialize TestClient with the FastAPI app using a no-op test lifespan
-    app: FastAPI = fetch_versioned_implementation(
-        module="onyx.main", attribute="get_application"
-    )(lifespan_override=test_lifespan)
+    # Initialize TestClient with the FastAPI app using a no-op test lifespan.
+    # Patch out prometheus metrics setup to avoid "Duplicated timeseries in
+    # CollectorRegistry" errors when multiple tests each create a new app
+    # (prometheus registers metrics globally and rejects duplicate names).
+    with patch("onyx.main.setup_prometheus_metrics"):
+        app: FastAPI = get_application(lifespan_override=test_lifespan)
 
     # Override the database session dependency with a mock
     # (these tests don't actually need DB access)

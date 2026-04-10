@@ -5,9 +5,9 @@ import { AdminPageTitle } from "@/components/admin/Title";
 import { errorHandlingFetcher } from "@/lib/fetcher";
 //import {TableHeaderCell } from "@tremor/react";
 
-import Text from "@/components/ui/text";
-import Title from "@/components/ui/title";
+import Text from "@/refresh-components/texts/Text";
 import Button from "@/refresh-components/buttons/Button";
+import { toast } from "@/hooks/useToast";
 import { Separator } from "@radix-ui/react-separator";
 
 import {
@@ -24,7 +24,6 @@ import { CPUIcon, EditIcon } from "@/components/icons/icons";
 import useSWR from "swr";
 import { Form, Formik, Field } from "formik";
 import { TextFormField } from "@/components/Field";
-import { usePopup } from "@/components/admin/connectors/Popup";
 import Link from "next/link";
 import { useState } from "react";
 import { DeleteButton } from "@/components/DeleteButton";
@@ -89,7 +88,7 @@ const PagesTable = ({
 
   return (
     <div>
-      <Title>Existing Pages</Title>
+      <h2 className="text-xl font-bold">Existing Pages</h2>
       <Table className="overflow-visible mt-2">
         <TableHead>
           <TableRow>
@@ -180,8 +179,6 @@ const Page = () => {
     config_json = JSON.parse(data?.config);
   }
 
-  const { popup, setPopup } = usePopup();
-
   if (isLoading) {
     return <LoadingAnimation text="Loading" />;
   }
@@ -190,7 +187,6 @@ const Page = () => {
   return (
     <>
       <div className="mb-8">
-        {popup}
         <div className="mx-auto container">
           <AdminPageTitle icon={<CPUIcon size={32} />} title="Pages configuration" />
           <Text className="mb-3">

@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from onyx.configs.app_configs import MAX_SLACK_QUERY_EXPANSIONS
 from onyx.context.search.federated.models import ChannelMetadata
+from onyx.context.search.federated.models import DirectThreadFetch
 from onyx.context.search.models import ChunkIndexRequest
 from onyx.federated_connectors.slack.models import SlackEntities
 from onyx.llm.interfaces import LLM
@@ -20,7 +21,7 @@ from onyx.onyxbot.slack.models import ChannelType
 from onyx.prompts.federated_search import SLACK_DATE_EXTRACTION_PROMPT
 from onyx.prompts.federated_search import SLACK_QUERY_EXPANSION_PROMPT
 from onyx.tracing.llm_utils import llm_generation_span
-from onyx.tracing.llm_utils import record_llm_span_output
+from onyx.tracing.llm_utils import record_llm_response
 from onyx.utils.logger import setup_logger
 
 logger = setup_logger()
@@ -201,8 +202,8 @@ def extract_date_range_from_query(
             llm=llm, flow="slack_date_extraction", input_messages=[prompt_msg]
         ) as span_generation:
             llm_response = llm.invoke(prompt_msg)
+            record_llm_response(span_generation, llm_response)
             response = llm_response_to_string(llm_response)
-            record_llm_span_output(span_generation, response, llm_response.usage)
 
         response_clean = _parse_llm_code_block_response(response)
 
@@ -218,8 +219,7 @@ def extract_date_range_from_query(
             days_back = data.get("days_back")
             if days_back is None:
                 logger.debug(
-                    f"LLM date extraction returned null for query: '{query}', "
-                    f"using default: {default_search_days} days"
+                    f"LLM date extraction returned null for query: '{query}', using default: {default_search_days} days"
                 )
                 return default_search_days
 
@@ -606,8 +606,8 @@ def expand_query_with_llm(query_text: str, llm: LLM) -> list[str]:
             llm=llm, flow="slack_query_expansion", input_messages=[prompt]
         ) as span_generation:
             llm_response = llm.invoke(prompt)
+            record_llm_response(span_generation, llm_response)
             response = llm_response_to_string(llm_response)
-            record_llm_span_output(span_generation, response, llm_response.usage)
 
         response_clean = _parse_llm_code_block_response(response)
 
@@ -639,12 +639,38 @@ def expand_query_with_llm(query_text: str, llm: LLM) -> list[str]:
         return [query_text]
 
 
+SLACK_URL_PATTERN = re.compile(
+    r"https?://[a-z0-9-]+\.slack\.com/archives/([A-Z0-9]+)/p(\d{16})"
+)
+
+
+def extract_slack_message_urls(
+    query_text: str,
+) -> list[tuple[str, str]]:
+    """Extract Slack message URLs from query text.
+
+    Parses URLs like:
+      https://onyx-company.slack.com/archives/C097NBWMY8Y/p1775491616524769
+
+    Returns list of (channel_id, thread_ts) tuples.
+    The 16-digit timestamp is converted to Slack ts format (with dot).
+    """
+    results = []
+    for match in SLACK_URL_PATTERN.finditer(query_text):
+        channel_id = match.group(1)
+        raw_ts = match.group(2)
+        # Convert p1775491616524769 -> 1775491616.524769
+        thread_ts = f"{raw_ts[:10]}.{raw_ts[10:]}"
+        results.append((channel_id, thread_ts))
+    return results
+
+
 def build_slack_queries(
     query: ChunkIndexRequest,
     llm: LLM,
     entities: dict[str, Any] | None = None,
     available_channels: list[str] | None = None,
-) -> list[str]:
+) -> list[str | DirectThreadFetch]:
     """Build Slack query strings with date filtering and query expansion."""
     default_search_days = 30
     if entities:
@@ -669,6 +695,15 @@ def build_slack_queries(
             cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_back)
             time_filter = f" after:{cutoff_date.strftime('%Y-%m-%d')}"
 
+    # Check for Slack message URLs — if found, add direct fetch requests
+    url_fetches: list[DirectThreadFetch] = []
+    slack_urls = extract_slack_message_urls(query.query)
+    for channel_id, thread_ts in slack_urls:
+        url_fetches.append(
+            DirectThreadFetch(channel_id=channel_id, thread_ts=thread_ts)
+        )
+        logger.info(f"Detected Slack URL: channel={channel_id}, ts={thread_ts}")
+
     # ALWAYS extract channel references from the query (not just for recency queries)
     channel_references = extract_channel_references_from_query(query.query)
 
@@ -685,7 +720,9 @@ def build_slack_queries(
 
             # If valid channels detected, use ONLY those channels with NO keywords
             # Return query with ONLY time filter + channel filter (no keywords)
-            return [build_channel_override_query(channel_references, time_filter)]
+            return url_fetches + [
+                build_channel_override_query(channel_references, time_filter)
+            ]
         except ValueError as e:
             # If validation fails, log the error and continue with normal flow
             logger.warning(f"Channel reference validation failed: {e}")
@@ -703,7 +740,8 @@ def build_slack_queries(
         rephrased_queries = expand_query_with_llm(query.query, llm)
 
     # Build final query strings with time filters
-    return [
+    search_queries = [
         rephrased_query.strip() + time_filter
         for rephrased_query in rephrased_queries[:MAX_SLACK_QUERY_EXPANSIONS]
     ]
+    return url_fetches + search_queries

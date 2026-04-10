@@ -1,8 +1,9 @@
 import { Form, Formik } from "formik";
-import { PopupSpec } from "@/components/admin/connectors/Popup";
+import { toast } from "@/hooks/useToast";
 import { createApiKey, updateApiKey } from "./lib";
 import Modal from "@/refresh-components/Modal";
-import Button from "@/refresh-components/buttons/Button";
+import { Button } from "@opal/components";
+import { Disabled } from "@opal/core";
 import Text from "@/refresh-components/texts/Text";
 import InputTypeIn from "@/refresh-components/inputs/InputTypeIn";
 import InputSelect from "@/refresh-components/inputs/InputSelect";
@@ -14,14 +15,12 @@ import { SvgKey } from "@opal/icons";
 
 export interface OnyxApiKeyFormProps {
   onClose: () => void;
-  setPopup: (popupSpec: PopupSpec | null) => void;
   onCreateApiKey: (apiKey: APIKey) => void;
   apiKey?: APIKey;
 }
 
 export default function OnyxApiKeyForm({
   onClose,
-  setPopup,
   onCreateApiKey,
   apiKey,
 }: OnyxApiKeyFormProps) {
@@ -57,12 +56,11 @@ export default function OnyxApiKeyForm({
             }
             formikHelpers.setSubmitting(false);
             if (response.ok) {
-              setPopup({
-                message: isUpdate
+              toast.success(
+                isUpdate
                   ? "Successfully updated API key!"
-                  : "Successfully created API key!",
-                type: "success",
-              });
+                  : "Successfully created API key!"
+              );
               if (!isUpdate) {
                 onCreateApiKey(await response.json());
               }
@@ -70,12 +68,11 @@ export default function OnyxApiKeyForm({
             } else {
               const responseJson = await response.json();
               const errorMsg = responseJson.detail || responseJson.message;
-              setPopup({
-                message: isUpdate
+              toast.error(
+                isUpdate
                   ? `Error updating API key - ${errorMsg}`
-                  : `Error creating API key - ${errorMsg}`,
-                type: "error",
-              });
+                  : `Error creating API key - ${errorMsg}`
+              );
             }
           }}
         >
@@ -141,9 +138,11 @@ export default function OnyxApiKeyForm({
               </Modal.Body>
 
               <Modal.Footer>
-                <Button type="submit" disabled={isSubmitting}>
-                  {isUpdate ? "Update" : "Create"}
-                </Button>
+                <Disabled disabled={isSubmitting}>
+                  <Button type="submit">
+                    {isUpdate ? "Update" : "Create"}
+                  </Button>
+                </Disabled>
               </Modal.Footer>
             </Form>
           )}

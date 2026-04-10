@@ -29,6 +29,7 @@ from ee.onyx.external_permissions.sync_params import (
 from ee.onyx.external_permissions.sync_params import get_source_perm_sync_config
 from onyx.background.celery.apps.app_base import task_logger
 from onyx.background.celery.celery_redis import celery_find_task
+from onyx.background.celery.celery_redis import celery_get_broker_client
 from onyx.background.celery.celery_redis import celery_get_unacked_task_ids
 from onyx.background.celery.tasks.beat_schedule import CLOUD_BEAT_MULTIPLIER_DEFAULT
 from onyx.background.error_logging import emit_background_error
@@ -111,23 +112,20 @@ def _is_external_group_sync_due(cc_pair: ConnectorCredentialPair) -> bool:
 
     if cc_pair.access_type != AccessType.SYNC:
         task_logger.error(
-            f"Received non-sync CC Pair {cc_pair.id} for external "
-            f"group sync. Actual access type: {cc_pair.access_type}"
+            f"Received non-sync CC Pair {cc_pair.id} for external group sync. Actual access type: {cc_pair.access_type}"
         )
         return False
 
     if cc_pair.status == ConnectorCredentialPairStatus.DELETING:
         task_logger.debug(
-            f"Skipping group sync for CC Pair {cc_pair.id} - "
-            f"CC Pair is being deleted"
+            f"Skipping group sync for CC Pair {cc_pair.id} - CC Pair is being deleted"
         )
         return False
 
     sync_config = get_source_perm_sync_config(cc_pair.connector.source)
     if sync_config is None:
         task_logger.debug(
-            f"Skipping group sync for CC Pair {cc_pair.id} - "
-            f"no sync config found for {cc_pair.connector.source}"
+            f"Skipping group sync for CC Pair {cc_pair.id} - no sync config found for {cc_pair.connector.source}"
         )
         return False
 
@@ -135,8 +133,7 @@ def _is_external_group_sync_due(cc_pair: ConnectorCredentialPair) -> bool:
     # This is fine because all sources dont necessarily have a concept of groups
     if sync_config.group_sync_config is None:
         task_logger.debug(
-            f"Skipping group sync for CC Pair {cc_pair.id} - "
-            f"no group sync config found for {cc_pair.connector.source}"
+            f"Skipping group sync for CC Pair {cc_pair.id} - no group sync config found for {cc_pair.connector.source}"
         )
         return False
 
@@ -166,7 +163,6 @@ def check_for_external_group_sync(self: Task, *, tenant_id: str) -> bool | None:
     # (which lives on a different db number)
     r = get_redis_client()
     r_replica = get_redis_replica_client()
-    r_celery: Redis = self.app.broker_connection().channel().client  # type: ignore
 
     lock_beat: RedisLock = r.lock(
         OnyxRedisLocks.CHECK_CONNECTOR_EXTERNAL_GROUP_SYNC_BEAT_LOCK,
@@ -225,6 +221,7 @@ def check_for_external_group_sync(self: Task, *, tenant_id: str) -> bool | None:
             # tasks can be in the queue in redis, in reserved tasks (prefetched by the worker),
             # or be currently executing
             try:
+                r_celery = celery_get_broker_client(self.app)
                 validate_external_group_sync_fences(
                     tenant_id, self.app, r, r_replica, r_celery, lock_beat
                 )
@@ -466,6 +463,7 @@ def connector_external_group_sync_generator_task(
 def _perform_external_group_sync(
     cc_pair_id: int,
     tenant_id: str,
+    timeout_seconds: int = JOB_TIMEOUT,
 ) -> None:
     # Create attempt record at the start
     with get_session_with_current_tenant() as db_session:
@@ -518,9 +516,23 @@ def _perform_external_group_sync(
         seen_users: set[str] = set()  # Track unique users across all groups
         total_groups_processed = 0
         total_group_memberships_synced = 0
+        start_time = time.monotonic()
         try:
             external_user_group_generator = ext_group_sync_func(tenant_id, cc_pair)
             for external_user_group in external_user_group_generator:
+                # Check if the task has exceeded its timeout
+                # NOTE: Celery's soft_time_limit does not work with thread pools,
+                # so we must enforce timeouts internally.
+                elapsed = time.monotonic() - start_time
+                if elapsed > timeout_seconds:
+                    raise RuntimeError(
+                        f"External group sync task timed out: "
+                        f"cc_pair={cc_pair_id} "
+                        f"elapsed={elapsed:.0f}s "
+                        f"timeout={timeout_seconds}s "
+                        f"groups_processed={total_groups_processed}"
+                    )
+
                 external_user_group_batch.append(external_user_group)
 
                 # Track progress

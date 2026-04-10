@@ -1,4 +1,4 @@
-{{- if gt (int .Values.celery_beat.replicaCount) 0 }}
+{{- if and .Values.vectorDB.enabled (gt (int .Values.celery_beat.replicaCount) 0) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -43,14 +43,6 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- $backendRepo := .Values.global.image.repository }}
-      {{- if and .Values.celery_shared.image .Values.celery_shared.image.repository }}
-        {{- $backendRepo = .Values.celery_shared.image.repository }}
-      {{- end }}
-      {{- $backendTag := default .Values.global.image.tags.backend (printf "backend-%s" .Values.global.version) }}
-      {{- if and .Values.celery_shared.image .Values.celery_shared.image.tag }}
-        {{- $backendTag = .Values.celery_shared.image.tag }}
-      {{- end }}
       {{- with .Values.celery_beat.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
@@ -63,7 +55,7 @@ spec:
         - name: celery-beat
           securityContext:
             {{- toYaml .Values.celery_shared.securityContext | nindent 12 }}
-          image: "{{ $backendRepo }}:{{ $backendTag }}"
+          image: "{{ .Values.celery_shared.image.repository }}:{{ .Values.celery_shared.image.tag | default .Values.global.version }}"
           imagePullPolicy: {{ .Values.global.pullPolicy }}
           command:
             [
@@ -71,8 +63,7 @@ spec:
               "-A",
               "onyx.background.celery.versioned_apps.beat",
               "beat",
-              "--loglevel=INFO",
-              "--schedule=/app/data/celerybeat-schedule",
+              {{ printf "--loglevel=%s" .Values.celery_beat.logLevel | quote }},
             ]
           resources:
             {{- toYaml .Values.celery_beat.resources | nindent 12 }}
@@ -107,22 +98,8 @@ spec:
                     python onyx/background/celery/celery_k8s_probe.py
                     --probe liveness
                     --filename /tmp/onyx_k8s_beat_liveness.txt
-      {{- if .Values.celery_beat.volumes }}
+      {{- with .Values.celery_beat.volumes }}
       volumes:
-        {{- range .Values.celery_beat.volumes }}
-        {{- if ne .name "data" }}
-        - name: {{ .name }}
-          {{- if .emptyDir }}
-          emptyDir: {{- toYaml .emptyDir | nindent 12 }}
-          {{- end }}
-        {{- end }}
-        {{- end }}
-        - name: data
-          {{- if .Values.celery_beat.persistence.enabled }}
-          persistentVolumeClaim:
-            claimName: {{ default (printf "%s-celery-beat-data" (include "onyx.fullname" .)) .Values.celery_beat.persistence.existingClaim }}
-          {{- else }}
-          emptyDir: {}
-          {{- end }}
+        {{- toYaml . | nindent 8 }}
       {{- end }}
 {{- end }}

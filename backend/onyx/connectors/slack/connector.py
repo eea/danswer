@@ -565,6 +565,7 @@ def _get_all_doc_ids(
                             channel_id=channel_id, thread_ts=message["ts"]
                         ),
                         external_access=external_access,
+                        parent_hierarchy_raw_node_id=channel_id,
                     )
                 )
 
@@ -896,9 +897,7 @@ class SlackConnector(
                 raw_channels, self.channels, self.channel_regex_enabled
             )
             logger.info(
-                f"Channels - initial checkpoint: "
-                f"all={len(raw_channels)} "
-                f"post_filtering={len(filtered_channels)}"
+                f"Channels - initial checkpoint: all={len(raw_channels)} post_filtering={len(filtered_channels)}"
             )
 
             checkpoint.channel_ids = [c["id"] for c in filtered_channels]
@@ -945,6 +944,7 @@ class SlackConnector(
 
         try:
             num_bot_filtered_messages = 0
+            num_other_filtered_messages = 0
 
             oldest = str(start) if start else None
             latest = str(end)
@@ -970,11 +970,7 @@ class SlackConnector(
             )
 
             logger.info(
-                f"Retrieved messages: "
-                f"{len(message_batch)=} "
-                f"{channel=} "
-                f"{oldest=} "
-                f"{latest=}"
+                f"Retrieved messages: {len(message_batch)=} {channel=} {oldest=} {latest=}"
             )
 
             # message_batch[0] is the newest message (Slack returns newest to oldest)
@@ -1023,7 +1019,13 @@ class SlackConnector(
 
                         seen_thread_ts.add(thread_or_message_ts)
                     elif processed_slack_message.filter_reason:
-                        num_bot_filtered_messages += 1
+                        if (
+                            processed_slack_message.filter_reason
+                            == SlackMessageFilterReason.BOT
+                        ):
+                            num_bot_filtered_messages += 1
+                        else:
+                            num_other_filtered_messages += 1
                     elif failure:
                         yield failure
 
@@ -1043,24 +1045,26 @@ class SlackConnector(
                 range_total = 1
             range_percent_complete = range_complete / range_total * 100.0
 
-            logger.info(
+            num_filtered = num_bot_filtered_messages + num_other_filtered_messages
+            log_func = logger.warning if num_bot_filtered_messages > 0 else logger.info
+            log_func(
                 f"Message processing stats: "
                 f"batch_len={len(message_batch)} "
                 f"batch_yielded={num_threads_processed} "
+                f"filtered={num_filtered} "
+                f"(bot={num_bot_filtered_messages} other={num_other_filtered_messages}) "
                 f"total_threads_seen={len(seen_thread_ts)}"
             )
 
             logger.info(
-                f"Current channel processing stats: "
-                f"{range_start=} "
-                f"range_end={end} "
-                f"percent_complete={range_percent_complete=:.2f}"
+                f"Current channel processing stats: {range_start=} range_end={end} percent_complete={range_percent_complete=:.2f}"
             )
 
             checkpoint.seen_thread_ts = list(seen_thread_ts)
             checkpoint.channel_completion_map[channel["id"]] = new_oldest
 
-            # bypass channels where the first set of messages seen are all bots
+            # bypass channels where the first set of messages seen are all
+            # filtered (bots + disallowed subtypes like channel_join)
             # check at least MIN_BOT_MESSAGE_THRESHOLD messages are in the batch
             # we shouldn't skip based on a small sampling of messages
             if (
@@ -1068,7 +1072,7 @@ class SlackConnector(
                 and len(message_batch) > SlackConnector.BOT_CHANNEL_MIN_BATCH_SIZE
             ):
                 if (
-                    num_bot_filtered_messages
+                    num_filtered
                     > SlackConnector.BOT_CHANNEL_PERCENTAGE_THRESHOLD
                     * len(message_batch)
                 ):

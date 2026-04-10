@@ -1,11 +1,11 @@
 "use client";
 
 import { ThreeDotsLoader } from "@/components/Loading";
-import { AdminPageTitle } from "@/components/admin/Title";
 import { errorHandlingFetcher } from "@/lib/fetcher";
-import Text from "@/components/ui/text";
+import * as SettingsLayouts from "@/layouts/settings-layouts";
+import { Text } from "@opal/components";
 import Title from "@/components/ui/title";
-import Button from "@/refresh-components/buttons/Button";
+import { Button } from "@opal/components";
 import useSWR from "swr";
 import { ModelPreview } from "@/components/embedding/ModelSelector";
 import {
@@ -18,8 +18,11 @@ import { useContext } from "react";
 import { SettingsContext } from "@/providers/SettingsProvider";
 import CardSection from "@/components/admin/CardSection";
 import { ErrorCallout } from "@/components/ErrorCallout";
-import { usePopupFromQuery } from "@/components/popup/PopupFromQuery";
-import { SvgSearch } from "@opal/icons";
+import { useToastFromQuery } from "@/hooks/useToast";
+import { ADMIN_ROUTES } from "@/lib/admin-routes";
+
+const route = ADMIN_ROUTES.INDEX_SETTINGS;
+
 export interface EmbeddingDetails {
   api_key: string;
   custom_config: any;
@@ -29,7 +32,7 @@ export interface EmbeddingDetails {
 
 function Main() {
   const settings = useContext(SettingsContext);
-  const { popup: searchSettingsPopup } = usePopupFromQuery({
+  useToastFromQuery({
     "search-settings": {
       message: `Changed search settings successfully`,
       type: "success",
@@ -80,7 +83,6 @@ function Main() {
 
   return (
     <div>
-      {searchSettingsPopup}
       {!futureEmbeddingModel ? (
         <>
           {settings?.settings.needs_reindexing && (
@@ -105,8 +107,10 @@ function Main() {
                 <div className="px-1 w-full rounded-lg">
                   <div className="space-y-4">
                     <div>
-                      <Text className="font-semibold">Multipass Indexing</Text>
-                      <Text className="text-text-700">
+                      <Text as="p" font="main-ui-action">
+                        Multipass Indexing
+                      </Text>
+                      <Text as="p">
                         {searchSettings.multipass_indexing
                           ? "Enabled"
                           : "Disabled"}
@@ -114,8 +118,10 @@ function Main() {
                     </div>
 
                     <div>
-                      <Text className="font-semibold">Contextual RAG</Text>
-                      <Text className="text-text-700">
+                      <Text as="p" font="main-ui-action">
+                        Contextual RAG
+                      </Text>
+                      <Text as="p">
                         {searchSettings.enable_contextual_rag
                           ? "Enabled"
                           : "Disabled"}
@@ -128,8 +134,8 @@ function Main() {
           </CardSection>
 
           <div className="mt-4">
-            <Button action href="/admin/embeddings">
-              Update Search Settings
+            <Button variant="action" href="/admin/embeddings">
+              Update Index Settings
             </Button>
           </div>
         </>
@@ -142,9 +148,11 @@ function Main() {
 
 export default function Page() {
   return (
-    <>
-      <AdminPageTitle title="Search Settings" icon={SvgSearch} />
-      <Main />
-    </>
+    <SettingsLayouts.Root>
+      <SettingsLayouts.Header title={route.title} icon={route.icon} separator />
+      <SettingsLayouts.Body>
+        <Main />
+      </SettingsLayouts.Body>
+    </SettingsLayouts.Root>
   );
 }

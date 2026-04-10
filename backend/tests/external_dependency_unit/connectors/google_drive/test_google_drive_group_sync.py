@@ -53,6 +53,8 @@ def _create_test_connector_credential_pair(
     )
     db_session.add(credential)
     db_session.flush()  # To get the credential ID
+    # Expire the credential so it reloads from DB with SensitiveValue wrapper
+    db_session.expire(credential)
 
     cc_pair = ConnectorCredentialPair(
         connector_id=connector.id,
@@ -95,7 +97,6 @@ def _get_public_external_groups(
 
 
 class TestPerformExternalGroupSync:
-
     def test_initial_group_sync(self, db_session: Session) -> None:
         """Test syncing external groups for the first time (initial sync)"""
         # Create test data
@@ -114,7 +115,8 @@ class TestPerformExternalGroupSync:
         ]
 
         def mock_group_sync_func(
-            tenant_id: str, cc_pair: ConnectorCredentialPair  # noqa: ARG001
+            tenant_id: str,  # noqa: ARG001
+            cc_pair: ConnectorCredentialPair,  # noqa: ARG001
         ) -> Generator[ExternalUserGroup, None, None]:
             for group in mock_groups:
                 yield group
@@ -180,7 +182,8 @@ class TestPerformExternalGroupSync:
 
         # Initial sync with original groups
         def initial_group_sync_func(
-            tenant_id: str, cc_pair: ConnectorCredentialPair  # noqa: ARG001
+            tenant_id: str,  # noqa: ARG001
+            cc_pair: ConnectorCredentialPair,  # noqa: ARG001
         ) -> Generator[ExternalUserGroup, None, None]:
             yield ExternalUserGroup(id="group1", user_emails=[user1.email, user2.email])
             yield ExternalUserGroup(id="group2", user_emails=[user2.email])
@@ -211,7 +214,8 @@ class TestPerformExternalGroupSync:
 
             # Updated sync with modified groups
             def updated_group_sync_func(
-                tenant_id: str, cc_pair: ConnectorCredentialPair  # noqa: ARG001
+                tenant_id: str,  # noqa: ARG001
+                cc_pair: ConnectorCredentialPair,  # noqa: ARG001
             ) -> Generator[ExternalUserGroup, None, None]:
                 # group1 now has user1 and user3 (user2 removed, user3 added)
                 yield ExternalUserGroup(
@@ -274,7 +278,8 @@ class TestPerformExternalGroupSync:
 
         # Initial sync with multiple groups
         def initial_group_sync_func(
-            tenant_id: str, cc_pair: ConnectorCredentialPair  # noqa: ARG001
+            tenant_id: str,  # noqa: ARG001
+            cc_pair: ConnectorCredentialPair,  # noqa: ARG001
         ) -> Generator[ExternalUserGroup, None, None]:
             yield ExternalUserGroup(id="group1", user_emails=[user1.email, user2.email])
             yield ExternalUserGroup(id="group2", user_emails=[user1.email])
@@ -310,7 +315,8 @@ class TestPerformExternalGroupSync:
 
             # Updated sync with only one group remaining
             def updated_group_sync_func(
-                tenant_id: str, cc_pair: ConnectorCredentialPair  # noqa: ARG001
+                tenant_id: str,  # noqa: ARG001
+                cc_pair: ConnectorCredentialPair,  # noqa: ARG001
             ) -> Generator[ExternalUserGroup, None, None]:
                 # Only group1 remains, group2 and public_group are removed
                 yield ExternalUserGroup(
@@ -356,7 +362,8 @@ class TestPerformExternalGroupSync:
 
         # Initial sync with groups
         def initial_group_sync_func(
-            tenant_id: str, cc_pair: ConnectorCredentialPair  # noqa: ARG001
+            tenant_id: str,  # noqa: ARG001
+            cc_pair: ConnectorCredentialPair,  # noqa: ARG001
         ) -> Generator[ExternalUserGroup, None, None]:
             yield ExternalUserGroup(id="group1", user_emails=[user1.email])
 
@@ -381,7 +388,8 @@ class TestPerformExternalGroupSync:
 
             # Updated sync with no groups
             def empty_group_sync_func(
-                tenant_id: str, cc_pair: ConnectorCredentialPair  # noqa: ARG001
+                tenant_id: str,  # noqa: ARG001
+                cc_pair: ConnectorCredentialPair,  # noqa: ARG001
             ) -> Generator[ExternalUserGroup, None, None]:
                 # No groups yielded
                 return
@@ -411,7 +419,8 @@ class TestPerformExternalGroupSync:
 
         # Create a large group with many users
         def large_group_sync_func(
-            tenant_id: str, cc_pair: ConnectorCredentialPair  # noqa: ARG001
+            tenant_id: str,  # noqa: ARG001
+            cc_pair: ConnectorCredentialPair,  # noqa: ARG001
         ) -> Generator[ExternalUserGroup, None, None]:
             yield ExternalUserGroup(
                 id="large_group", user_emails=[user.email for user in users]
@@ -448,7 +457,8 @@ class TestPerformExternalGroupSync:
         cc_pair = _create_test_connector_credential_pair(db_session)
 
         def mixed_group_sync_func(
-            tenant_id: str, cc_pair: ConnectorCredentialPair  # noqa: ARG001
+            tenant_id: str,  # noqa: ARG001
+            cc_pair: ConnectorCredentialPair,  # noqa: ARG001
         ) -> Generator[ExternalUserGroup, None, None]:
             yield ExternalUserGroup(
                 id="regular_group", user_emails=[user1.email, user2.email]

@@ -5,12 +5,17 @@ from enum import auto
 from enum import Enum
 
 
-ONYX_DEFAULT_APPLICATION_NAME = "EEA AI Hub"
+ONYX_DEFAULT_APPLICATION_NAME = "Onyx"
 ONYX_DISCORD_URL = "https://discord.gg/4NA5SbzrWb"
 ONYX_UTM_SOURCE = "onyx_app"
 SLACK_USER_TOKEN_PREFIX = "xoxp-"
 SLACK_BOT_TOKEN_PREFIX = "xoxb-"
 ONYX_EMAILABLE_LOGO_MAX_DIM = 512
+
+# The mask_string() function in encryption.py uses "•" (U+2022 BULLET) to mask secrets.
+MASK_CREDENTIAL_CHAR = "\u2022"
+# Pattern produced by mask_string for strings >= 14 chars: "abcd...wxyz" (exactly 11 chars)
+MASK_CREDENTIAL_LONG_RE = re.compile(r"^.{4}\.{3}.{4}$")
 
 SOURCE_TYPE = "source_type"
 # stored in the `metadata` of a chunk. Used to signify that this chunk should
@@ -27,8 +32,9 @@ DEFAULT_BOOST = 0
 PUBLIC_API_TAGS: list[str | Enum] = ["public"]
 
 # Cookies
-# Currently a constant, but logic allows for configuration
-FASTAPI_USERS_AUTH_COOKIE_NAME = "fastapiusersauth"
+FASTAPI_USERS_AUTH_COOKIE_NAME = (
+    "fastapiusersauth"  # Currently a constant, but logic allows for configuration
+)
 TENANT_ID_COOKIE_NAME = "onyx_tid"  # tenant id - for workaround cases
 ANONYMOUS_USER_COOKIE_NAME = "onyx_anonymous_user"
 
@@ -65,6 +71,7 @@ STABLE_VERSION_PATTERN = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 DEV_VERSION_PATTERN = re.compile(r"^v(\d+)\.(\d+)\.(\d+)-beta\.(\d+)$")
 
 DEFAULT_PERSONA_ID = 0
+
 DEFAULT_CC_PAIR_ID = 1
 
 
@@ -82,7 +89,6 @@ POSTGRES_CELERY_WORKER_LIGHT_APP_NAME = "celery_worker_light"
 POSTGRES_CELERY_WORKER_DOCPROCESSING_APP_NAME = "celery_worker_docprocessing"
 POSTGRES_CELERY_WORKER_DOCFETCHING_APP_NAME = "celery_worker_docfetching"
 POSTGRES_CELERY_WORKER_INDEXING_CHILD_APP_NAME = "celery_worker_indexing_child"
-POSTGRES_CELERY_WORKER_BACKGROUND_APP_NAME = "celery_worker_background"
 POSTGRES_CELERY_WORKER_HEAVY_APP_NAME = "celery_worker_heavy"
 POSTGRES_CELERY_WORKER_MONITORING_APP_NAME = "celery_worker_monitoring"
 POSTGRES_CELERY_WORKER_USER_FILE_PROCESSING_APP_NAME = (
@@ -100,7 +106,6 @@ DISCORD_SERVICE_API_KEY_NAME = "discord-bot-service"
 
 # Key-Value store keys
 KV_REINDEX_KEY = "needs_reindexing"
-KV_SEARCH_SETTINGS = "search_settings"
 KV_UNSTRUCTURED_API_KEY = "unstructured_api_key"
 KV_USER_STORE_KEY = "INVITED_USERS"
 KV_PENDING_USERS_KEY = "PENDING_USERS"
@@ -131,8 +136,7 @@ CELERY_PRIMARY_WORKER_LOCK_TIMEOUT = 120
 
 # hard timeout applied by the watchdog to the indexing connector run
 # to handle hung connectors
-CELERY_INDEXING_WATCHDOG_CONNECTOR_TIMEOUT = 3 * \
-    60 * 60  # 3 hours (in seconds)
+CELERY_INDEXING_WATCHDOG_CONNECTOR_TIMEOUT = 3 * 60 * 60  # 3 hours (in seconds)
 
 # soft timeout for the lock taken by the indexing connector run
 # allows the lock to eventually expire if the managing code around it dies
@@ -167,8 +171,26 @@ CELERY_USER_FILE_PROCESSING_TASK_EXPIRES = 60  # 1 minute (in seconds)
 # beat generator stops adding more.  Prevents unbounded queue growth when workers
 # fall behind.
 USER_FILE_PROCESSING_MAX_QUEUE_DEPTH = 500
+# How long a queued user-file-project-sync task remains valid.
+# Should be short enough to discard stale queue entries under load while still
+# allowing workers enough time to pick up new tasks.
+CELERY_USER_FILE_PROJECT_SYNC_TASK_EXPIRES = 60  # 1 minute (in seconds)
+
+# Max queue depth before user-file-project-sync producers stop enqueuing.
+# This applies backpressure when workers are falling behind.
+USER_FILE_PROJECT_SYNC_MAX_QUEUE_DEPTH = 500
 
 CELERY_USER_FILE_PROJECT_SYNC_LOCK_TIMEOUT = 5 * 60  # 5 minutes (in seconds)
+
+# How long a queued user-file-delete task is valid before workers discard it.
+# Mirrors the processing task expiry to prevent indefinite queue growth when
+# files are stuck in DELETING status and the beat keeps re-enqueuing them.
+CELERY_USER_FILE_DELETE_TASK_EXPIRES = 60  # 1 minute (in seconds)
+
+# Max queue depth before the delete beat stops enqueuing more delete tasks.
+USER_FILE_DELETE_MAX_QUEUE_DEPTH = 500
+
+CELERY_SANDBOX_FILE_SYNC_LOCK_TIMEOUT = 5 * 60  # 5 minutes (in seconds)
 
 DANSWER_REDIS_FUNCTION_LOCK_PREFIX = "da_function_lock:"
 
@@ -236,7 +258,9 @@ class DocumentSource(str, Enum):
     MOCK_CONNECTOR = "mock_connector"
     # Special case for user files
     USER_FILE = "user_file"
-
+    # Raw files for Craft sandbox access (xlsx, pptx, docx, etc.)
+    # Uses RAW_BINARY processing mode - no text extraction
+    CRAFT_FILE = "craft_file"
 
 
 class FederatedConnectorSource(str, Enum):
@@ -318,6 +342,7 @@ class MessageType(str, Enum):
     USER = "user"  # HumanMessage
     ASSISTANT = "assistant"  # AIMessage - Can include tool_calls field for parallel tool calling
     TOOL_CALL_RESPONSE = "tool_call_response"
+    USER_REMINDER = "user_reminder"  # Custom Onyx message type which is translated into a USER message when passed to the LLM
 
 
 class ChatMessageSimpleType(str, Enum):
@@ -342,6 +367,7 @@ class FileOrigin(str, Enum):
     CHAT_UPLOAD = "chat_upload"
     CHAT_IMAGE_GEN = "chat_image_gen"
     CONNECTOR = "connector"
+    CONNECTOR_METADATA = "connector_metadata"
     GENERATED_REPORT = "generated_report"
     INDEXING_CHECKPOINT = "indexing_checkpoint"
     PLAINTEXT_CACHE = "plaintext_cache"
@@ -407,6 +433,8 @@ class OnyxCeleryQueues:
     # Sandbox processing queue
     SANDBOX = "sandbox"
 
+    OPENSEARCH_MIGRATION = "opensearch_migration"
+
 
 class OnyxRedisLocks:
     PRIMARY_WORKER = "da_lock:primary_worker"
@@ -429,7 +457,9 @@ class OnyxRedisLocks:
     CHECK_AVAILABLE_TENANTS_LOCK = "da_lock:check_available_tenants"
     CLOUD_PRE_PROVISION_TENANT_LOCK = "da_lock:pre_provision_tenant"
 
-    CONNECTOR_DOC_PERMISSIONS_SYNC_LOCK_PREFIX = "da_lock:connector_doc_permissions_sync"
+    CONNECTOR_DOC_PERMISSIONS_SYNC_LOCK_PREFIX = (
+        "da_lock:connector_doc_permissions_sync"
+    )
     CONNECTOR_EXTERNAL_GROUP_SYNC_LOCK_PREFIX = "da_lock:connector_external_group_sync"
     PRUNING_LOCK_PREFIX = "da_lock:pruning"
     INDEXING_METADATA_PREFIX = "da_metadata:indexing"
@@ -449,8 +479,12 @@ class OnyxRedisLocks:
     USER_FILE_QUEUED_PREFIX = "da_lock:user_file_queued"
     USER_FILE_PROJECT_SYNC_BEAT_LOCK = "da_lock:check_user_file_project_sync_beat"
     USER_FILE_PROJECT_SYNC_LOCK_PREFIX = "da_lock:user_file_project_sync"
+    USER_FILE_PROJECT_SYNC_QUEUED_PREFIX = "da_lock:user_file_project_sync_queued"
     USER_FILE_DELETE_BEAT_LOCK = "da_lock:check_user_file_delete_beat"
     USER_FILE_DELETE_LOCK_PREFIX = "da_lock:user_file_delete"
+    # Short-lived key set when a delete task is enqueued; cleared when the worker picks it up.
+    # Prevents the beat from re-enqueuing the same file while a delete task is already queued.
+    USER_FILE_DELETE_QUEUED_PREFIX = "da_lock:user_file_delete_queued"
 
     # Release notes
     RELEASE_NOTES_FETCH_LOCK = "da_lock:release_notes_fetch"
@@ -459,15 +493,24 @@ class OnyxRedisLocks:
     CLEANUP_IDLE_SANDBOXES_BEAT_LOCK = "da_lock:cleanup_idle_sandboxes_beat"
     CLEANUP_OLD_SNAPSHOTS_BEAT_LOCK = "da_lock:cleanup_old_snapshots_beat"
 
+    # Sandbox file sync
+    SANDBOX_FILE_SYNC_LOCK_PREFIX = "da_lock:sandbox_file_sync"
+
 
 class OnyxRedisSignals:
     BLOCK_VALIDATE_INDEXING_FENCES = "signal:block_validate_indexing_fences"
-    BLOCK_VALIDATE_EXTERNAL_GROUP_SYNC_FENCES = "signal:block_validate_external_group_sync_fences"
-    BLOCK_VALIDATE_PERMISSION_SYNC_FENCES = "signal:block_validate_permission_sync_fences"
+    BLOCK_VALIDATE_EXTERNAL_GROUP_SYNC_FENCES = (
+        "signal:block_validate_external_group_sync_fences"
+    )
+    BLOCK_VALIDATE_PERMISSION_SYNC_FENCES = (
+        "signal:block_validate_permission_sync_fences"
+    )
     BLOCK_PRUNING = "signal:block_pruning"
     BLOCK_VALIDATE_PRUNING_FENCES = "signal:block_validate_pruning_fences"
     BLOCK_BUILD_FENCE_LOOKUP_TABLE = "signal:block_build_fence_lookup_table"
-    BLOCK_VALIDATE_CONNECTOR_DELETION_FENCES = "signal:block_validate_connector_deletion_fences"
+    BLOCK_VALIDATE_CONNECTOR_DELETION_FENCES = (
+        "signal:block_validate_connector_deletion_fences"
+    )
 
 
 class OnyxRedisConstants:
@@ -498,9 +541,15 @@ class OnyxCeleryTask:
 
     CLOUD_BEAT_TASK_GENERATOR = f"{ONYX_CLOUD_CELERY_TASK_PREFIX}_generate_beat_tasks"
     CLOUD_MONITOR_ALEMBIC = f"{ONYX_CLOUD_CELERY_TASK_PREFIX}_monitor_alembic"
-    CLOUD_MONITOR_CELERY_QUEUES = f"{ONYX_CLOUD_CELERY_TASK_PREFIX}_monitor_celery_queues"
-    CLOUD_CHECK_AVAILABLE_TENANTS = f"{ONYX_CLOUD_CELERY_TASK_PREFIX}_check_available_tenants"
-    CLOUD_MONITOR_CELERY_PIDBOX = f"{ONYX_CLOUD_CELERY_TASK_PREFIX}_monitor_celery_pidbox"
+    CLOUD_MONITOR_CELERY_QUEUES = (
+        f"{ONYX_CLOUD_CELERY_TASK_PREFIX}_monitor_celery_queues"
+    )
+    CLOUD_CHECK_AVAILABLE_TENANTS = (
+        f"{ONYX_CLOUD_CELERY_TASK_PREFIX}_check_available_tenants"
+    )
+    CLOUD_MONITOR_CELERY_PIDBOX = (
+        f"{ONYX_CLOUD_CELERY_TASK_PREFIX}_monitor_celery_pidbox"
+    )
 
     CHECK_FOR_CONNECTOR_DELETION = "check_for_connector_deletion_task"
     CHECK_FOR_VESPA_SYNC_TASK = "check_for_vespa_sync_task"
@@ -564,6 +613,9 @@ class OnyxCeleryTask:
     EXPORT_QUERY_HISTORY_TASK = "export_query_history_task"
     EXPORT_QUERY_HISTORY_CLEANUP_TASK = "export_query_history_cleanup_task"
 
+    # Hook execution log retention
+    HOOK_EXECUTION_LOG_CLEANUP_TASK = "hook_execution_log_cleanup_task"
+
     # Sandbox cleanup
     CLEANUP_IDLE_SANDBOXES = "cleanup_idle_sandboxes"
     CLEANUP_OLD_SNAPSHOTS = "cleanup_old_snapshots"
@@ -576,6 +628,9 @@ class OnyxCeleryTask:
     )
     MIGRATE_DOCUMENTS_FROM_VESPA_TO_OPENSEARCH_TASK = (
         "migrate_documents_from_vespa_to_opensearch_task"
+    )
+    MIGRATE_CHUNKS_FROM_VESPA_TO_OPENSEARCH_TASK = (
+        "migrate_chunks_from_vespa_to_opensearch_task"
     )
 
 

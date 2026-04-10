@@ -2,6 +2,7 @@ import time
 
 from sqlalchemy.orm import Session
 
+from onyx.configs.app_configs import DISABLE_VECTOR_DB
 from onyx.configs.app_configs import VESPA_NUM_ATTEMPTS_ON_STARTUP
 from onyx.configs.constants import KV_REINDEX_KEY
 from onyx.db.connector_credential_pair import get_connector_credential_pairs
@@ -15,6 +16,8 @@ from onyx.db.index_attempt import (
     count_unique_active_cc_pairs_with_successful_index_attempts,
 )
 from onyx.db.index_attempt import count_unique_cc_pairs_with_successful_index_attempts
+from onyx.db.llm import update_default_contextual_model
+from onyx.db.llm import update_no_default_contextual_rag_provider
 from onyx.db.models import ConnectorCredentialPair
 from onyx.db.models import SearchSettings
 from onyx.db.search_settings import get_current_search_settings
@@ -80,6 +83,24 @@ def _perform_index_swap(
         db_session=db_session,
     )
 
+    # Update the default contextual model to match the newly promoted settings
+    try:
+        update_default_contextual_model(
+            db_session=db_session,
+            enable_contextual_rag=new_search_settings.enable_contextual_rag,
+            contextual_rag_llm_provider=new_search_settings.contextual_rag_llm_provider,
+            contextual_rag_llm_name=new_search_settings.contextual_rag_llm_name,
+        )
+    except ValueError as e:
+        logger.error(f"Model not found, defaulting to no contextual model: {e}")
+        update_no_default_contextual_rag_provider(
+            db_session=db_session,
+        )
+        new_search_settings.enable_contextual_rag = False
+        new_search_settings.contextual_rag_llm_provider = None
+        new_search_settings.contextual_rag_llm_name = None
+        db_session.commit()
+
     # This flow is for checking and possibly creating an index so we get all
     # indices.
     document_indices = get_all_document_indices(new_search_settings, None, None)
@@ -91,7 +112,7 @@ def _perform_index_swap(
         for x in range(VESPA_NUM_ATTEMPTS_ON_STARTUP):
             try:
                 logger.notice(
-                    f"Document index {document_index.__class__.__name__} swap (attempt {x+1}/{VESPA_NUM_ATTEMPTS_ON_STARTUP})..."
+                    f"Document index {document_index.__class__.__name__} swap (attempt {x + 1}/{VESPA_NUM_ATTEMPTS_ON_STARTUP})..."
                 )
                 document_index.ensure_indices_exist(
                     primary_embedding_dim=new_search_settings.final_embedding_dim,
@@ -129,6 +150,9 @@ def check_and_perform_index_swap(db_session: Session) -> SearchSettings | None:
     Returns None if search settings did not change, or the old search settings if they
     did change.
     """
+    if DISABLE_VECTOR_DB:
+        return None
+
     # Default CC-pair created for Ingestion API unused here
     all_cc_pairs = get_connector_credential_pairs(db_session)
     cc_pair_count = max(len(all_cc_pairs) - 1, 0)

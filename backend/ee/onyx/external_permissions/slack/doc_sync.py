@@ -151,9 +151,14 @@ def slack_doc_sync(
     tenant_id = get_current_tenant_id()
     provider = OnyxDBCredentialsProvider(tenant_id, "slack", cc_pair.credential.id)
     r = get_redis_client(tenant_id=tenant_id)
+    credential_json = (
+        cc_pair.credential.credential_json.get_value(apply_mask=False)
+        if cc_pair.credential.credential_json
+        else {}
+    )
     slack_client = SlackConnector.make_slack_web_client(
         provider.get_provider_key(),
-        cc_pair.credential.credential_json["slack_bot_token"],
+        credential_json["slack_bot_token"],
         SlackConnector.MAX_RETRIES,
         r,
     )
@@ -161,8 +166,7 @@ def slack_doc_sync(
     user_id_to_email_map = fetch_user_id_to_email_map(slack_client)
     if not user_id_to_email_map:
         raise ValueError(
-            "No user id to email map found. Please check to make sure that "
-            "your Slack bot token has the `users:read.email` scope"
+            "No user id to email map found. Please check to make sure that your Slack bot token has the `users:read.email` scope"
         )
 
     workspace_permissions = _fetch_workspace_permissions(

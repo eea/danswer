@@ -142,8 +142,7 @@ def _drive_folder_to_onyx_group(
         elif permission.type == PermissionType.GROUP:
             if permission.email_address not in group_email_to_member_emails_map:
                 logger.warning(
-                    f"Group email {permission.email_address} for folder {folder.id} "
-                    "not found in group_email_to_member_emails_map"
+                    f"Group email {permission.email_address} for folder {folder.id} not found in group_email_to_member_emails_map"
                 )
                 continue
             folder_member_emails.update(
@@ -238,8 +237,7 @@ def _drive_member_map_to_onyx_groups(
         for group_email in group_emails:
             if group_email not in group_email_to_member_emails_map:
                 logger.warning(
-                    f"Group email {group_email} for drive {drive_id} not found in "
-                    "group_email_to_member_emails_map"
+                    f"Group email {group_email} for drive {drive_id} not found in group_email_to_member_emails_map"
                 )
                 continue
             drive_member_emails.update(group_email_to_member_emails_map[group_email])
@@ -326,8 +324,7 @@ def _build_onyx_groups(
         for group_email in group_emails:
             if group_email not in group_email_to_member_emails_map:
                 logger.warning(
-                    f"Group email {group_email} for drive {drive_id} not found in "
-                    "group_email_to_member_emails_map"
+                    f"Group email {group_email} for drive {drive_id} not found in group_email_to_member_emails_map"
                 )
                 continue
             drive_member_emails.update(group_email_to_member_emails_map[group_email])
@@ -391,7 +388,12 @@ def gdrive_group_sync(
     google_drive_connector = GoogleDriveConnector(
         **cc_pair.connector.connector_specific_config
     )
-    google_drive_connector.load_credentials(cc_pair.credential.credential_json)
+    credential_json = (
+        cc_pair.credential.credential_json.get_value(apply_mask=False)
+        if cc_pair.credential.credential_json
+        else {}
+    )
+    google_drive_connector.load_credentials(credential_json)
     admin_service = get_admin_service(
         google_drive_connector.creds, google_drive_connector.primary_admin_email
     )

@@ -7,6 +7,15 @@ on:
   merge_group:
   pull_request:
     branches: [main]
+    paths:
+      - "backend/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/pr-external-dependency-unit-tests.yml"
+      - ".github/actions/setup-python-and-install-dependencies/**"
+      - ".github/actions/setup-playwright/**"
+      - "deployment/docker_compose/docker-compose.yml"
+      - "deployment/docker_compose/docker-compose.dev.yml"
   push:
     tags:
       - "v*.*.*"
@@ -44,9 +53,6 @@ env:
   # Code Interpreter
   # TODO: debug why this is failing and enable
   CODE_INTERPRETER_BASE_URL: http://localhost:8000
-
-  # OpenSearch
-  OPENSEARCH_ADMIN_PASSWORD: "StrongPassword123!"
 
 jobs:
   discover-test-dirs:
@@ -118,9 +124,9 @@ jobs:
       - name: Create .env file for Docker Compose
         run: |
           cat <<EOF > deployment/docker_compose/.env
-          COMPOSE_PROFILES=s3-filestore
-          CODE_INTERPRETER_BETA_ENABLED=true
+          COMPOSE_PROFILES=s3-filestore,opensearch-enabled
           DISABLE_TELEMETRY=true
+          OPENSEARCH_FOR_ONYX_ENABLED=true
           EOF
 
       - name: Set up Standard Dependencies
@@ -129,7 +135,6 @@ jobs:
           docker compose \
             -f docker-compose.yml \
             -f docker-compose.dev.yml \
-            -f docker-compose.opensearch.yml \
             up -d \
             minio \
             relational_db \
@@ -164,7 +169,7 @@ jobs:
           cd deployment/docker_compose
 
           # Get list of running containers
-          containers=$(docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.opensearch.yml ps -q)
+          containers=$(docker compose -f docker-compose.yml -f docker-compose.dev.yml ps -q)
 
           # Collect logs from each container
           for container in $containers; do
@@ -178,7 +183,7 @@ jobs:
 
       - name: Upload Docker logs
         if: failure()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
         with:
           name: docker-logs-${{ matrix.test-dir }}
           path: docker-logs/

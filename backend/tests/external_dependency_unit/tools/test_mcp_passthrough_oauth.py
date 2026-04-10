@@ -21,7 +21,6 @@ import pytest
 from sqlalchemy.orm import Session
 
 from onyx.chat.emitter import get_default_emitter
-from onyx.context.search.enums import RecencyBiasSetting
 from onyx.db.enums import MCPAuthenticationPerformer
 from onyx.db.enums import MCPAuthenticationType
 from onyx.db.enums import MCPTransport
@@ -47,19 +46,13 @@ def _create_test_persona_with_mcp_tool(
     persona = Persona(
         name=f"Test MCP Persona {uuid4().hex[:8]}",
         description="Test persona with MCP tools",
-        num_chunks=10.0,
-        chunks_above=0,
-        chunks_below=0,
-        llm_relevance_filter=False,
-        llm_filter_extraction=False,
-        recency_bias=RecencyBiasSetting.NO_DECAY,
         system_prompt="You are a helpful assistant",
         task_prompt="Answer the user's question",
         tools=tools,
         document_sets=[],
         users=[user],
         groups=[],
-        is_visible=True,
+        is_listed=True,
         is_public=True,
         display_priority=None,
         starter_messages=None,
@@ -375,9 +368,10 @@ class TestMCPPassThroughOAuth:
         def mock_call_mcp_tool(
             server_url: str,  # noqa: ARG001
             tool_name: str,  # noqa: ARG001
-            kwargs: dict[str, Any],  # noqa: ARG001
+            arguments: dict[str, Any],  # noqa: ARG001
             connection_headers: dict[str, str],
             transport: MCPTransport,  # noqa: ARG001
+            auth: Any = None,  # noqa: ARG001
         ) -> dict[str, Any]:
             captured_headers.update(connection_headers)
             return mocked_response

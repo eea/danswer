@@ -10,6 +10,7 @@ from datetime import timedelta
 from datetime import timezone
 from typing import Any
 
+import requests
 from jira import JIRA
 from jira.exceptions import JIRAError
 from jira.resources import Issue
@@ -193,8 +194,7 @@ def _handle_jira_search_error(e: Exception, jql: str) -> None:
     if status_code == 400:
         if "does not exist for the field 'project'" in error_text:
             raise ConnectorValidationError(
-                f"The specified Jira project does not exist or you don't have access to it. "
-                f"JQL query: {jql}. Error: {error_text}"
+                f"The specified Jira project does not exist or you don't have access to it. JQL query: {jql}. Error: {error_text}"
             )
         raise ConnectorValidationError(
             f"Invalid JQL query. JQL: {jql}. Error: {error_text}"
@@ -240,29 +240,53 @@ def enhanced_search_ids(
     )
 
 
-def bulk_fetch_issues(
-    jira_client: JIRA, issue_ids: list[str], fields: str | None = None
-) -> list[Issue]:
-    # TODO: move away from this jira library if they continue to not support
-    # the endpoints we need. Using private fields is not ideal, but
-    # is likely fine for now since we pin the library version
+def _bulk_fetch_request(
+    jira_client: JIRA, issue_ids: list[str], fields: str | None
+) -> list[dict[str, Any]]:
+    """Raw POST to the bulkfetch endpoint. Returns the list of raw issue dicts."""
     bulk_fetch_path = jira_client._get_url("issue/bulkfetch")
-
     # Prepare the payload according to Jira API v3 specification
     payload: dict[str, Any] = {"issueIdsOrKeys": issue_ids}
-
     # Only restrict fields if specified, might want to explicitly do this in the future
     # to avoid reading unnecessary data
     payload["fields"] = fields.split(",") if fields else ["*all"]
 
+    resp = jira_client._session.post(bulk_fetch_path, json=payload)
+    return resp.json()["issues"]
+
+
+def bulk_fetch_issues(
+    jira_client: JIRA, issue_ids: list[str], fields: str | None = None
+) -> list[Issue]:
+    # TODO(evan): move away from this jira library if they continue to not support
+    # the endpoints we need. Using private fields is not ideal, but
+    # is likely fine for now since we pin the library version
+
     try:
-        response = jira_client._session.post(bulk_fetch_path, json=payload).json()
+        raw_issues = _bulk_fetch_request(jira_client, issue_ids, fields)
+    except requests.exceptions.JSONDecodeError:
+        if len(issue_ids) <= 1:
+            logger.exception(
+                f"Jira bulk-fetch response for issue(s) {issue_ids} could not "
+                f"be decoded as JSON (response too large or truncated)."
+            )
+            raise
+
+        mid = len(issue_ids) // 2
+        logger.warning(
+            f"Jira bulk-fetch JSON decode failed for batch of {len(issue_ids)} issues. "
+            f"Splitting into sub-batches of {mid} and {len(issue_ids) - mid}."
+        )
+        left = bulk_fetch_issues(jira_client, issue_ids[:mid], fields)
+        right = bulk_fetch_issues(jira_client, issue_ids[mid:], fields)
+        return left + right
     except Exception as e:
         logger.error(f"Error fetching issues: {e}")
-        raise e
+        raise
+
     return [
         Issue(jira_client._options, jira_client._session, raw=issue)
-        for issue in response["issues"]
+        for issue in raw_issues
     ]
 
 
@@ -314,8 +338,7 @@ def _perform_jql_search_v2(
     Unfortunately, jira server/data center will forever use the v2 APIs that are now deprecated.
     """
     logger.debug(
-        f"Fetching Jira issues with JQL: {jql}, "
-        f"starting at {start}, max results: {max_results}"
+        f"Fetching Jira issues with JQL: {jql}, starting at {start}, max results: {max_results}"
     )
     try:
         issues = jira_client.search_issues(
@@ -366,8 +389,7 @@ def process_jira_issue(
     # Check ticket size
     if len(ticket_content.encode("utf-8")) > JIRA_CONNECTOR_MAX_TICKET_SIZE:
         logger.info(
-            f"Skipping {issue.key} because it exceeds the maximum size of "
-            f"{JIRA_CONNECTOR_MAX_TICKET_SIZE} bytes."
+            f"Skipping {issue.key} because it exceeds the maximum size of {JIRA_CONNECTOR_MAX_TICKET_SIZE} bytes."
         )
         return None
 
@@ -901,6 +923,11 @@ class JiraConnector(
                         # Permission sync path - don't prefix, upsert_document_external_perms handles it
                         external_access=self._get_project_permissions(
                             project_key, add_prefix=False
+                        ),
+                        parent_hierarchy_raw_node_id=(
+                            self._get_parent_hierarchy_raw_node_id(issue, project_key)
+                            if project_key
+                            else None
                         ),
                     )
                 )

@@ -3,6 +3,9 @@ from collections.abc import Callable
 
 import pytest
 
+# Integration tests rely on this mode to enable mock_llm_response paths.
+os.environ["INTEGRATION_TESTS_MODE"] = "true"
+
 from onyx.auth.schemas import UserRole
 from onyx.configs.constants import DocumentSource
 from onyx.db.engine.sql_engine import get_session_with_current_tenant
@@ -52,7 +55,8 @@ def load_env_vars(env_file: str = ".env") -> None:
                 line = line.strip()
                 if line and not line.startswith("#"):
                     key, value = line.split("=", 1)
-                    os.environ[key] = value.strip()
+                    # Preserve explicitly pre-set vars (e.g. INTEGRATION_TESTS_MODE).
+                    os.environ.setdefault(key, value.strip())
         print("Successfully loaded environment variables")
     except FileNotFoundError:
         print(f"File {env_file} not found")
@@ -84,11 +88,8 @@ def reset() -> None:
 
 
 @pytest.fixture
-def new_admin_user(reset: None) -> DATestUser | None:  # noqa: ARG001
-    try:
-        return UserManager.create(name=ADMIN_USER_NAME)
-    except Exception:
-        return None
+def new_admin_user(reset: None) -> DATestUser:  # noqa: ARG001
+    return UserManager.create(name=ADMIN_USER_NAME)
 
 
 @pytest.fixture
@@ -178,18 +179,18 @@ def reset_multitenant() -> None:
 
 
 @pytest.fixture
-def llm_provider(admin_user: DATestUser | None) -> DATestLLMProvider:
+def llm_provider(admin_user: DATestUser) -> DATestLLMProvider:
     return LLMProviderManager.create(user_performing_action=admin_user)
 
 
 @pytest.fixture
 def image_generation_config(
-    admin_user: DATestUser | None,
+    admin_user: DATestUser,
 ) -> DATestImageGenerationConfig:
     """Create a default image generation config for tests."""
     return ImageGenerationConfigManager.create(
-        is_default=True,
         user_performing_action=admin_user,
+        is_default=True,
     )
 
 
@@ -222,12 +223,14 @@ def document_builder(admin_user: DATestUser) -> DocumentBuilderType:
 
 
 def pytest_runtest_logstart(
-    nodeid: str, location: tuple[str, int | None, str]  # noqa: ARG001
+    nodeid: str,
+    location: tuple[str, int | None, str],  # noqa: ARG001
 ) -> None:
     print(f"\nTest start: {nodeid}")
 
 
 def pytest_runtest_logfinish(
-    nodeid: str, location: tuple[str, int | None, str]  # noqa: ARG001
+    nodeid: str,
+    location: tuple[str, int | None, str],  # noqa: ARG001
 ) -> None:
     print(f"\nTest end: {nodeid}")

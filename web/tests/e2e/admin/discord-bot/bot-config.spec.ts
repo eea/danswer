@@ -7,7 +7,11 @@
  * - Delete the bot token configuration
  */
 
-import { test, expect, gotoDiscordBotPage } from "./fixtures";
+import {
+  test,
+  expect,
+  gotoDiscordBotPage,
+} from "@tests/e2e/admin/discord-bot/fixtures";
 
 // Disable retries for Discord bot tests - attempt once at most
 test.describe.configure({ retries: 0 });
@@ -22,7 +26,7 @@ test.describe("Bot Configuration Page", () => {
     await expect(
       adminPage
         .locator('[aria-label="admin-page-title"]')
-        .getByText("Discord Bots")
+        .getByText("Discord Integration")
     ).toBeVisible();
   });
 

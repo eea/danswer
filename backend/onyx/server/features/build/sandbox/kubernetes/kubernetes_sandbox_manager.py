@@ -50,6 +50,7 @@ from pathlib import Path
 from uuid import UUID
 from uuid import uuid4
 
+from acp.schema import PromptResponse
 from kubernetes import client  # type: ignore
 from kubernetes import config
 from kubernetes.client.rest import ApiException  # type: ignore
@@ -96,6 +97,10 @@ from onyx.server.features.build.sandbox.util.persona_mapping import (
 from onyx.utils.logger import setup_logger
 
 logger = setup_logger()
+
+# API server pod hostname — used to identify which replica is handling a request.
+# In K8s, HOSTNAME is set to the pod name (e.g., "api-server-dpgg7").
+_API_SERVER_HOSTNAME = os.environ.get("HOSTNAME", "unknown")
 
 # Constants for pod configuration
 # Note: Next.js ports are dynamically allocated from SANDBOX_NEXTJS_PORT_START to
@@ -194,6 +199,98 @@ def _get_local_aws_credential_env_vars() -> list[client.V1EnvVar]:
     return env_vars
 
 
+def _build_filtered_symlink_script(
+    session_path: str,
+    excluded_user_library_paths: list[str],
+) -> str:
+    """Build a shell script that creates filtered symlinks for user_library.
+
+    Creates symlinks for all top-level directories in /workspace/files/,
+    then selectively symlinks user_library files, excluding disabled paths.
+
+    TODO: Replace this inline shell script with a standalone Python script
+    that gets copied onto the pod and invoked with arguments. This would
+    be easier to test and maintain.
+
+    Args:
+        session_path: The session directory path in the pod
+        excluded_user_library_paths: Paths to exclude from symlinks
+    """
+    excluded_paths_lines = "\n".join(p.lstrip("/") for p in excluded_user_library_paths)
+    heredoc_delim = f"_EXCL_{uuid4().hex[:12]}_"
+    return f"""
+# Create filtered files directory with exclusions
+mkdir -p {session_path}/files
+
+# Symlink all top-level directories except user_library
+for item in /workspace/files/*; do
+    [ -e "$item" ] || continue
+    name=$(basename "$item")
+    if [ "$name" != "user_library" ]; then
+        ln -sf "$item" {session_path}/files/"$name"
+    fi
+done
+
+# Write excluded paths to a temp file (one per line, via heredoc for safety)
+EXCL_FILE=$(mktemp)
+cat > "$EXCL_FILE" << '{heredoc_delim}'
+{excluded_paths_lines}
+{heredoc_delim}
+
+# Check if a relative path is excluded (exact match or child of excluded dir)
+is_excluded() {{
+    local rel_path="$1"
+    while IFS= read -r excl || [ -n "$excl" ]; do
+        [ -z "$excl" ] && continue
+        if [ "$rel_path" = "$excl" ]; then
+            return 0
+        fi
+        case "$rel_path" in
+            "$excl"/*) return 0 ;;
+        esac
+    done < "$EXCL_FILE"
+    return 1
+}}
+
+# Recursively create symlinks for non-excluded files
+create_filtered_symlinks() {{
+    src_dir="$1"
+    dst_dir="$2"
+    rel_base="$3"
+
+    for item in "$src_dir"/*; do
+        [ -e "$item" ] || continue
+        name=$(basename "$item")
+        if [ -n "$rel_base" ]; then
+            rel_path="$rel_base/$name"
+        else
+            rel_path="$name"
+        fi
+
+        if is_excluded "$rel_path"; then
+            continue
+        fi
+
+        if [ -d "$item" ]; then
+            mkdir -p "$dst_dir/$name"
+            create_filtered_symlinks "$item" "$dst_dir/$name" "$rel_path"
+            rmdir "$dst_dir/$name" 2>/dev/null || true
+        else
+            ln -sf "$item" "$dst_dir/$name"
+        fi
+    done
+}}
+
+if [ -d "/workspace/files/user_library" ]; then
+    mkdir -p {session_path}/files/user_library
+    create_filtered_symlinks /workspace/files/user_library {session_path}/files/user_library ""
+    rmdir {session_path}/files/user_library 2>/dev/null || true
+fi
+
+rm -f "$EXCL_FILE"
+"""
+
+
 class KubernetesSandboxManager(SandboxManager):
     """Kubernetes-based sandbox manager for production deployments.
 
@@ -259,11 +356,10 @@ class KubernetesSandboxManager(SandboxManager):
         # Load AGENTS.md template path
         build_dir = Path(__file__).parent.parent.parent  # /onyx/server/features/build/
         self._agent_instructions_template_path = build_dir / "AGENTS.template.md"
-        self._skills_path = build_dir / "skills"
+        self._skills_path = Path(__file__).parent / "docker" / "skills"
 
         logger.info(
-            f"KubernetesSandboxManager initialized: "
-            f"namespace={self._namespace}, image={self._image}"
+            f"KubernetesSandboxManager initialized: namespace={self._namespace}, image={self._image}"
         )
 
     def _get_pod_name(self, sandbox_id: str) -> str:
@@ -361,45 +457,33 @@ class KubernetesSandboxManager(SandboxManager):
             command=["/bin/sh", "-c"],
             args=[
                 f"""
-# Handle SIGTERM for fast container termination
-trap 'echo "Received SIGTERM, exiting"; exit 0' TERM
+# Handle signals for graceful container termination
+trap 'echo "Shutting down"; exit 0' TERM INT
 
-# Initial sync on startup - sync knowledge files for this user/tenant
-echo "Starting initial file sync for tenant: {tenant_id} / user: {user_id}"
-echo "S3 source: s3://{self._s3_bucket}/{tenant_id}/knowledge/{user_id}/"
+echo "Starting initial file sync"
+echo "S3: s3://{self._s3_bucket}/{tenant_id}/knowledge/{user_id}/*"
+echo "Local: /workspace/files/"
 
-# s5cmd sync: high-performance parallel S3 sync (default 256 workers)
-# Capture both stdout and stderr to see all messages including errors
+# s5cmd sync (default 256 workers)
+# Exit codes: 0=success, 1=success with warnings
 sync_exit_code=0
-sync_output=$(mktemp)
-/s5cmd --log debug --stat sync \
+/s5cmd --stat sync \
     "s3://{self._s3_bucket}/{tenant_id}/knowledge/{user_id}/*" \
-    /workspace/files/ 2>&1 | tee "$sync_output" || sync_exit_code=$?
+    /workspace/files/ 2>&1 || sync_exit_code=$?
 
-echo "=== S3 sync finished with exit code: $sync_exit_code ==="
+echo "=== Initial sync finished (exit code: $sync_exit_code) ==="
 
-# Count files synced
-file_count=$(find /workspace/files -type f | wc -l)
-echo "Total files in /workspace/files: $file_count"
-
-# Show summary of any errors from the output
-if [ $sync_exit_code -ne 0 ]; then
-    echo "=== Errors/warnings from sync ==="
-    grep -iE "error|warn|fail" "$sync_output" || echo "No errors found"
-    echo "=========================="
-fi
-rm -f "$sync_output"
-
-# Exit codes 0 and 1 are considered success (1 = success with warnings)
+# Handle result
 if [ $sync_exit_code -eq 0 ] || [ $sync_exit_code -eq 1 ]; then
-    echo "Sync complete (exit $sync_exit_code), staying alive for incremental syncs"
+    file_count=$(find /workspace/files -type f 2>/dev/null | wc -l)
+    echo "Files synced: $file_count"
+    echo "Sidecar ready for incremental syncs"
 else
-    echo "ERROR: Sync failed with exit code: $sync_exit_code"
+    echo "ERROR: Initial sync failed (exit code: $sync_exit_code)"
     exit $sync_exit_code
 fi
 
-# Stay alive - incremental sync commands will be executed via kubectl exec
-# Use 'wait' so shell can respond to signals while sleeping
+# Stay alive for incremental syncs via kubectl exec
 while true; do
     sleep 30 &
     wait $!
@@ -416,7 +500,7 @@ done
             resources=client.V1ResourceRequirements(
                 # Reduced resources since sidecar is mostly idle (sleeping)
                 requests={"cpu": "250m", "memory": "256Mi"},
-                limits={"cpu": "4000m", "memory": "6Gi"},
+                limits={"cpu": "4000m", "memory": "8Gi"},
             ),
         )
 
@@ -451,8 +535,8 @@ done
                 ),
             ],
             resources=client.V1ResourceRequirements(
-                requests={"cpu": "500m", "memory": "1Gi"},
-                limits={"cpu": "2000m", "memory": "6Gi"},
+                requests={"cpu": "1000m", "memory": "2Gi"},
+                limits={"cpu": "2000m", "memory": "10Gi"},
             ),
             # TODO: Re-enable probes when sandbox container runs actual services.
             # Note: Next.js ports are now per-session (dynamic), so container-level
@@ -700,10 +784,7 @@ done
                         container_name = init_status.name
                         reason = init_status.state.waiting.reason
                         message = init_status.state.waiting.message or ""
-                        return (
-                            f"Init container '{container_name}' is in '{reason}' state. "
-                            f"Message: {message}"
-                        )
+                        return f"Init container '{container_name}' is in '{reason}' state. Message: {message}"
 
         return None
 
@@ -751,8 +832,7 @@ done
 
                 if phase == "Succeeded":
                     raise RuntimeError(
-                        f"Pod {pod_name} completed unexpectedly "
-                        "(sandbox pods should run indefinitely)"
+                        f"Pod {pod_name} completed unexpectedly (sandbox pods should run indefinitely)"
                     )
 
                 # Check if running and ready
@@ -854,8 +934,7 @@ done
             RuntimeError: If provisioning fails
         """
         logger.info(
-            f"Starting Kubernetes sandbox provisioning for sandbox {sandbox_id}, "
-            f"user {user_id}, tenant {tenant_id}"
+            f"Starting Kubernetes sandbox provisioning for sandbox {sandbox_id}, user {user_id}, tenant {tenant_id}"
         )
 
         pod_name = self._get_pod_name(str(sandbox_id))
@@ -915,8 +994,7 @@ done
                         # Pod exists but is not healthy - this shouldn't happen often
                         # but could occur if a previous provision failed mid-way
                         logger.warning(
-                            f"Pod {pod_name} exists but is not healthy, "
-                            "waiting for it to become ready or fail"
+                            f"Pod {pod_name} exists but is not healthy, waiting for it to become ready or fail"
                         )
                 else:
                     raise
@@ -932,8 +1010,7 @@ done
                 )
 
             logger.info(
-                f"Provisioned Kubernetes sandbox {sandbox_id}, pod: {pod_name} "
-                "(no sessions yet)"
+                f"Provisioned Kubernetes sandbox {sandbox_id}, pod: {pod_name} (no sessions yet)"
             )
 
             return SandboxInfo(
@@ -1010,8 +1087,7 @@ done
                 time.sleep(RESOURCE_DELETION_POLL_INTERVAL_SECONDS)
 
         logger.warning(
-            f"Timeout waiting for {resource_type} {name} to be deleted "
-            f"after {timeout}s"
+            f"Timeout waiting for {resource_type} {name} to be deleted after {timeout}s"
         )
         return False
 
@@ -1048,7 +1124,8 @@ done
                 # Already deleted
                 service_deleted = True
             else:
-                logger.warning(f"Error deleting Service {service_name}: {e}")
+                logger.error(f"Error deleting Service {service_name}: {e}")
+                raise
 
         pod_deleted = False
         try:
@@ -1063,7 +1140,8 @@ done
                 # Already deleted
                 pod_deleted = True
             else:
-                logger.warning(f"Error deleting Pod {pod_name}: {e}")
+                logger.error(f"Error deleting Pod {pod_name}: {e}")
+                raise
 
         # Wait for resources to be fully deleted to prevent 409 conflicts
         # on immediate re-provisioning
@@ -1076,7 +1154,9 @@ done
     def terminate(self, sandbox_id: UUID) -> None:
         """Terminate a sandbox and clean up Kubernetes resources.
 
-        Deletes the Service and Pod for the sandbox.
+        Removes session mappings for this sandbox, then deletes the
+        Service and Pod. ACP clients are ephemeral (created per message),
+        so there's nothing to stop here.
 
         Args:
             sandbox_id: The sandbox ID to terminate
@@ -1099,6 +1179,7 @@ done
         user_work_area: str | None = None,
         user_level: str | None = None,
         use_demo_data: bool = False,
+        excluded_user_library_paths: list[str] | None = None,
     ) -> None:
         """Set up a session workspace within an existing sandbox pod.
 
@@ -1127,6 +1208,8 @@ done
             user_level: User's level for demo persona (e.g., "ic", "manager")
             use_demo_data: If True, symlink files/ to /workspace/demo_data;
                           else to /workspace/files (S3-synced user files)
+            excluded_user_library_paths: List of paths within user_library/ to exclude
+                (e.g., ["/data/file.xlsx"]). These files won't be accessible in the session.
 
         Raises:
             RuntimeError: If workspace setup fails
@@ -1207,6 +1290,10 @@ printf '%s' '{org_structure_escaped}' > {session_path}/org_info/organization_str
 echo "Creating files symlink to demo data: {symlink_target}"
 ln -sf {symlink_target} {session_path}/files
 """
+        elif excluded_user_library_paths:
+            files_symlink_setup = _build_filtered_symlink_script(
+                session_path, excluded_user_library_paths
+            )
         else:
             # Normal mode: symlink to user's S3-synced knowledge files
             symlink_target = "/workspace/files"
@@ -1247,9 +1334,19 @@ mkdir -p {session_path}/attachments
 # Setup outputs
 {outputs_setup}
 
+# Symlink skills (baked into image at /workspace/skills/)
+if [ -d /workspace/skills ]; then
+    mkdir -p {session_path}/.opencode
+    ln -sf /workspace/skills {session_path}/.opencode/skills
+    echo "Linked skills to /workspace/skills"
+fi
+
 # Write agent instructions
 echo "Writing AGENTS.md"
 printf '%s' '{agent_instructions_escaped}' > {session_path}/AGENTS.md
+
+# Populate knowledge sources by scanning the files directory
+python3 /usr/local/bin/generate_agents_md.py {session_path}/AGENTS.md {session_path}/files || true
 
 # Write opencode config
 echo "Writing opencode.json"
@@ -1301,7 +1398,8 @@ echo "Session workspace setup complete"
     ) -> None:
         """Clean up a session workspace (on session delete).
 
-        Executes kubectl exec to remove the session directory.
+        Removes the ACP session mapping and executes kubectl exec to remove
+        the session directory. The shared ACP client persists for other sessions.
 
         Args:
             sandbox_id: The sandbox ID
@@ -1370,6 +1468,7 @@ echo "Session cleanup complete"
         the snapshot and upload to S3. Captures:
         - sessions/$session_id/outputs/ (generated artifacts, web apps)
         - sessions/$session_id/attachments/ (user uploaded files)
+        - sessions/$session_id/.opencode-data/ (opencode session data for resumption)
 
         Args:
             sandbox_id: The sandbox ID
@@ -1389,14 +1488,12 @@ echo "Session cleanup complete"
 
         # Use shlex.quote for safety (UUIDs are safe but good practice)
         safe_session_path = shlex.quote(f"/workspace/sessions/{session_id_str}")
-        s3_path = (
-            f"s3://{self._s3_bucket}/{tenant_id}/snapshots/"
-            f"{session_id_str}/{snapshot_id}.tar.gz"
-        )
+        s3_path = f"s3://{self._s3_bucket}/{tenant_id}/snapshots/{session_id_str}/{snapshot_id}.tar.gz"
 
-        # Exec into pod to create and upload snapshot (outputs + attachments)
-        # Uses s5cmd pipe to stream tar.gz directly to S3
-        # Only snapshot if outputs/ exists. Include attachments/ only if non-empty.
+        # Create tar and upload to S3 via file-sync container.
+        # .opencode-data/ is already on the shared workspace volume because we set
+        # XDG_DATA_HOME to the session directory when starting opencode (see
+        # ACPExecClient.start()). No cross-container copy needed.
         exec_command = [
             "/bin/sh",
             "-c",
@@ -1409,6 +1506,7 @@ if [ ! -d outputs ]; then
 fi
 dirs="outputs"
 [ -d attachments ] && [ "$(ls -A attachments 2>/dev/null)" ] && dirs="$dirs attachments"
+[ -d .opencode-data ] && [ "$(ls -A .opencode-data 2>/dev/null)" ] && dirs="$dirs .opencode-data"
 tar -czf - $dirs | /s5cmd pipe {s3_path}
 echo "SNAPSHOT_CREATED"
 """,
@@ -1499,8 +1597,7 @@ echo "SNAPSHOT_CREATED"
 
             result = "WORKSPACE_FOUND" in resp
             logger.info(
-                f"[WORKSPACE_CHECK] session={session_id}, "
-                f"path={session_path}, raw_resp={resp!r}, result={result}"
+                f"[WORKSPACE_CHECK] session={session_id}, path={session_path}, raw_resp={resp!r}, result={result}"
             )
             return result
 
@@ -1530,6 +1627,7 @@ echo "SNAPSHOT_CREATED"
         Steps:
         1. Exec s5cmd cat in file-sync container to stream snapshot from S3
         2. Pipe directly to tar for extraction in the shared workspace volume
+           (.opencode-data/ is restored automatically since XDG_DATA_HOME points here)
         3. Regenerate configuration files (AGENTS.md, opencode.json, files symlink)
         4. Start the NextJS dev server
 
@@ -1674,6 +1772,9 @@ ln -sf {symlink_target} {session_path}/files
 echo "Writing AGENTS.md"
 printf '%s' '{agent_instructions_escaped}' > {session_path}/AGENTS.md
 
+# Populate knowledge sources by scanning the files directory
+python3 /usr/local/bin/generate_agents_md.py {session_path}/AGENTS.md {session_path}/files || true
+
 # Write opencode config
 echo "Writing opencode.json"
 printf '%s' '{opencode_json_escaped}' > {session_path}/opencode.json
@@ -1713,6 +1814,39 @@ echo "Session config regeneration complete"
         )
         return exec_client.health_check(timeout=timeout)
 
+    def _create_ephemeral_acp_client(
+        self, sandbox_id: UUID, session_path: str
+    ) -> ACPExecClient:
+        """Create a new ephemeral ACP client for a single message exchange.
+
+        Each call starts a fresh `opencode acp` process in the sandbox pod.
+        The process is short-lived — stopped after the message completes.
+        This prevents the bug where multiple long-lived processes (one per
+        API replica) operate on the same session's flat file storage
+        concurrently, causing the JSON-RPC response to be silently lost.
+
+        Args:
+            sandbox_id: The sandbox ID
+            session_path: Working directory for the session (e.g. /workspace/sessions/{id}).
+                XDG_DATA_HOME is set relative to this so opencode's session data
+                lives inside the snapshot directory.
+
+        Returns:
+            A running ACPExecClient (caller must stop it when done)
+        """
+        pod_name = self._get_pod_name(str(sandbox_id))
+        acp_client = ACPExecClient(
+            pod_name=pod_name,
+            namespace=self._namespace,
+            container="sandbox",
+        )
+        acp_client.start(cwd=session_path)
+
+        logger.info(
+            f"[SANDBOX-ACP] Created ephemeral ACP client: sandbox={sandbox_id} pod={pod_name} api_pod={_API_SERVER_HOSTNAME}"
+        )
+        return acp_client
+
     def send_message(
         self,
         sandbox_id: UUID,
@@ -1721,8 +1855,12 @@ echo "Session config regeneration complete"
     ) -> Generator[ACPEvent, None, None]:
         """Send a message to the CLI agent and stream ACP events.
 
-        Runs `opencode acp` via kubectl exec in the sandbox pod.
-        The agent runs in the session-specific workspace.
+        Creates an ephemeral `opencode acp` process for each message.
+        The process resumes the session from opencode's on-disk storage,
+        handles the prompt, then is stopped. This ensures only one process
+        operates on a session's flat files at a time, preventing the bug
+        where multiple long-lived processes (one per API replica) corrupt
+        each other's in-memory state.
 
         Args:
             sandbox_id: The sandbox ID
@@ -1733,67 +1871,95 @@ echo "Session config regeneration complete"
             Typed ACP schema event objects
         """
         packet_logger = get_packet_logger()
-        pod_name = self._get_pod_name(str(sandbox_id))
         session_path = f"/workspace/sessions/{session_id}"
 
-        # Log ACP client creation
-        packet_logger.log_acp_client_start(
-            sandbox_id, session_id, session_path, context="k8s"
-        )
+        # Create an ephemeral ACP client for this message
+        acp_client = self._create_ephemeral_acp_client(sandbox_id, session_path)
 
-        exec_client = ACPExecClient(
-            pod_name=pod_name,
-            namespace=self._namespace,
-            container="sandbox",
-        )
-
-        # Log the send_message call at sandbox manager level
-        packet_logger.log_session_start(session_id, sandbox_id, message)
-
-        events_count = 0
         try:
-            exec_client.start(cwd=session_path)
-            for event in exec_client.send_message(message):
-                events_count += 1
-                yield event
+            # Resume (or create) the ACP session from opencode's on-disk storage
+            acp_session_id = acp_client.resume_or_create_session(cwd=session_path)
 
-            # Log successful completion
-            packet_logger.log_session_end(
-                session_id, success=True, events_count=events_count
+            logger.info(
+                f"[SANDBOX-ACP] Sending message: session={session_id} acp_session={acp_session_id} api_pod={_API_SERVER_HOSTNAME}"
             )
-        except GeneratorExit:
-            # Generator was closed by consumer (client disconnect, timeout, broken pipe)
-            # This is the most common failure mode for SSE streaming
-            packet_logger.log_session_end(
-                session_id,
-                success=False,
-                error="GeneratorExit: Client disconnected or stream closed by consumer",
-                events_count=events_count,
-            )
-            raise
-        except Exception as e:
-            # Log failure from normal exceptions
-            packet_logger.log_session_end(
-                session_id,
-                success=False,
-                error=f"Exception: {str(e)}",
-                events_count=events_count,
-            )
-            raise
-        except BaseException as e:
-            # Log failure from other base exceptions (SystemExit, KeyboardInterrupt, etc.)
-            exception_type = type(e).__name__
-            packet_logger.log_session_end(
-                session_id,
-                success=False,
-                error=f"{exception_type}: {str(e) if str(e) else 'System-level interruption'}",
-                events_count=events_count,
-            )
-            raise
+
+            # Log the send_message call at sandbox manager level
+            packet_logger.log_session_start(session_id, sandbox_id, message)
+
+            events_count = 0
+            got_prompt_response = False
+            try:
+                for event in acp_client.send_message(
+                    message, session_id=acp_session_id
+                ):
+                    events_count += 1
+                    if isinstance(event, PromptResponse):
+                        got_prompt_response = True
+                    yield event
+
+                logger.info(
+                    f"[SANDBOX-ACP] send_message completed: "
+                    f"session={session_id} events={events_count} "
+                    f"got_prompt_response={got_prompt_response}"
+                )
+                packet_logger.log_session_end(
+                    session_id, success=True, events_count=events_count
+                )
+            except GeneratorExit:
+                logger.warning(
+                    f"[SANDBOX-ACP] GeneratorExit: session={session_id} events={events_count}, sending session/cancel"
+                )
+                try:
+                    acp_client.cancel(session_id=acp_session_id)
+                except Exception as cancel_err:
+                    logger.warning(
+                        f"[SANDBOX-ACP] session/cancel failed on GeneratorExit: {cancel_err}"
+                    )
+                packet_logger.log_session_end(
+                    session_id,
+                    success=False,
+                    error="GeneratorExit: Client disconnected or stream closed by consumer",
+                    events_count=events_count,
+                )
+                raise
+            except Exception as e:
+                logger.error(
+                    f"[SANDBOX-ACP] Exception: session={session_id} events={events_count} error={e}, sending session/cancel"
+                )
+                try:
+                    acp_client.cancel(session_id=acp_session_id)
+                except Exception as cancel_err:
+                    logger.warning(
+                        f"[SANDBOX-ACP] session/cancel failed on Exception: {cancel_err}"
+                    )
+                packet_logger.log_session_end(
+                    session_id,
+                    success=False,
+                    error=f"Exception: {str(e)}",
+                    events_count=events_count,
+                )
+                raise
+            except BaseException as e:
+                logger.error(
+                    f"[SANDBOX-ACP] {type(e).__name__}: session={session_id} error={e}"
+                )
+                packet_logger.log_session_end(
+                    session_id,
+                    success=False,
+                    error=f"{type(e).__name__}: {str(e) if str(e) else 'System-level interruption'}",
+                    events_count=events_count,
+                )
+                raise
         finally:
-            exec_client.stop()
-            # Log client stop
-            packet_logger.log_acp_client_stop(sandbox_id, session_id, context="k8s")
+            # Always stop the ephemeral ACP client to kill the opencode process.
+            # This ensures no stale processes linger in the sandbox container.
+            try:
+                acp_client.stop()
+            except Exception as e:
+                logger.warning(
+                    f"[SANDBOX-ACP] Failed to stop ephemeral ACP client: session={session_id} error={e}"
+                )
 
     def list_directory(
         self, sandbox_id: UUID, session_id: UUID, path: str
@@ -2006,11 +2172,90 @@ echo "Session config regeneration complete"
         """
         return self._get_nextjs_url(str(sandbox_id), port)
 
+    def generate_pptx_preview(
+        self,
+        sandbox_id: UUID,
+        session_id: UUID,
+        pptx_path: str,
+        cache_dir: str,
+    ) -> tuple[list[str], bool]:
+        """Convert PPTX to slide images using soffice + pdftoppm in the pod.
+
+        Runs preview.py in the sandbox container which:
+        1. Checks if cached slides exist and are newer than the PPTX
+        2. If not, converts PPTX -> PDF -> JPEG slides
+        3. Returns list of slide image paths
+        """
+        pod_name = self._get_pod_name(str(sandbox_id))
+
+        # Security: sanitize paths
+        pptx_path_obj = Path(pptx_path.lstrip("/"))
+        pptx_clean_parts = [p for p in pptx_path_obj.parts if p != ".."]
+        clean_pptx = str(Path(*pptx_clean_parts)) if pptx_clean_parts else "."
+
+        cache_path_obj = Path(cache_dir.lstrip("/"))
+        cache_clean_parts = [p for p in cache_path_obj.parts if p != ".."]
+        clean_cache = str(Path(*cache_clean_parts)) if cache_clean_parts else "."
+
+        session_root = f"/workspace/sessions/{session_id}"
+        pptx_abs = f"{session_root}/{clean_pptx}"
+        cache_abs = f"{session_root}/{clean_cache}"
+
+        exec_command = [
+            "python",
+            "/workspace/skills/pptx/scripts/preview.py",
+            pptx_abs,
+            cache_abs,
+        ]
+
+        try:
+            resp = k8s_stream(
+                self._stream_core_api.connect_get_namespaced_pod_exec,
+                name=pod_name,
+                namespace=self._namespace,
+                container="sandbox",
+                command=exec_command,
+                stderr=True,
+                stdin=False,
+                stdout=True,
+                tty=False,
+            )
+
+            lines = [line.strip() for line in resp.strip().split("\n") if line.strip()]
+
+            if not lines:
+                raise ValueError("Empty response from PPTX conversion")
+
+            if lines[0] == "ERROR_NOT_FOUND":
+                raise ValueError(f"File not found: {pptx_path}")
+
+            if lines[0] == "ERROR_NO_PDF":
+                raise ValueError("soffice did not produce a PDF file")
+
+            cached = lines[0] == "CACHED"
+            # Skip the status line, rest are file paths
+            abs_paths = lines[1:] if lines[0] in ("CACHED", "GENERATED") else lines
+
+            # Convert absolute paths to session-relative paths
+            prefix = f"{session_root}/"
+            rel_paths = []
+            for p in abs_paths:
+                if p.startswith(prefix):
+                    rel_paths.append(p[len(prefix) :])
+                elif p.endswith(".jpg"):
+                    rel_paths.append(p)
+
+            return (rel_paths, cached)
+
+        except ApiException as e:
+            raise RuntimeError(f"Failed to generate PPTX preview: {e}") from e
+
     def sync_files(
         self,
         sandbox_id: UUID,
         user_id: UUID,
         tenant_id: str,
+        source: str | None = None,
     ) -> bool:
         """Sync files from S3 to the running pod via the file-sync sidecar.
 
@@ -2019,25 +2264,79 @@ echo "Session config regeneration complete"
 
         This is safe to call multiple times - s5cmd sync is idempotent.
 
+        Note: For user_library source, --delete is NOT used since deletions
+        are handled explicitly by the delete_file API endpoint. File visibility
+        in sessions is controlled via filtered symlinks in setup_session_workspace().
+
         Args:
             sandbox_id: The sandbox UUID
             user_id: The user ID (for S3 path construction)
             tenant_id: The tenant ID (for S3 path construction)
+            source: Optional source type (e.g., "gmail", "google_drive").
+                    If None, syncs all sources. If specified, only syncs
+                    that source's directory.
 
         Returns:
             True if sync was successful, False otherwise.
         """
         pod_name = self._get_pod_name(str(sandbox_id))
 
-        # s5cmd sync: high-performance parallel S3 sync (default 256 workers)
-        # --stat shows transfer statistics for monitoring
-        s3_path = f"s3://{self._s3_bucket}/{tenant_id}/knowledge/{str(user_id)}/*"
-        sync_command = [
-            "/bin/sh",
-            "-c",
-            f'/s5cmd --log debug --stat sync "{s3_path}" /workspace/files/; '
-            f'echo "Files in workspace: $(find /workspace/files -type f | wc -l)"',
-        ]
+        # Build S3 path based on whether source is specified
+        if source:
+            # Sync only the specific source directory
+            s3_path = f"s3://{self._s3_bucket}/{tenant_id}/knowledge/{str(user_id)}/{source}/*"
+            local_path = f"/workspace/files/{source}/"
+        else:
+            # Sync all sources (original behavior)
+            s3_path = f"s3://{self._s3_bucket}/{tenant_id}/knowledge/{str(user_id)}/*"
+            local_path = "/workspace/files/"
+
+        # s5cmd sync with --delete for external connectors only.
+        # timeout: prevent zombie processes from kubectl exec disconnections
+        # trap: kill child processes on exit/disconnect
+        source_info = f" (source={source})" if source else ""
+
+        # Sources where --delete is explicitly forbidden (deletions handled via API)
+        NO_DELETE_SOURCES = {"user_library"}
+        use_delete = source is not None and source not in NO_DELETE_SOURCES
+        delete_flag = " --delete" if use_delete else ""
+
+        sync_script = f"""
+# Kill child processes on exit/disconnect to prevent zombie s5cmd workers
+cleanup() {{ pkill -P $$ 2>/dev/null || true; }}
+trap cleanup EXIT INT TERM
+
+echo "Starting incremental file sync{source_info}"
+echo "S3: {s3_path}"
+echo "Local: {local_path}"
+
+# Ensure destination exists (needed for source-specific syncs)
+mkdir -p "{local_path}"
+
+# Run s5cmd with 5-minute timeout (SIGKILL after 10s if SIGTERM ignored)
+# Exit codes: 0=success, 1=success with warnings, 124=timeout
+sync_exit_code=0
+timeout --signal=TERM --kill-after=10s 5m \
+    /s5cmd --stat sync{delete_flag} "{s3_path}" "{local_path}" 2>&1 || sync_exit_code=$?
+
+echo "=== Sync finished (exit code: $sync_exit_code) ==="
+
+# Handle result
+if [ $sync_exit_code -eq 0 ] || [ $sync_exit_code -eq 1 ]; then
+    file_count=$(find "{local_path}" -type f 2>/dev/null | wc -l)
+    echo "Files in {local_path}: $file_count"
+    echo "SYNC_SUCCESS"
+elif [ $sync_exit_code -eq 124 ]; then
+    echo "ERROR: Sync timed out after 5 minutes"
+    echo "SYNC_FAILED"
+    exit 1
+else
+    echo "ERROR: Sync failed (exit code: $sync_exit_code)"
+    echo "SYNC_FAILED"
+    exit $sync_exit_code
+fi
+"""
+        sync_command = ["/bin/sh", "-c", sync_script]
         resp = k8s_stream(
             self._stream_core_api.connect_get_namespaced_pod_exec,
             pod_name,
@@ -2050,6 +2349,11 @@ echo "Session config regeneration complete"
             tty=False,
         )
         logger.debug(f"File sync response: {resp}")
+
+        # Check if sync succeeded based on output markers
+        if "SYNC_FAILED" in resp:
+            logger.warning(f"File sync failed for sandbox {sandbox_id}")
+            return False
         return True
 
     def _ensure_agents_md_attachments_section(
@@ -2111,8 +2415,7 @@ fi
                 tty=False,
             )
             logger.debug(
-                f"Ensure AGENTS.md attachments section for session {session_id}: "
-                f"{resp.strip()}"
+                f"Ensure AGENTS.md attachments section for session {session_id}: {resp.strip()}"
             )
         except ApiException as e:
             logger.warning(f"Failed to ensure AGENTS.md attachments section: {e}")
@@ -2239,8 +2542,7 @@ echo "$base"
                 )
 
             logger.info(
-                f"Uploaded file to session {session_id}: attachments/{final_filename} "
-                f"({len(content)} bytes)"
+                f"Uploaded file to session {session_id}: attachments/{final_filename} ({len(content)} bytes)"
             )
 
             # Ensure AGENTS.md has the attachments section

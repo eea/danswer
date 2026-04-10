@@ -86,37 +86,6 @@ Onyx uses Celery for asynchronous task processing with multiple specialized work
      - Monitoring tasks (every 5 minutes)
      - Cleanup tasks (hourly)
 
-#### Worker Deployment Modes
-
-Onyx supports two deployment modes for background workers, controlled by the `USE_LIGHTWEIGHT_BACKGROUND_WORKER` environment variable:
-
-**Lightweight Mode** (default, `USE_LIGHTWEIGHT_BACKGROUND_WORKER=true`):
-
-- Runs a single consolidated `background` worker that handles all background tasks:
-  - Light worker tasks (Vespa operations, permissions sync, deletion)
-  - Document processing (indexing pipeline)
-  - Document fetching (connector data retrieval)
-  - Pruning operations (from `heavy` worker)
-  - Knowledge graph processing (from `kg_processing` worker)
-  - Monitoring tasks (from `monitoring` worker)
-  - User file processing (from `user_file_processing` worker)
-- Lower resource footprint (fewer worker processes)
-- Suitable for smaller deployments or development environments
-- Default concurrency: 20 threads (increased to handle combined workload)
-
-**Standard Mode** (`USE_LIGHTWEIGHT_BACKGROUND_WORKER=false`):
-
-- Runs separate specialized workers as documented above (light, docprocessing, docfetching, heavy, kg_processing, monitoring, user_file_processing)
-- Better isolation and scalability
-- Can scale individual workers independently based on workload
-- Suitable for production deployments with higher load
-
-The deployment mode affects:
-
-- **Backend**: Worker processes spawned by supervisord or dev scripts
-- **Helm**: Which Kubernetes deployments are created
-- **Dev Environment**: Which workers `dev_run_background_jobs.py` spawns
-
 #### Key Features
 
 - **Thread-based Workers**: All workers use thread pools (not processes) for stability
@@ -135,6 +104,10 @@ The deployment mode affects:
 
 - Always use `@shared_task` rather than `@celery_app`
 - Put tasks under `background/celery/tasks/` or `ee/background/celery/tasks`
+- Never enqueue a task without an expiration. Always supply `expires=` when
+  sending tasks, either from the beat schedule or directly from another task. It
+  should never be acceptable to submit code which enqueues tasks without an
+  expiration, as doing so can lead to unbounded task queue growth.
 
 **Defining APIs**:
 When creating new FastAPI APIs, do NOT use the `response_model` field. Instead, just type the
@@ -143,6 +116,10 @@ function.
 **Testing Updates**:
 If you make any updates to a celery worker and you want to test these changes, you will need
 to ask me to restart the celery worker. There is no auto-restart on code-change mechanism.
+
+**Task Time Limits**:
+Since all tasks are executed in thread pools, the time limit features of Celery are silently 
+disabled and won't work. Timeout logic must be implemented within the task itself.
 
 ### Code Quality
 
@@ -190,284 +167,7 @@ web/
 
 ## Frontend Standards
 
-### 1. Import Standards
-
-**Always use absolute imports with the `@` prefix.**
-
-**Reason:** Moving files around becomes easier since you don't also have to update those import statements. This makes modifications to the codebase much nicer.
-
-```typescript
-// ✅ Good
-import { Button } from "@/components/ui/button";
-import { useAuth } from "@/hooks/useAuth";
-import { Text } from "@/refresh-components/texts/Text";
-
-// ❌ Bad
-import { Button } from "../../../components/ui/button";
-import { useAuth } from "./hooks/useAuth";
-```
-
-### 2. React Component Functions
-
-**Prefer regular functions over arrow functions for React components.**
-
-**Reason:** Functions just become easier to read.
-
-```typescript
-// ✅ Good
-function UserProfile({ userId }: UserProfileProps) {
-  return <div>User Profile</div>
-}
-
-// ❌ Bad
-const UserProfile = ({ userId }: UserProfileProps) => {
-  return <div>User Profile</div>
-}
-```
-
-### 3. Props Interface Extraction
-
-**Extract prop types into their own interface definitions.**
-
-**Reason:** Functions just become easier to read.
-
-```typescript
-// ✅ Good
-interface UserCardProps {
-  user: User
-  showActions?: boolean
-  onEdit?: (userId: string) => void
-}
-
-function UserCard({ user, showActions = false, onEdit }: UserCardProps) {
-  return <div>User Card</div>
-}
-
-// ❌ Bad
-function UserCard({
-  user,
-  showActions = false,
-  onEdit
-}: {
-  user: User
-  showActions?: boolean
-  onEdit?: (userId: string) => void
-}) {
-  return <div>User Card</div>
-}
-```
-
-### 4. Spacing Guidelines
-
-**Prefer padding over margins for spacing.**
-
-**Reason:** We want to consolidate usage to paddings instead of margins.
-
-```typescript
-// ✅ Good
-<div className="p-4 space-y-2">
-  <div className="p-2">Content</div>
-</div>
-
-// ❌ Bad
-<div className="m-4 space-y-2">
-  <div className="m-2">Content</div>
-</div>
-```
-
-### 5. Tailwind Dark Mode
-
-**Strictly forbid using the `dark:` modifier in Tailwind classes, except for logo icon handling.**
-
-**Reason:** The `colors.css` file already, VERY CAREFULLY, defines what the exact opposite colour of each light-mode colour is. Overriding this behaviour is VERY bad and will lead to horrible UI breakages.
-
-**Exception:** The `createLogoIcon` helper in `web/src/components/icons/icons.tsx` uses `dark:` modifiers (`dark:invert`, `dark:hidden`, `dark:block`) to handle third-party logo icons that cannot automatically adapt through `colors.css`. This is the ONLY acceptable use of dark mode modifiers.
-
-```typescript
-// ✅ Good - Standard components use `tailwind-themes/tailwind.config.js` / `src/app/css/colors.css`
-<div className="bg-background-neutral-03 text-text-02">
-  Content
-</div>
-
-// ✅ Good - Logo icons with dark mode handling via createLogoIcon
-export const GithubIcon = createLogoIcon(githubLightIcon, {
-  monochromatic: true,  // Will apply dark:invert internally
-});
-
-export const GitbookIcon = createLogoIcon(gitbookLightIcon, {
-  darkSrc: gitbookDarkIcon,  // Will use dark:hidden/dark:block internally
-});
-
-// ❌ Bad - Manual dark mode overrides
-<div className="bg-white dark:bg-black text-black dark:text-white">
-  Content
-</div>
-```
-
-### 6. Class Name Utilities
-
-**Use the `cn` utility instead of raw string formatting for classNames.**
-
-**Reason:** `cn`s are easier to read. They also allow for more complex types (i.e., string-arrays) to get formatted properly (it flattens each element in that string array down). As a result, it can allow things such as conditionals (i.e., `myCondition && "some-tailwind-class"`, which evaluates to `false` when `myCondition` is `false`) to get filtered out.
-
-```typescript
-import { cn } from '@/lib/utils'
-
-// ✅ Good
-<div className={cn(
-  'base-class',
-  isActive && 'active-class',
-  className
-)}>
-  Content
-</div>
-
-// ❌ Bad
-<div className={`base-class ${isActive ? 'active-class' : ''} ${className}`}>
-  Content
-</div>
-```
-
-### 7. Custom Hooks Organization
-
-**Follow a "hook-per-file" layout. Each hook should live in its own file within `web/src/hooks`.**
-
-**Reason:** This is just a layout preference. Keeps code clean.
-
-```typescript
-// web/src/hooks/useUserData.ts
-export function useUserData(userId: string) {
-  // hook implementation
-}
-
-// web/src/hooks/useLocalStorage.ts
-export function useLocalStorage<T>(key: string, initialValue: T) {
-  // hook implementation
-}
-```
-
-### 8. Icon Usage
-
-**ONLY use icons from the `web/src/icons` directory. Do NOT use icons from `react-icons`, `lucide`, or other external libraries.**
-
-**Reason:** We have a very carefully curated selection of icons that match our Onyx guidelines. We do NOT want to muddy those up with different aesthetic stylings.
-
-```typescript
-// ✅ Good
-import SvgX from "@/icons/x";
-import SvgMoreHorizontal from "@/icons/more-horizontal";
-
-// ❌ Bad
-import { User } from "lucide-react";
-import { FiSearch } from "react-icons/fi";
-```
-
-**Missing Icons**: If an icon is needed but doesn't exist in the `web/src/icons` directory, import it from Figma using the Figma MCP tool and add it to the icons directory.
-If you need help with this step, reach out to `raunak@onyx.app`.
-
-### 9. Text Rendering
-
-**Prefer using the `refresh-components/texts/Text` component for all text rendering. Avoid "naked" text nodes.**
-
-**Reason:** The `Text` component is fully compliant with the stylings provided in Figma. It provides easy utilities to specify the text-colour and font-size in the form of flags. Super duper easy.
-
-```typescript
-// ✅ Good
-import { Text } from '@/refresh-components/texts/Text'
-
-function UserCard({ name }: { name: string }) {
-  return (
-    <Text
-      {/* The `text03` flag makes the text it renders to be coloured the 3rd-scale grey */}
-      text03
-      {/* The `mainAction` flag makes the text it renders to be "main-action" font + line-height + weightage, as described in the Figma */}
-      mainAction
-    >
-      {name}
-    </Text>
-  )
-}
-
-// ❌ Bad
-function UserCard({ name }: { name: string }) {
-  return (
-    <div>
-      <h2>{name}</h2>
-      <p>User details</p>
-    </div>
-  )
-}
-```
-
-### 10. Component Usage
-
-**Heavily avoid raw HTML input components. Always use components from the `web/src/refresh-components` or `web/lib/opal/src` directory.**
-
-**Reason:** We've put in a lot of effort to unify the components that are rendered in the Onyx app. Using raw components breaks the entire UI of the application, and leaves it in a muddier state than before.
-
-```typescript
-// ✅ Good
-import Button from '@/refresh-components/buttons/Button'
-import InputTypeIn from '@/refresh-components/inputs/InputTypeIn'
-import SvgPlusCircle from '@/icons/plus-circle'
-
-function ContactForm() {
-  return (
-    <form>
-      <InputTypeIn placeholder="Search..." />
-      <Button type="submit" leftIcon={SvgPlusCircle}>Submit</Button>
-    </form>
-  )
-}
-
-// ❌ Bad
-function ContactForm() {
-  return (
-    <form>
-      <input placeholder="Name" />
-      <textarea placeholder="Message" />
-      <button type="submit">Submit</button>
-    </form>
-  )
-}
-```
-
-### 11. Colors
-
-**Always use custom overrides for colors and borders rather than built in Tailwind CSS colors. These overrides live in `web/tailwind-themes/tailwind.config.js`.**
-
-**Reason:** Our custom color system uses CSS variables that automatically handle dark mode and maintain design consistency across the app. Standard Tailwind colors bypass this system.
-
-**Available color categories:**
-
-- **Text:** `text-01` through `text-05`, `text-inverted-XX`
-- **Backgrounds:** `background-neutral-XX`, `background-tint-XX` (and inverted variants)
-- **Borders:** `border-01` through `border-05`, `border-inverted-XX`
-- **Actions:** `action-link-XX`, `action-danger-XX`
-- **Status:** `status-info-XX`, `status-success-XX`, `status-warning-XX`, `status-error-XX`
-- **Theme:** `theme-primary-XX`, `theme-red-XX`, `theme-blue-XX`, etc.
-
-```typescript
-// ✅ Good - Use custom Onyx color classes
-<div className="bg-background-neutral-01 border border-border-02" />
-<div className="bg-background-tint-02 border border-border-01" />
-<div className="bg-status-success-01" />
-<div className="bg-action-link-01" />
-<div className="bg-theme-primary-05" />
-
-// ❌ Bad - Do NOT use standard Tailwind colors
-<div className="bg-gray-100 border border-gray-300 text-gray-600" />
-<div className="bg-white border border-slate-200" />
-<div className="bg-green-100 text-green-700" />
-<div className="bg-blue-100 text-blue-600" />
-<div className="bg-indigo-500" />
-```
-
-### 12. Data Fetching
-
-**Prefer using `useSWR` for data fetching. Data should generally be fetched on the client side. Components that need data should display a loader / placeholder while waiting for that data. Prefer loading data within the component that needs it rather than at the top level and passing it down.**
-
-**Reason:** Client side fetching allows us to load the skeleton of the page without waiting for data to load, leading to a snappier UX. Loading data where needed reduces dependencies between a component and its parent component(s).
+Frontend standards for the `web/` and `desktop/` projects live in `web/AGENTS.md`.
 
 ## Database & Migrations
 
@@ -544,7 +244,7 @@ class in the utils over directly calling the APIs with a library like `requests`
 calling the utilities directly (e.g. do NOT create admin users with
 `admin_user = UserManager.create(name="admin_user")`, instead use the `admin_user` fixture).
 
-A great example of this type of test is `backend/tests/integration/dev_apis/test_simple_chat_api.py`.
+A great example of this type of test is `backend/tests/integration/tests/streaming_endpoints/test_chat_stream.py`.
 
 To run them:
 
@@ -566,6 +266,8 @@ To run them:
 ```bash
 npx playwright test <TEST_NAME>
 ```
+
+For shared fixtures, best practices, and detailed guidance, see `backend/tests/README.md`.
 
 ## Logs
 
@@ -612,3 +314,48 @@ This is a minimal list - feel free to include more. Do NOT write code as part of
 Keep it high level. You can reference certain files or functions though.
 
 Before writing your plan, make sure to do research. Explore the relevant sections in the codebase.
+
+## Error Handling
+
+**Always raise `OnyxError` from `onyx.error_handling.exceptions` instead of `HTTPException`.
+Never hardcode status codes or use `starlette.status` / `fastapi.status` constants directly.**
+
+A global FastAPI exception handler converts `OnyxError` into a JSON response with the standard
+`{"error_code": "...", "detail": "..."}` shape. This eliminates boilerplate and keeps error
+handling consistent across the entire backend.
+
+```python
+from onyx.error_handling.error_codes import OnyxErrorCode
+from onyx.error_handling.exceptions import OnyxError
+
+# ✅ Good
+raise OnyxError(OnyxErrorCode.NOT_FOUND, "Session not found")
+
+# ✅ Good — no extra message needed
+raise OnyxError(OnyxErrorCode.UNAUTHENTICATED)
+
+# ✅ Good — upstream service with dynamic status code
+raise OnyxError(OnyxErrorCode.BAD_GATEWAY, detail, status_code_override=upstream_status)
+
+# ❌ Bad — using HTTPException directly
+raise HTTPException(status_code=404, detail="Session not found")
+
+# ❌ Bad — starlette constant
+raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+```
+
+Available error codes are defined in `backend/onyx/error_handling/error_codes.py`. If a new error
+category is needed, add it there first — do not invent ad-hoc codes.
+
+**Upstream service errors:** When forwarding errors from an upstream service where the HTTP
+status code is dynamic (comes from the upstream response), use `status_code_override`:
+
+```python
+raise OnyxError(OnyxErrorCode.BAD_GATEWAY, detail, status_code_override=e.response.status_code)
+```
+
+## Best Practices
+
+In addition to the other content in this file, best practices for contributing
+to the codebase can be found at `contributing_guides/best_practices.md`.
+Understand its contents and follow them.

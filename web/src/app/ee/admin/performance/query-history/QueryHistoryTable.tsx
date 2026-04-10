@@ -40,7 +40,7 @@ import {
 } from "@/app/ee/admin/performance/query-history/constants";
 import { humanReadableFormatWithTime } from "@/lib/time";
 import Modal from "@/refresh-components/Modal";
-import Button from "@/refresh-components/buttons/Button";
+import { Button } from "@opal/components";
 import { Badge } from "@/components/ui/badge";
 import {
   SvgDownloadCloud,
@@ -178,7 +178,7 @@ function PreviousQueryHistoryExportsModal({
 
   return (
     <Modal open onOpenChange={() => setShowModal(false)}>
-      <Modal.Content width="lg" height="full">
+      <Modal.Content width="full" height="full">
         <Modal.Header
           icon={SvgFileText}
           title="Previous Query History Exports"
@@ -324,7 +324,7 @@ export function QueryHistoryTable() {
           </div>
           <div className="flex flex-row w-full items-center gap-x-2">
             <KickoffCSVExport dateRange={dateRange} />
-            <Button secondary onClick={() => setShowModal(true)}>
+            <Button prominence="secondary" onClick={() => setShowModal(true)}>
               {PREVIOUS_CSV_TASK_BUTTON_NAME}
             </Button>
           </div>

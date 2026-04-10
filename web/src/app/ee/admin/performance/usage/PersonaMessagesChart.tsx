@@ -6,7 +6,7 @@ import {
   usePersonaUniqueUsers,
 } from "../lib";
 import { DateRangePickerValue } from "@/components/dateRangeSelectors/AdminDateRangeSelector";
-import Text from "@/components/ui/text";
+import { Text } from "@opal/components";
 import Title from "@/components/ui/title";
 import CardSection from "@/components/admin/CardSection";
 import { AreaChartDisplay } from "@/components/ui/areaChart";
@@ -18,7 +18,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useState, useMemo, useEffect } from "react";
-import { Persona } from "@/app/admin/assistants/interfaces";
+import { Persona } from "@/app/admin/agents/interfaces";
 
 export function PersonaMessagesChart({
   availablePersonas,
@@ -152,14 +152,14 @@ export function PersonaMessagesChart({
   } else if (selectedPersonaId === undefined) {
     content = (
       <div className="h-80 text-text-500 flex flex-col">
-        <p className="m-auto">Select an assistant to view analytics</p>
+        <p className="m-auto">Select an agent to view analytics</p>
       </div>
     );
   } else if (!personaMessagesData?.length) {
     content = (
       <div className="h-80 text-text-500 flex flex-col">
         <p className="m-auto">
-          No data found for selected assistant in the specified time range
+          No data found for selected agent in the specified time range
         </p>
       </div>
     );
@@ -178,10 +178,10 @@ export function PersonaMessagesChart({
 
   return (
     <CardSection className="mt-8">
-      <Title>Assistant Analytics</Title>
+      <Title>Agent Analytics</Title>
       <div className="flex flex-col gap-4">
-        <Text>
-          Messages and unique users per day for the selected assistant
+        <Text as="p">
+          Messages and unique users per day for the selected agent
         </Text>
         <div className="flex items-center gap-4">
           <Select
@@ -191,14 +191,14 @@ export function PersonaMessagesChart({
             }}
           >
             <SelectTrigger className="flex w-full max-w-xs">
-              <SelectValue placeholder="Select an assistant to display" />
+              <SelectValue placeholder="Select an agent to display" />
             </SelectTrigger>
             <SelectContent>
               <div className="flex items-center px-2 pb-2 sticky top-0 bg-background border-b">
                 <Search className="h-4 w-4 mr-2 shrink-0 opacity-50" />
                 <input
                   className="flex h-8 w-full rounded-sm bg-transparent py-3 text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50"
-                  placeholder="Search assistants..."
+                  placeholder="Search agents..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   onClick={(e) => e.stopPropagation()}

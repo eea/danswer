@@ -30,6 +30,7 @@ from onyx.document_index.interfaces_new import IndexingMetadata
 from onyx.document_index.interfaces_new import MetadataUpdateRequest
 from onyx.document_index.interfaces_new import TenantState
 from onyx.document_index.vespa.chunk_retrieval import batch_search_api_retrieval
+from onyx.document_index.vespa.chunk_retrieval import get_all_chunks_paginated
 from onyx.document_index.vespa.chunk_retrieval import get_chunks_via_visit_api
 from onyx.document_index.vespa.chunk_retrieval import (
     parallel_visit_api_retrieval,
@@ -55,12 +56,14 @@ from onyx.document_index.vespa_constants import CONTENT_SUMMARY
 from onyx.document_index.vespa_constants import DOCUMENT_ID
 from onyx.document_index.vespa_constants import DOCUMENT_ID_ENDPOINT
 from onyx.document_index.vespa_constants import NUM_THREADS
+from onyx.document_index.vespa_constants import SEARCH_ENDPOINT
 from onyx.document_index.vespa_constants import VESPA_TIMEOUT
 from onyx.document_index.vespa_constants import YQL_BASE
 from onyx.indexing.models import DocMetadataAwareIndexChunk
 from onyx.tools.tool_implementations.search.constants import KEYWORD_QUERY_HYBRID_ALPHA
 from onyx.utils.batching import batch_generator
 from onyx.utils.logger import setup_logger
+from shared_configs.configs import MULTI_TENANT
 from shared_configs.model_server_models import Embedding
 
 
@@ -180,6 +183,10 @@ def _update_single_chunk(
         model_config = {"frozen": True}
         assign: list[int]
 
+    class _Personas(BaseModel):
+        model_config = {"frozen": True}
+        assign: list[int]
+
     class _VespaPutFields(BaseModel):
         model_config = {"frozen": True}
         # The names of these fields are based the Vespa schema. Changes to the
@@ -190,6 +197,7 @@ def _update_single_chunk(
         access_control_list: _AccessControl | None = None
         hidden: _Hidden | None = None
         user_project: _UserProjects | None = None
+        personas: _Personas | None = None
 
     class _VespaPutRequest(BaseModel):
         model_config = {"frozen": True}
@@ -224,6 +232,11 @@ def _update_single_chunk(
         if update_request.project_ids is not None
         else None
     )
+    personas_update: _Personas | None = (
+        _Personas(assign=list(update_request.persona_ids))
+        if update_request.persona_ids is not None
+        else None
+    )
 
     vespa_put_fields = _VespaPutFields(
         boost=boost_update,
@@ -231,16 +244,14 @@ def _update_single_chunk(
         access_control_list=access_update,
         hidden=hidden_update,
         user_project=user_projects_update,
+        personas=personas_update,
     )
 
     vespa_put_request = _VespaPutRequest(
         fields=vespa_put_fields,
     )
 
-    vespa_url = (
-        f"{DOCUMENT_ID_ENDPOINT.format(index_name=index_name)}/{doc_chunk_id}"
-        "?create=true"
-    )
+    vespa_url = f"{DOCUMENT_ID_ENDPOINT.format(index_name=index_name)}/{doc_chunk_id}?create=true"
 
     try:
         resp = http_client.put(
@@ -551,10 +562,9 @@ class VespaDocumentIndex(DocumentIndex):
         num_to_retrieve: int,
     ) -> list[InferenceChunk]:
         vespa_where_clauses = build_vespa_filters(filters)
-        # Needs to be at least as much as the rerank-count value set in the
-        # Vespa schema config. Otherwise we would be getting fewer results than
-        # expected for reranking.
-        target_hits = max(10 * num_to_retrieve, RERANK_COUNT)
+        # Avoid over-fetching a very large candidate set for global-phase reranking.
+        # Keep enough headroom for quality while capping cost on larger indices.
+        target_hits = min(max(4 * num_to_retrieve, 100), RERANK_COUNT)
 
         yql = (
             YQL_BASE.format(index_name=self._index_name)
@@ -599,6 +609,22 @@ class VespaDocumentIndex(DocumentIndex):
         }
 
         return cleanup_content_for_chunks(query_vespa(params))
+
+    def keyword_retrieval(
+        self,
+        query: str,
+        filters: IndexFilters,
+        num_to_retrieve: int,
+    ) -> list[InferenceChunk]:
+        raise NotImplementedError
+
+    def semantic_retrieval(
+        self,
+        query_embedding: Embedding,
+        filters: IndexFilters,
+        num_to_retrieve: int,
+    ) -> list[InferenceChunk]:
+        raise NotImplementedError
 
     def random_retrieval(
         self,
@@ -648,6 +674,34 @@ class VespaDocumentIndex(DocumentIndex):
         raw_document_chunks = [chunk["fields"] for chunk in raw_chunks]
         return raw_document_chunks
 
+    def get_all_raw_document_chunks_paginated(
+        self,
+        continuation_token_map: dict[int, str | None],
+        page_size: int,
+    ) -> tuple[list[dict[str, Any]], dict[int, str | None]]:
+        """Gets all the chunks in Vespa, paginated.
+
+        Used in the chunk-level Vespa-to-OpenSearch migration task.
+
+        Args:
+            continuation_token: Token returned by Vespa representing a page
+                offset. None to start from the beginning. Defaults to None.
+            page_size: Best-effort batch size for the visit.
+
+        Returns:
+            Tuple of (list of chunk dicts, next continuation token or None). The
+                continuation token is None when the visit is complete.
+        """
+        raw_chunks, next_continuation_token_map = get_all_chunks_paginated(
+            index_name=self._index_name,
+            tenant_state=TenantState(
+                tenant_id=self._tenant_id, multitenant=MULTI_TENANT
+            ),
+            continuation_token_map=continuation_token_map,
+            page_size=page_size,
+        )
+        return raw_chunks, next_continuation_token_map
+
     def index_raw_chunks(self, chunks: list[dict[str, Any]]) -> None:
         """Indexes raw document chunks into Vespa.
 
@@ -672,3 +726,28 @@ class VespaDocumentIndex(DocumentIndex):
                     json={"fields": chunk},
                 )
                 response.raise_for_status()
+
+    def get_chunk_count(self) -> int:
+        """Returns the exact number of document chunks in Vespa for this tenant.
+
+        Uses the Vespa Search API with `limit 0` and `ranking.profile=unranked`
+        to get an exact count without fetching any document data.
+
+        Includes large chunks. There is no way to filter these out using the
+        Search API.
+        """
+        where_clause = (
+            f'tenant_id contains "{self._tenant_id}"' if self._multitenant else "true"
+        )
+        yql = f"select documentid from {self._index_name} where {where_clause} limit 0"
+        params: dict[str, str | int] = {
+            "yql": yql,
+            "ranking.profile": "unranked",
+            "timeout": VESPA_TIMEOUT,
+        }
+
+        with get_vespa_http_client() as http_client:
+            response = http_client.post(SEARCH_ENDPOINT, json=params)
+            response.raise_for_status()
+            response_data = response.json()
+        return response_data["root"]["fields"]["totalCount"]

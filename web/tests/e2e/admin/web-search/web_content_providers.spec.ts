@@ -1,5 +1,5 @@
 import { test, expect, Page, Locator } from "@playwright/test";
-import { loginAs } from "../../utils/auth";
+import { loginAs } from "@tests/e2e/utils/auth";
 
 const WEB_SEARCH_URL = "/admin/configuration/web-search";
 
@@ -141,7 +141,7 @@ test.describe("Web Content Provider Configuration", () => {
         await modalDialog
           .getByRole("button", { name: "Connect", exact: true })
           .click();
-        await expect(modalDialog).not.toBeVisible({ timeout: 30000 });
+        await expect(modalDialog).not.toBeVisible({ timeout: 60000 });
         await page.waitForLoadState("networkidle");
       } else if (await setDefaultButton.isVisible()) {
         // If already configured but not active, set as default

@@ -216,14 +216,10 @@ class SlackbotHandler:
         - If the tokens have changed, close the existing socket client and reconnect.
         - If the tokens are new, warm up the model and start a new socket client.
         """
-        slack_bot_tokens = SlackBotTokens(
-            bot_token=bot.bot_token,
-            app_token=bot.app_token,
-        )
         tenant_bot_pair = (tenant_id, bot.id)
 
         # If the tokens are missing or empty, close the socket client and remove them.
-        if not slack_bot_tokens:
+        if not bot.bot_token or not bot.app_token:
             logger.debug(
                 f"No Slack bot tokens found for tenant={tenant_id}, bot {bot.id}"
             )
@@ -232,6 +228,11 @@ class SlackbotHandler:
                 del self.socket_clients[tenant_bot_pair]
                 del self.slack_bot_tokens[tenant_bot_pair]
             return
+
+        slack_bot_tokens = SlackBotTokens(
+            bot_token=bot.bot_token.get_value(apply_mask=False),
+            app_token=bot.app_token.get_value(apply_mask=False),
+        )
 
         tokens_exist = tenant_bot_pair in self.slack_bot_tokens
         tokens_changed = (
@@ -502,9 +503,7 @@ class SlackbotHandler:
             if "not_authed" in str(e):
                 # for some reason we want to add the tenant to the list when this happens?
                 logger.error(
-                    f"Authentication error - Invalid or expired credentials: "
-                    f"{tenant_id=} {slack_bot_id=}. "
-                    f"Error: {e}"
+                    f"Authentication error - Invalid or expired credentials: {tenant_id=} {slack_bot_id=}. Error: {e}"
                 )
                 return None
 
@@ -545,12 +544,13 @@ class SlackbotHandler:
             x += 1
             client.close()
             logger.info(
-                f"Stopped SocketModeClient {x}/{length}: "
-                f"{pod_id=} {tenant_id=} {slack_bot_id=}"
+                f"Stopped SocketModeClient {x}/{length}: {pod_id=} {tenant_id=} {slack_bot_id=}"
             )
 
     def shutdown(
-        self, signum: int | None, frame: FrameType | None  # noqa: ARG002
+        self,
+        signum: int | None,  # noqa: ARG002
+        frame: FrameType | None,  # noqa: ARG002
     ) -> None:
         if not self.running:
             return
@@ -933,8 +933,7 @@ def build_request_details(
             message_ts=None,  # Slash commands don't have a message timestamp
         )
         logger.info(
-            f"build_request_details: Capturing Slack context for slash command: "
-            f"channel_type={channel_type} channel_id={channel}"
+            f"build_request_details: Capturing Slack context for slash command: channel_type={channel_type} channel_id={channel}"
         )
 
         single_msg = ThreadMessage(message=msg, sender=None, role=MessageType.USER)
@@ -977,8 +976,7 @@ def process_message(
         event = cast(dict[str, Any], req.payload["event"])
         event_type = event.get("type")
         logger.info(
-            f"process_message start: {tenant_id=} {req.type=} {req.envelope_id=} "
-            f"{event_type=}"
+            f"process_message start: {tenant_id=} {req.type=} {req.envelope_id=} {event_type=}"
         )
     else:
         logger.info(
@@ -1140,8 +1138,7 @@ def _check_tenant_gated(client: TenantSocketModeClient, req: SocketModeRequest) 
                 channel=channel,
                 thread_ts=thread_ts,
                 text=(
-                    "Your organization's subscription has expired. "
-                    "Please contact your Onyx administrator to restore access."
+                    "Your organization's subscription has expired. Please contact your Onyx administrator to restore access."
                 ),
             )
     logger.info(f"Blocked Slack request for gated tenant {get_current_tenant_id()}")

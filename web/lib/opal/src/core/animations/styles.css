@@ -1,0 +1,30 @@
+/* Hoverable — item transitions */
+.hoverable-item {
+  transition: opacity 150ms ease-in-out;
+}
+
+.hoverable-item[data-hoverable-variant="opacity-on-hover"] {
+  opacity: 0;
+}
+
+/* Group mode — Root controls visibility via React context */
+.hoverable-item[data-hoverable-variant="opacity-on-hover"][data-hoverable-active="true"] {
+  opacity: 1;
+}
+
+/* Local mode — item handles its own :hover */
+.hoverable-item[data-hoverable-variant="opacity-on-hover"][data-hoverable-local="true"]:hover {
+  opacity: 1;
+}
+
+/* Focus — item (or a focusable descendant) receives keyboard focus */
+.hoverable-item[data-hoverable-variant="opacity-on-hover"]:has(:focus-visible) {
+  opacity: 1;
+}
+
+/* Focus ring on keyboard focus */
+.hoverable-item:focus-visible {
+  outline: 2px solid var(--border-04);
+  outline-offset: 2px;
+  border-radius: 0.25rem;
+}

@@ -42,12 +42,10 @@ def _create_provider_with_api(
     llm_provider_data = {
         "name": name,
         "provider": provider_type,
-        "default_model_name": default_model,
         "api_key": "test-api-key-for-auto-mode-testing",
         "api_base": None,
         "api_version": None,
         "custom_config": None,
-        "fast_default_model_name": default_model,
         "is_public": True,
         "is_auto_mode": is_auto_mode,
         "groups": [],
@@ -72,7 +70,7 @@ def _get_provider_by_id(admin_user: DATestUser, provider_id: int) -> dict:
         headers=admin_user.headers,
     )
     response.raise_for_status()
-    for provider in response.json():
+    for provider in response.json()["providers"]:
         if provider["id"] == provider_id:
             return provider
     raise ValueError(f"Provider with id {provider_id} not found")
@@ -114,8 +112,7 @@ def wait_for_model_sync(
             return provider
 
         print(
-            f"Waiting for model sync... "
-            f"Current: {current_models}, Expected: {expected_model_names}"
+            f"Waiting for model sync... Current: {current_models}, Expected: {expected_model_names}"
         )
         time.sleep(POLL_INTERVAL_SECONDS)
 
@@ -126,8 +123,7 @@ def wait_for_model_sync(
         else set()
     )
     raise AssertionError(
-        f"Model sync timed out after {max_wait_seconds}s. "
-        f"Current models: {current_models}, Expected: {expected_model_names}"
+        f"Model sync timed out after {max_wait_seconds}s. Current models: {current_models}, Expected: {expected_model_names}"
     )
 
 
@@ -219,15 +215,6 @@ def test_auto_mode_provider_gets_synced_from_github_config(
         "is_visible"
     ], "Outdated model should not be visible after sync"
 
-    # Verify default model was set from GitHub config
-    expected_default = (
-        default_model["name"] if isinstance(default_model, dict) else default_model
-    )
-    assert synced_provider["default_model_name"] == expected_default, (
-        f"Default model should be {expected_default}, "
-        f"got {synced_provider['default_model_name']}"
-    )
-
 
 def test_manual_mode_provider_not_affected_by_auto_sync(
     reset: None,  # noqa: ARG001
@@ -269,11 +256,6 @@ def test_manual_mode_provider_not_affected_by_auto_sync(
     updated_provider = _get_provider_by_id(admin_user, provider["id"])
     current_models = {m["name"] for m in updated_provider["model_configurations"]}
 
-    assert current_models == initial_models, (
-        f"Manual mode provider models should not change. "
-        f"Initial: {initial_models}, Current: {current_models}"
-    )
-
     assert (
-        updated_provider["default_model_name"] == custom_model
-    ), f"Manual mode default model should remain {custom_model}"
+        current_models == initial_models
+    ), f"Manual mode provider models should not change. Initial: {initial_models}, Current: {current_models}"

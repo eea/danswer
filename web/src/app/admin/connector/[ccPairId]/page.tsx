@@ -3,10 +3,9 @@
 import BackButton from "@/refresh-components/buttons/BackButton";
 import { ErrorCallout } from "@/components/ErrorCallout";
 import { ThreeDotsLoader } from "@/components/Loading";
-import { FiAlertTriangle } from "react-icons/fi";
 import { SourceIcon } from "@/components/SourceIcon";
 import { CCPairStatus, PermissionSyncStatus } from "@/components/Status";
-import { usePopup } from "@/components/admin/connectors/Popup";
+import { toast } from "@/hooks/useToast";
 import CredentialSection from "@/components/credentials/CredentialSection";
 import Text from "@/refresh-components/texts/Text";
 import {
@@ -63,7 +62,7 @@ import { DropdownMenuItemWithTooltip } from "@/components/ui/dropdown-menu-with-
 import { timeAgo } from "@/lib/time";
 import { useStatusChange } from "./useStatusChange";
 import { useReIndexModal } from "./ReIndexModal";
-import Button from "@/refresh-components/buttons/Button";
+import { Button } from "@opal/components";
 import { SvgSettings } from "@opal/icons";
 import { UserRole } from "@/lib/types";
 import { useUser } from "@/providers/UserProvider";
@@ -92,7 +91,6 @@ const PAGES_PER_BATCH = 8;
 
 function Main({ ccPairId }: { ccPairId: number }) {
   const router = useRouter();
-  const { popup, setPopup } = usePopup();
   const { user } = useUser();
 
   const {
@@ -128,8 +126,7 @@ function Main({ ccPairId }: { ccPairId: number }) {
   const { showReIndexModal, ReIndexModal } = useReIndexModal(
     ccPair?.connector?.id ?? null,
     ccPair?.credential?.id ?? null,
-    ccPairId,
-    setPopup
+    ccPairId
   );
 
   const {
@@ -161,28 +158,22 @@ function Main({ ccPairId }: { ccPairId: number }) {
     mutate(buildCCPairInfoUrl(ccPairId));
   }, [ccPairId]);
 
-  const shouldConfirmConnectorDeletion = true;
+  const finishConnectorDeletion = useCallback(() => {
+    router.push("/admin/indexing/status");
+  }, [router]);
 
-  const scheduleConnectorDeletion = useCallback(async () => {
+  const scheduleConnectorDeletion = useCallback(() => {
     if (!ccPair) return;
     if (isSchedulingConnectorDeletionRef.current) return;
     isSchedulingConnectorDeletionRef.current = true;
 
-    try {
-      await deleteCCPair(
-        ccPair.connector.id,
-        ccPair.credential.id,
-        setPopup,
-        () => mutate(buildCCPairInfoUrl(ccPair.id))
+    deleteCCPair(ccPair.connector.id, ccPair.credential.id).catch((error) => {
+      toast.error(
+        "Failed to schedule deletion of connector - " + error.message
       );
-      refresh();
-    } catch (error) {
-      console.error("Error deleting connector:", error);
-    } finally {
-      setShowDeleteConnectorConfirmModal(false);
-      isSchedulingConnectorDeletionRef.current = false;
-    }
-  }, [ccPair, refresh, setPopup]);
+    });
+    finishConnectorDeletion();
+  }, [ccPair, finishConnectorDeletion]);
 
   const latestIndexAttempt = indexAttempts?.[0];
   const canManageInlineFileConnectorFiles =
@@ -199,10 +190,6 @@ function Main({ ccPairId }: { ccPairId: number }) {
     !indexAttemptErrors?.items?.some(
       (error) => error.index_attempt_id === latestIndexAttempt?.id
     );
-
-  const finishConnectorDeletion = useCallback(() => {
-    router.push("/admin/indexing/status?message=connector-deleted");
-  }, [router]);
 
   const handleStatusUpdate = async (
     newStatus: ConnectorCredentialPairStatus
@@ -222,29 +209,23 @@ function Main({ ccPairId }: { ccPairId: number }) {
         fromBeginning,
         ccPair.connector.id,
         ccPair.credential.id,
-        ccPair.id,
-        setPopup
+        ccPair.id
       );
 
       if (result.success) {
-        setPopup({
-          message: `${
+        toast.success(
+          `${
             fromBeginning ? "Complete re-indexing" : "Indexing update"
-          } started successfully`,
-          type: "success",
-        });
+          } started successfully`
+        );
       } else {
-        setPopup({
-          message: result.message || "Failed to start indexing",
-          type: "error",
-        });
+        toast.error(result.message || "Failed to start indexing");
       }
     } catch (error) {
       console.error("Failed to trigger indexing:", error);
-      setPopup({
-        message: "An unexpected error occurred while trying to start indexing",
-        type: "error",
-      });
+      toast.error(
+        "An unexpected error occurred while trying to start indexing"
+      );
     } finally {
       setShowIsResolvingKickoffLoader(false);
     }
@@ -283,15 +264,9 @@ function Main({ ccPairId }: { ccPairId: number }) {
         throw new Error(await response.text());
       }
       mutate(buildCCPairInfoUrl(ccPairId));
-      setPopup({
-        message: "Connector name updated successfully",
-        type: "success",
-      });
+      toast.success("Connector name updated successfully");
     } catch (error) {
-      setPopup({
-        message: `Failed to update connector name`,
-        type: "error",
-      });
+      toast.error("Failed to update connector name");
     }
   };
 
@@ -310,10 +285,7 @@ function Main({ ccPairId }: { ccPairId: number }) {
     const parsedRefreshFreqMinutes = parseInt(propertyValue, 10);
 
     if (isNaN(parsedRefreshFreqMinutes)) {
-      setPopup({
-        message: "Invalid refresh frequency: must be an integer",
-        type: "error",
-      });
+      toast.error("Invalid refresh frequency: must be an integer");
       return;
     }
 
@@ -330,15 +302,9 @@ function Main({ ccPairId }: { ccPairId: number }) {
         throw new Error(await response.text());
       }
       mutate(buildCCPairInfoUrl(ccPairId));
-      setPopup({
-        message: "Connector refresh frequency updated successfully",
-        type: "success",
-      });
+      toast.success("Connector refresh frequency updated successfully");
     } catch (error) {
-      setPopup({
-        message: "Failed to update connector refresh frequency",
-        type: "error",
-      });
+      toast.error("Failed to update connector refresh frequency");
     }
   };
 
@@ -349,10 +315,7 @@ function Main({ ccPairId }: { ccPairId: number }) {
     const parsedFreqHours = parseFloat(propertyValue);
 
     if (isNaN(parsedFreqHours)) {
-      setPopup({
-        message: "Invalid pruning frequency: must be a valid number",
-        type: "error",
-      });
+      toast.error("Invalid pruning frequency: must be a valid number");
       return;
     }
 
@@ -369,15 +332,9 @@ function Main({ ccPairId }: { ccPairId: number }) {
         throw new Error(await response.text());
       }
       mutate(buildCCPairInfoUrl(ccPairId));
-      setPopup({
-        message: "Connector pruning frequency updated successfully",
-        type: "success",
-      });
+      toast.success("Connector pruning frequency updated successfully");
     } catch (error) {
-      setPopup({
-        message: "Failed to update connector pruning frequency",
-        type: "error",
-      });
+      toast.error("Failed to update connector pruning frequency");
     }
   };
 
@@ -408,7 +365,6 @@ function Main({ ccPairId }: { ccPairId: number }) {
 
   return (
     <>
-      {popup}
       {showIsResolvingKickoffLoader && !isResolvingErrors && <Spinner />}
       {ReIndexModal}
       {ConfirmModal}
@@ -493,7 +449,7 @@ function Main({ ccPairId }: { ccPairId: number }) {
           {ccPair.is_editable_for_current_user && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button leftIcon={SvgSettings} secondary>
+                <Button prominence="secondary" icon={SvgSettings}>
                   Manage
                 </Button>
               </DropdownMenuTrigger>
@@ -557,13 +513,8 @@ function Main({ ccPairId }: { ccPairId: number }) {
                 )}
                 {!isDeleting && (
                   <DropdownMenuItemWithTooltip
-                    onClick={async () => {
-                      if (shouldConfirmConnectorDeletion) {
-                        setShowDeleteConnectorConfirmModal(true);
-                        return;
-                      }
-
-                      await scheduleConnectorDeletion();
+                    onClick={() => {
+                      setShowDeleteConnectorConfirmModal(true);
                     }}
                     disabled={!statusIsNotCurrentlyActive(ccPair.status)}
                     className="flex items-center gap-x-2 cursor-pointer px-3 py-2 text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
@@ -663,10 +614,7 @@ function Main({ ccPairId }: { ccPairId: number }) {
           <div className="w-[200px]">
             <div className="text-sm font-medium mb-1">Last Indexed</div>
             <div className="text-sm text-text-default">
-              {timeAgo(
-                indexAttempts?.find((attempt) => attempt.status === "success")
-                  ?.time_started
-              ) ?? "-"}
+              {timeAgo(ccPair?.last_indexed) ?? "-"}
             </div>
           </div>
 
@@ -748,7 +696,6 @@ function Main({ ccPairId }: { ccPairId: number }) {
             </Card>
           </>
         )}
-
 
       <div className="mt-6">
         <div className="flex">

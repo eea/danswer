@@ -29,20 +29,18 @@ export default function DocumentSetCard({
       disabled={!disabled || !disabledTooltip}
     >
       <div className="max-w-[12rem]">
-        <Interactive.Base
+        <Interactive.Stateless
           onClick={
             disabled || isSelected === undefined
               ? undefined
               : () => onSelectToggle?.(!isSelected)
           }
           variant="none"
-          static={disabled || isSelected === undefined}
         >
           <Interactive.Container
-            paddingVariant="none"
-            border
             data-testid={`document-set-card-${documentSet.id}`}
-            heightVariant="full"
+            border
+            heightVariant="fit"
           >
             <AttachmentItemLayout
               icon={SvgFiles}
@@ -66,7 +64,7 @@ export default function DocumentSetCard({
             />
             <Spacer horizontal rem={0.5} />
           </Interactive.Container>
-        </Interactive.Base>
+        </Interactive.Stateless>
       </div>
     </SimpleTooltip>
   );

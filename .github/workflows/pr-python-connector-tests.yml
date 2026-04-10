@@ -7,6 +7,13 @@ on:
   merge_group:
   pull_request:
     branches: [main]
+    paths:
+      - "backend/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/pr-python-connector-tests.yml"
+      - ".github/actions/setup-python-and-install-dependencies/**"
+      - ".github/actions/setup-playwright/**"
   push:
     tags:
       - "v*.*.*"
@@ -89,6 +96,10 @@ env:
   SHAREPOINT_CLIENT_SECRET: ${{ secrets.SHAREPOINT_CLIENT_SECRET }}
   SHAREPOINT_CLIENT_DIRECTORY_ID: ${{ vars.SHAREPOINT_CLIENT_DIRECTORY_ID }}
   SHAREPOINT_SITE: ${{ vars.SHAREPOINT_SITE }}
+  PERM_SYNC_SHAREPOINT_CLIENT_ID: ${{ secrets.PERM_SYNC_SHAREPOINT_CLIENT_ID }}
+  PERM_SYNC_SHAREPOINT_PRIVATE_KEY: ${{ secrets.PERM_SYNC_SHAREPOINT_PRIVATE_KEY }}
+  PERM_SYNC_SHAREPOINT_CERTIFICATE_PASSWORD: ${{ secrets.PERM_SYNC_SHAREPOINT_CERTIFICATE_PASSWORD }}
+  PERM_SYNC_SHAREPOINT_DIRECTORY_ID: ${{ secrets.PERM_SYNC_SHAREPOINT_DIRECTORY_ID }}
 
   # Github
   ACCESS_TOKEN_GITHUB: ${{ secrets.ACCESS_TOKEN_GITHUB }}

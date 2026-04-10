@@ -22,7 +22,6 @@ from sqlalchemy.orm import Session
 from slack_sdk.errors import SlackApiError
 
 from onyx.configs.constants import FederatedConnectorSource
-from onyx.context.search.enums import RecencyBiasSetting
 from onyx.context.search.federated.slack_search import fetch_and_cache_channel_metadata
 from onyx.db.models import DocumentSet
 from onyx.db.models import FederatedConnector
@@ -55,11 +54,6 @@ def _create_test_persona_with_slack_config(db_session: Session) -> Persona | Non
     persona = Persona(
         name=f"test_slack_persona_{unique_id}",
         description="Test persona for Slack federated search",
-        chunks_above=0,
-        chunks_below=0,
-        llm_relevance_filter=True,
-        llm_filter_extraction=True,
-        recency_bias=RecencyBiasSetting.AUTO,
         system_prompt="You are a helpful assistant.",
         task_prompt="Answer the user's question based on the provided context.",
     )
@@ -111,7 +105,8 @@ def _create_mock_slack_request(
 
 
 def _create_mock_slack_client(
-    channel_id: str = "C1234567890", slack_bot_id: int = 12345  # noqa: ARG001
+    channel_id: str = "C1234567890",  # noqa: ARG001
+    slack_bot_id: int = 12345,
 ) -> Mock:
     """Create a mock Slack client"""
     mock_client = Mock()
@@ -254,6 +249,8 @@ class TestSlackBotFederatedSearch:
         )
         db_session.add(federated_connector)
         db_session.flush()
+        # Expire to ensure credentials is reloaded as SensitiveValue from DB
+        db_session.expire(federated_connector)
 
         # Associate the federated connector with the persona's document sets
         # This is required for Slack federated search to be enabled
@@ -276,6 +273,8 @@ class TestSlackBotFederatedSearch:
         )
         db_session.add(slack_bot)
         db_session.flush()
+        # Expire to ensure tokens are reloaded as SensitiveValue from DB
+        db_session.expire(slack_bot)
 
         slack_channel_config = SlackChannelConfig(
             slack_bot_id=slack_bot.id,
@@ -316,7 +315,9 @@ class TestSlackBotFederatedSearch:
         mock_get_query_embeddings.return_value = [[0.1] * 768]  # 768-dimensional vector
 
     def _setup_slack_api_mocks(
-        self, mock_search_messages: Mock, mock_conversations_info: Mock  # noqa: ARG002
+        self,
+        mock_search_messages: Mock,
+        mock_conversations_info: Mock,  # noqa: ARG002
     ) -> None:
         """Setup Slack API mocks to return controlled data for testing filtering"""
         mock_search_response = Mock()
@@ -387,12 +388,15 @@ class TestSlackBotFederatedSearch:
         mock_query_slack.side_effect = mock_query_slack_capture_params
 
     def _setup_channel_type_mock(
-        self, mock_get_channel_type_from_id: Mock, channel_name: str  # noqa: ARG002
+        self,
+        mock_get_channel_type_from_id: Mock,
+        channel_name: str,  # noqa: ARG002
     ) -> None:
         """Setup get_channel_type_from_id mock to return correct channel types"""
 
         def mock_channel_type_response(
-            web_client: Mock, channel_id: str  # noqa: ARG001
+            web_client: Mock,  # noqa: ARG001
+            channel_id: str,
         ) -> ChannelType:
             if channel_id == "C1234567890":  # general - public
                 return ChannelType.PUBLIC_CHANNEL
@@ -430,7 +434,6 @@ class TestSlackBotFederatedSearch:
                 name=f"test-llm-provider-{uuid4().hex[:8]}",
                 provider=LlmProviderNames.OPENAI,
                 api_key=api_key,
-                default_model_name="gpt-4o",
                 is_public=True,
                 model_configurations=[
                     ModelConfigurationUpsertRequest(
@@ -444,7 +447,7 @@ class TestSlackBotFederatedSearch:
             db_session=db_session,
         )
 
-        update_default_provider(provider_view.id, db_session)
+        update_default_provider(provider_view.id, "gpt-4o", db_session)
 
     def _teardown_common_mocks(self, patches: list) -> None:
         """Stop all patches"""
@@ -643,7 +646,8 @@ def test_missing_scope_resilience(
     attempted_types: list[str] = []
 
     def mock_conversations_list(
-        types: str | None = None, **kwargs: Any  # noqa: ARG001
+        types: str | None = None,
+        **kwargs: Any,  # noqa: ARG001
     ) -> MagicMock:
         if types:
             attempted_types.append(types)
@@ -733,7 +737,8 @@ def test_multiple_missing_scopes_resilience(
     attempted_types: list[str] = []
 
     def mock_conversations_list(
-        types: str | None = None, **kwargs: Any  # noqa: ARG001
+        types: str | None = None,
+        **kwargs: Any,  # noqa: ARG001
     ) -> MagicMock:
         if types:
             attempted_types.append(types)
@@ -815,11 +820,6 @@ def test_slack_channel_config_eager_loads_persona(db_session: Session) -> None:
     persona = Persona(
         name=f"test_eager_load_persona_{unique_id}",
         description="Test persona for eager loading test",
-        chunks_above=0,
-        chunks_below=0,
-        llm_relevance_filter=True,
-        llm_filter_extraction=True,
-        recency_bias=RecencyBiasSetting.AUTO,
         system_prompt="You are a helpful assistant.",
         task_prompt="Answer the user's question.",
     )

@@ -26,6 +26,7 @@ from onyx.background.celery.celery_utils import celery_is_worker_primary
 from onyx.background.celery.celery_utils import make_probe_path
 from onyx.background.celery.tasks.vespa.document_sync import DOCUMENT_SYNC_PREFIX
 from onyx.background.celery.tasks.vespa.document_sync import DOCUMENT_SYNC_TASKSET_KEY
+from onyx.configs.app_configs import DISABLE_VECTOR_DB
 from onyx.configs.app_configs import ENABLE_OPENSEARCH_INDEXING_FOR_ONYX
 from onyx.configs.constants import ONYX_CLOUD_CELERY_TASK_PREFIX
 from onyx.configs.constants import OnyxRedisLocks
@@ -153,8 +154,7 @@ def on_task_postrun(
         tenant_id = cast(str, kwargs.get("tenant_id", POSTGRES_DEFAULT_SCHEMA))
 
     task_logger.debug(
-        f"Task {task.name} (ID: {task_id}) completed with state: {state} "
-        f"{f'for tenant_id={tenant_id}' if tenant_id else ''}"
+        f"Task {task.name} (ID: {task_id}) completed with state: {state} {f'for tenant_id={tenant_id}' if tenant_id else ''}"
     )
 
     r = get_redis_client(tenant_id=tenant_id)
@@ -210,7 +210,9 @@ def on_task_postrun(
 
 
 def on_celeryd_init(
-    sender: str, conf: Any = None, **kwargs: Any  # noqa: ARG001
+    sender: str,  # noqa: ARG001
+    conf: Any = None,  # noqa: ARG001
+    **kwargs: Any,  # noqa: ARG001
 ) -> None:
     """The first signal sent on celery worker startup"""
 
@@ -276,10 +278,7 @@ def wait_for_redis(sender: Any, **kwargs: Any) -> None:  # noqa: ARG001
         time.sleep(WAIT_INTERVAL)
 
     if not ready:
-        msg = (
-            f"Redis: Readiness probe did not succeed within the timeout "
-            f"({WAIT_LIMIT} seconds). Exiting..."
-        )
+        msg = f"Redis: Readiness probe did not succeed within the timeout ({WAIT_LIMIT} seconds). Exiting..."
         logger.error(msg)
         raise WorkerShutdown(msg)
 
@@ -318,10 +317,7 @@ def wait_for_db(sender: Any, **kwargs: Any) -> None:  # noqa: ARG001
         time.sleep(WAIT_INTERVAL)
 
     if not ready:
-        msg = (
-            f"Database: Readiness probe did not succeed within the timeout "
-            f"({WAIT_LIMIT} seconds). Exiting..."
-        )
+        msg = f"Database: Readiness probe did not succeed within the timeout ({WAIT_LIMIT} seconds). Exiting..."
         logger.error(msg)
         raise WorkerShutdown(msg)
 
@@ -348,10 +344,7 @@ def on_secondary_worker_init(sender: Any, **kwargs: Any) -> None:  # noqa: ARG00
             f"Primary worker is not ready yet. elapsed={time_elapsed:.1f} timeout={WAIT_LIMIT:.1f}"
         )
         if time_elapsed > WAIT_LIMIT:
-            msg = (
-                f"Primary worker was not ready within the timeout. "
-                f"({WAIT_LIMIT} seconds). Exiting..."
-            )
+            msg = f"Primary worker was not ready within the timeout. ({WAIT_LIMIT} seconds). Exiting..."
             logger.error(msg)
             raise WorkerShutdown(msg)
 
@@ -521,9 +514,17 @@ def reset_tenant_id(
     CURRENT_TENANT_ID_CONTEXTVAR.set(POSTGRES_DEFAULT_SCHEMA)
 
 
-def wait_for_vespa_or_shutdown(sender: Any, **kwargs: Any) -> None:  # noqa: ARG001
+def wait_for_vespa_or_shutdown(
+    sender: Any, **kwargs: Any  # noqa: ARG001
+) -> None:  # noqa: ARG001
     """Waits for Vespa to become ready subject to a timeout.
     Raises WorkerShutdown if the timeout is reached."""
+
+    if DISABLE_VECTOR_DB:
+        logger.info(
+            "DISABLE_VECTOR_DB is set — skipping Vespa/OpenSearch readiness check."
+        )
+        return
 
     if not wait_for_vespa_with_timeout():
         msg = "[Vespa] Readiness probe did not succeed within the timeout. Exiting..."
@@ -566,3 +567,31 @@ class LivenessProbe(bootsteps.StartStopStep):
 
 def get_bootsteps() -> list[type]:
     return [LivenessProbe]
+
+
+# Task modules that require a vector DB (Vespa/OpenSearch).
+# When DISABLE_VECTOR_DB is True these are excluded from autodiscover lists.
+_VECTOR_DB_TASK_MODULES: set[str] = {
+    "onyx.background.celery.tasks.connector_deletion",
+    "onyx.background.celery.tasks.docprocessing",
+    "onyx.background.celery.tasks.docfetching",
+    "onyx.background.celery.tasks.pruning",
+    "onyx.background.celery.tasks.vespa",
+    "onyx.background.celery.tasks.opensearch_migration",
+    "onyx.background.celery.tasks.doc_permission_syncing",
+    "onyx.background.celery.tasks.hierarchyfetching",
+    # EE modules that are vector-DB-dependent
+    "ee.onyx.background.celery.tasks.doc_permission_syncing",
+    "ee.onyx.background.celery.tasks.external_group_syncing",
+}
+# NOTE: "onyx.background.celery.tasks.shared" is intentionally NOT in the set
+# above. It contains celery_beat_heartbeat (which only writes to Redis) alongside
+# document cleanup tasks. The cleanup tasks won't be invoked in minimal mode
+# because the periodic tasks that trigger them are in other filtered modules.
+
+
+def filter_task_modules(modules: list[str]) -> list[str]:
+    """Remove vector-DB-dependent task modules when DISABLE_VECTOR_DB is True."""
+    if not DISABLE_VECTOR_DB:
+        return modules
+    return [m for m in modules if m not in _VECTOR_DB_TASK_MODULES]
