@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from onyx.server.eea_config.models import Config_EEA
 from onyx.utils.logger import setup_logger
 
-from onyx.auth.users import current_user, current_admin_user
+from onyx.auth.users import current_user, current_curator_or_admin_user
 logger = setup_logger()
 
 from onyx.key_value_store.factory import get_kv_store
@@ -39,7 +39,7 @@ def get_eea_config(
 @router.post("/set_eea_config")
 def set_eea_config(
     request: Config_EEA,
-    _: User | None = Depends(current_admin_user),
+    _: User | None = Depends(current_curator_or_admin_user),
 ):
     get_kv_store().store(EEA_CONFIG_STORAGE_KEY, request.config)
 

@@ -23,45 +23,20 @@ class QueryExpansionType(Enum):
     SEMANTIC = "semantic"
 
 
-    @classmethod
-    def from_db_model(
-        cls, search_settings: SearchSettings
-    ) -> "RerankingDetails":
-        return cls(
-            rerank_model_name=search_settings.rerank_model_name,
-            rerank_provider_type=search_settings.rerank_provider_type,
-            rerank_api_key=search_settings.rerank_api_key,
-            num_rerank=search_settings.num_rerank,
-            rerank_api_url=search_settings.rerank_api_url,
-        )
-
-
-class InferenceSettings(RerankingDetails):
-    # Empty for no additional expansion
-    multilingual_expansion: list[str]
-
-
-class SearchSettingsCreationRequest(InferenceSettings, IndexingSetting):
-
+class SearchSettingsCreationRequest(IndexingSetting):
     @classmethod
     def from_db_model(
         cls, search_settings: SearchSettings
     ) -> "SearchSettingsCreationRequest":
         indexing_setting = IndexingSetting.from_db_model(search_settings)
-        inference_settings = InferenceSettings.from_db_model(search_settings)
-
-        return cls(
-            **inference_settings.model_dump(), **indexing_setting.model_dump()
-        )
-
+        return cls(**indexing_setting.model_dump())
 
 
 class SavedSearchSettings(IndexingSetting):
     # Previously this contained also Inference time settings. Keeping this wrapper class around
     # as there may again be inference time settings that may get added.
     @classmethod
-    def from_db_model(
-            cls, search_settings: SearchSettings) -> "SavedSearchSettings":
+    def from_db_model(cls, search_settings: SearchSettings) -> "SavedSearchSettings":
         return cls(
             # Indexing Setting
             model_name=search_settings.model_name,

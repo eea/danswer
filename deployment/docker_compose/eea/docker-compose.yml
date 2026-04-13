@@ -84,6 +84,7 @@ services:
         max-size: "50m"
         max-file: "6"
   background:
+    user: root
     build:
       context: ../../../backend
       dockerfile: Dockerfile
