@@ -1,26 +1,30 @@
 import { Page } from "@playwright/test";
-import { expect } from "@chromatic-com/playwright";
+import { expect } from "@playwright/test";
 
-export async function verifyAssistantIsChosen(
+export async function verifyDefaultAgentIsChosen(page: Page) {
+  await expect(page.getByTestId("onyx-logo")).toBeVisible({ timeout: 5000 });
+}
+
+export async function verifyAgentIsChosen(
   page: Page,
-  assistantName: string,
+  agentName: string,
   timeout: number = 5000
 ) {
   await expect(
-    page.getByPlaceholder(`How can ${assistantName} help you today`)
+    page.getByTestId("agent-name-display").getByText(agentName)
   ).toBeVisible({ timeout });
 }
 
-export async function navigateToAssistantInHistorySidebar(
+export async function navigateToAgentInHistorySidebar(
   page: Page,
   testId: string,
-  assistantName: string
+  agentName: string
 ) {
   await page.getByTestId(`assistant-${testId}`).click();
   try {
-    await verifyAssistantIsChosen(page, assistantName);
+    await verifyAgentIsChosen(page, agentName);
   } catch (error) {
-    console.error("Error in navigateToAssistantInHistorySidebar:", error);
+    console.error("Error in navigateToAgentInHistorySidebar:", error);
     const pageText = await page.textContent("body");
     console.log("Page text:", pageText);
     throw error;
@@ -28,14 +32,20 @@ export async function navigateToAssistantInHistorySidebar(
 }
 
 export async function sendMessage(page: Page, message: string) {
+  // Count existing AI messages before sending
+  const existingMessageCount = await page
+    .locator('[data-testid="onyx-ai-message"]')
+    .count();
+
   await page.locator("#onyx-chat-input-textarea").click();
   await page.locator("#onyx-chat-input-textarea").fill(message);
   await page.locator("#onyx-chat-input-send-button").click();
-  await page.waitForSelector('[data-testid="onyx-ai-message"]');
-  // Wait for the copy button to appear, which indicates the message is fully rendered
-  await page.waitForSelector('[data-testid="AIMessage/copy-button"]', {
-    timeout: 30000,
-  });
+
+  // Wait for a NEW AI message to appear (count should increase)
+  await expect(page.locator('[data-testid="onyx-ai-message"]')).toHaveCount(
+    existingMessageCount + 1,
+    { timeout: 30000 }
+  );
 
   // Wait for up to 10 seconds for the URL to contain 'chatId='
   await page.waitForFunction(
@@ -45,25 +55,98 @@ export async function sendMessage(page: Page, message: string) {
   );
 }
 
+/** Get the model selector trigger (the pill showing the current model name). */
+function getModelSelectorTrigger(page: Page) {
+  // Target the model pill (last button), not the "+" add button (first button).
+  // The pill shows the current model name and opens in replace mode on click.
+  return page.getByTestId("model-selector").locator("button").last();
+}
+
 export async function verifyCurrentModel(page: Page, modelName: string) {
-  const text = await page
-    .getByTestId("ChatInputBar/llm-popover-trigger")
-    .textContent();
+  const text = await getModelSelectorTrigger(page).textContent();
   expect(text).toContain(modelName);
 }
 
+export async function selectModelFromInputPopover(
+  page: Page,
+  preferredModels: string[]
+): Promise<string> {
+  const trigger = getModelSelectorTrigger(page);
+  const currentModelText = (await trigger.textContent())?.trim() ?? "";
+
+  await trigger.click();
+  await page.waitForSelector('[role="dialog"]', {
+    state: "visible",
+    timeout: 10000,
+  });
+
+  const dialog = page.locator('[role="dialog"]');
+  const searchInput = dialog.getByPlaceholder("Search models...");
+
+  for (const modelName of preferredModels) {
+    await searchInput.fill(modelName);
+    const modelOptions = dialog.locator("[data-selected]");
+    const nonSelectedOptions = dialog.locator('[data-selected="false"]');
+
+    if ((await modelOptions.count()) > 0) {
+      const candidate =
+        (await nonSelectedOptions.count()) > 0
+          ? nonSelectedOptions.first()
+          : modelOptions.first();
+
+      await candidate.click();
+      await page.waitForSelector('[role="dialog"]', { state: "hidden" });
+      const selectedText =
+        (await getModelSelectorTrigger(page).textContent())?.trim() ?? "";
+      if (!selectedText) {
+        throw new Error(
+          "Failed to read selected model text from model selector"
+        );
+      }
+      return selectedText;
+    }
+  }
+
+  // Reset search so fallback sees all available models.
+  await searchInput.fill("");
+
+  const nonSelectedOptions = dialog.locator('[data-selected="false"]');
+  if ((await nonSelectedOptions.count()) > 0) {
+    const fallback = nonSelectedOptions.first();
+    await expect(fallback).toBeVisible();
+    await fallback.click();
+    await page.waitForSelector('[role="dialog"]', { state: "hidden" });
+
+    const selectedText =
+      (await getModelSelectorTrigger(page).textContent())?.trim() ?? "";
+    if (!selectedText) {
+      throw new Error("Failed to read selected model text from model selector");
+    }
+    return selectedText;
+  }
+
+  await page.keyboard.press("Escape").catch(() => {});
+  await page
+    .waitForSelector('[role="dialog"]', { state: "hidden", timeout: 5000 })
+    .catch(() => {});
+
+  if (currentModelText) {
+    return currentModelText;
+  }
+
+  throw new Error("Unable to select a model from input popover");
+}
+
 export async function switchModel(page: Page, modelName: string) {
-  await page.getByTestId("ChatInputBar/llm-popover-trigger").click();
+  await getModelSelectorTrigger(page).click();
 
   // Wait for the popover to open
   await page.waitForSelector('[role="dialog"]', { state: "visible" });
 
-  // LineItem is a <button> element inside the popover
-  // Find the button that contains the model name
   const modelButton = page
     .locator('[role="dialog"]')
-    .locator("button")
-    .filter({ hasText: new RegExp(`${modelName}$`, "i") })
+    .locator('[role="button"]')
+    .filter({ hasText: modelName })
     .first();
 
   await modelButton.click();

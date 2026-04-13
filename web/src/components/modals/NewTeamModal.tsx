@@ -2,18 +2,20 @@
 
 import { useState, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import type { Route } from "next";
 import { Dialog } from "@headlessui/react";
-import Button from "@/refresh-components/buttons/Button";
-import { usePopup } from "@/components/admin/connectors/Popup";
-import { useUser } from "../user/UserProvider";
+import { Button } from "@opal/components";
+import { toast } from "@/hooks/useToast";
+import { useUser } from "@/providers/UserProvider";
 import { useModalContext } from "../context/ModalContext";
 import SimpleLoader from "@/refresh-components/loaders/SimpleLoader";
-import SvgArrowUp from "@/icons/arrow-up";
-import SvgArrowRight from "@/icons/arrow-right";
-import SvgCheckCircle from "@/icons/check-circle";
-import SvgOrganization from "@/icons/organization";
-import SvgPlus from "@/icons/plus";
-
+import {
+  SvgArrowRight,
+  SvgArrowUp,
+  SvgCheckCircle,
+  SvgOrganization,
+  SvgPlus,
+} from "@opal/icons";
 export interface TenantByDomainResponse {
   tenant_id: string;
   number_of_users: number;
@@ -33,7 +35,6 @@ export default function NewTeamModal() {
   const appDomain = user?.email.split("@")[1];
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { setPopup } = usePopup();
 
   useEffect(() => {
     const hasNewTeamParam = searchParams?.has("new_team");
@@ -94,22 +95,18 @@ export default function NewTeamModal() {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.message || "Failed to request invite");
+        throw new Error(
+          errorData.detail || errorData.message || "Failed to request invite"
+        );
       }
 
       setHasRequestedInvite(true);
-      setPopup({
-        message: "Your invite request has been sent to the team admin.",
-        type: "success",
-      });
+      toast.success("Your invite request has been sent to the team admin.");
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Failed to request an invite";
       setError(message);
-      setPopup({
-        message,
-        type: "error",
-      });
+      toast.error(message);
     } finally {
       setIsSubmitting(false);
     }
@@ -117,7 +114,7 @@ export default function NewTeamModal() {
 
   const handleContinueToNewOrg = () => {
     const newUrl = window.location.pathname;
-    router.replace(newUrl);
+    router.replace(newUrl as Route);
     setShowNewTeamModal(false);
   };
 
@@ -165,7 +162,7 @@ export default function NewTeamModal() {
               <div className="flex w-full pt-2">
                 <Button
                   onClick={handleContinueToNewOrg}
-                  className="w-full"
+                  width="full"
                   rightIcon={SvgArrowRight}
                 >
                   Continue with new team
@@ -182,7 +179,7 @@ export default function NewTeamModal() {
               <div className="flex w-full pt-2">
                 <Button
                   onClick={handleContinueToNewOrg}
-                  className="w-full"
+                  width="full"
                   rightIcon={SvgArrowRight}
                 >
                   Try Onyx while waiting
@@ -196,10 +193,10 @@ export default function NewTeamModal() {
               </p>
               <div className="flex flex-col items-center justify-center gap-4 mt-4">
                 <Button
-                  onClick={handleRequestInvite}
-                  className="w-full"
                   disabled={isSubmitting}
-                  leftIcon={isSubmitting ? SimpleLoader : SvgArrowUp}
+                  onClick={handleRequestInvite}
+                  width="full"
+                  icon={isSubmitting ? SimpleLoader : SvgArrowUp}
                 >
                   {isSubmitting
                     ? "Sending request..."
@@ -208,9 +205,9 @@ export default function NewTeamModal() {
               </div>
               <Button
                 onClick={handleContinueToNewOrg}
-                className="w-full"
-                leftIcon={SvgPlus}
-                secondary
+                width="full"
+                icon={SvgPlus}
+                prominence="secondary"
               >
                 Continue with new team
               </Button>

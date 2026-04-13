@@ -1,30 +1,35 @@
-import io
 import json
 import math
 import mimetypes
 import os
 import zipfile
+from datetime import datetime
 from io import BytesIO
 from typing import Any
 from typing import cast
 
 from fastapi import APIRouter
 from fastapi import Depends
+from fastapi import File
+from fastapi import Form
 from fastapi import HTTPException
 from fastapi import Query
 from fastapi import Request
 from fastapi import Response
 from fastapi import UploadFile
-from google.oauth2.credentials import Credentials  # type: ignore
+from google.oauth2.credentials import Credentials
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from onyx.auth.users import current_admin_user
+from onyx.auth.email_utils import send_email
+from onyx.auth.permissions import require_permission
 from onyx.auth.users import current_chat_accessible_user
 from onyx.auth.users import current_curator_or_admin_user
-from onyx.auth.users import current_user
+from onyx.background.celery.tasks.pruning.tasks import (
+    try_creating_prune_generator_task,
+)
 from onyx.background.celery.versioned_apps.client import app as client_app
-from onyx.configs.app_configs import DISABLE_AUTH
+from onyx.configs.app_configs import EMAIL_CONFIGURED
 from onyx.configs.app_configs import ENABLED_CONNECTOR_TYPES
 from onyx.configs.app_configs import MOCK_CONNECTOR_FILE_PATH
 from onyx.configs.constants import DocumentSource
@@ -33,6 +38,7 @@ from onyx.configs.constants import MilestoneRecordType
 from onyx.configs.constants import ONYX_METADATA_FILENAME
 from onyx.configs.constants import OnyxCeleryPriority
 from onyx.configs.constants import OnyxCeleryTask
+from onyx.configs.constants import PUBLIC_API_TAGS
 from onyx.connectors.exceptions import ConnectorValidationError
 from onyx.connectors.factory import validate_ccpair_for_user
 from onyx.connectors.google_utils.google_auth import (
@@ -86,6 +92,7 @@ from onyx.db.connector_credential_pair import get_connector_credential_pairs_for
 from onyx.db.connector_credential_pair import (
     get_connector_credential_pairs_for_user_parallel,
 )
+from onyx.db.connector_credential_pair import verify_user_has_access_to_cc_pair
 from onyx.db.credentials import cleanup_gmail_credentials
 from onyx.db.credentials import cleanup_google_drive_credentials
 from onyx.db.credentials import create_credential
@@ -97,25 +104,36 @@ from onyx.db.engine.sql_engine import get_session
 from onyx.db.enums import AccessType
 from onyx.db.enums import ConnectorCredentialPairStatus
 from onyx.db.enums import IndexingMode
+from onyx.db.enums import Permission
+from onyx.db.enums import ProcessingMode
 from onyx.db.federated import fetch_all_federated_connectors_parallel
 from onyx.db.index_attempt import get_index_attempts_for_cc_pair
 from onyx.db.index_attempt import get_latest_index_attempts_by_status
 from onyx.db.index_attempt import get_latest_index_attempts_parallel
+from onyx.db.index_attempt import (
+    get_latest_successful_index_attempts_parallel,
+)
 from onyx.db.models import ConnectorCredentialPair
 from onyx.db.models import FederatedConnector
 from onyx.db.models import IndexAttempt
 from onyx.db.models import IndexingStatus
 from onyx.db.models import User
 from onyx.db.models import UserRole
-from onyx.file_processing.extract_file_text import extract_file_text
+from onyx.file_processing.file_types import PLAIN_TEXT_MIME_TYPE
+from onyx.file_processing.file_types import WORD_PROCESSING_MIME_TYPE
+from onyx.file_store.file_store import FileStore
 from onyx.file_store.file_store import get_default_file_store
-from onyx.file_store.models import ChatFileType
 from onyx.key_value_store.interface import KvKeyNotFoundError
+from onyx.redis.redis_pool import get_redis_client
 from onyx.server.documents.models import AuthStatus
 from onyx.server.documents.models import AuthUrl
+from onyx.server.documents.models import ConnectorBase
 from onyx.server.documents.models import ConnectorCredentialPairIdentifier
+from onyx.server.documents.models import ConnectorFileInfo
+from onyx.server.documents.models import ConnectorFilesResponse
 from onyx.server.documents.models import ConnectorIndexingStatusLite
 from onyx.server.documents.models import ConnectorIndexingStatusLiteResponse
+from onyx.server.documents.models import ConnectorRequestSubmission
 from onyx.server.documents.models import ConnectorSnapshot
 from onyx.server.documents.models import ConnectorStatus
 from onyx.server.documents.models import ConnectorUpdateRequest
@@ -136,9 +154,9 @@ from onyx.server.documents.models import RunConnectorRequest
 from onyx.server.documents.models import SourceSummary
 from onyx.server.federated.models import FederatedConnectorStatus
 from onyx.server.models import StatusResponse
-from onyx.server.query_and_chat.chat_utils import mime_type_to_chat_file_type
+from onyx.server.utils_vector_db import require_vector_db
 from onyx.utils.logger import setup_logger
-from onyx.utils.telemetry import create_milestone_and_report
+from onyx.utils.telemetry import mt_cloud_telemetry
 from onyx.utils.threadpool_concurrency import CallableProtocol
 from onyx.utils.threadpool_concurrency import run_functions_tuples_in_parallel
 from onyx.utils.variable_functionality import fetch_ee_implementation_or_noop
@@ -153,7 +171,7 @@ _INDEXING_STATUS_PAGE_SIZE = 10
 SEEN_ZIP_DETAIL = "Only one zip file is allowed per file connector, \
 use the ingestion APIs for multiple files"
 
-router = APIRouter(prefix="/manage")
+router = APIRouter(prefix="/manage", dependencies=[Depends(require_vector_db)])
 
 
 """Admin only API endpoints"""
@@ -171,7 +189,8 @@ def check_google_app_gmail_credentials_exist(
 
 @router.put("/admin/connector/gmail/app-credential")
 def upsert_google_app_gmail_credentials(
-    app_credentials: GoogleAppCredentials, _: User = Depends(current_admin_user)
+    app_credentials: GoogleAppCredentials,
+    _: User = Depends(require_permission(Permission.FULL_ADMIN_PANEL_ACCESS)),
 ) -> StatusResponse:
     try:
         upsert_google_app_cred(app_credentials, DocumentSource.GMAIL)
@@ -185,7 +204,7 @@ def upsert_google_app_gmail_credentials(
 
 @router.delete("/admin/connector/gmail/app-credential")
 def delete_google_app_gmail_credentials(
-    _: User = Depends(current_admin_user),
+    _: User = Depends(require_permission(Permission.FULL_ADMIN_PANEL_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> StatusResponse:
     try:
@@ -213,7 +232,8 @@ def check_google_app_credentials_exist(
 
 @router.put("/admin/connector/google-drive/app-credential")
 def upsert_google_app_credentials(
-    app_credentials: GoogleAppCredentials, _: User = Depends(current_admin_user)
+    app_credentials: GoogleAppCredentials,
+    _: User = Depends(require_permission(Permission.FULL_ADMIN_PANEL_ACCESS)),
 ) -> StatusResponse:
     try:
         upsert_google_app_cred(app_credentials, DocumentSource.GOOGLE_DRIVE)
@@ -227,7 +247,7 @@ def upsert_google_app_credentials(
 
 @router.delete("/admin/connector/google-drive/app-credential")
 def delete_google_app_credentials(
-    _: User = Depends(current_admin_user),
+    _: User = Depends(require_permission(Permission.FULL_ADMIN_PANEL_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> StatusResponse:
     try:
@@ -259,7 +279,8 @@ def check_google_service_gmail_account_key_exist(
 
 @router.put("/admin/connector/gmail/service-account-key")
 def upsert_google_service_gmail_account_key(
-    service_account_key: GoogleServiceAccountKey, _: User = Depends(current_admin_user)
+    service_account_key: GoogleServiceAccountKey,
+    _: User = Depends(require_permission(Permission.FULL_ADMIN_PANEL_ACCESS)),
 ) -> StatusResponse:
     try:
         upsert_service_account_key(service_account_key, DocumentSource.GMAIL)
@@ -273,7 +294,7 @@ def upsert_google_service_gmail_account_key(
 
 @router.delete("/admin/connector/gmail/service-account-key")
 def delete_google_service_gmail_account_key(
-    _: User = Depends(current_admin_user),
+    _: User = Depends(require_permission(Permission.FULL_ADMIN_PANEL_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> StatusResponse:
     try:
@@ -305,7 +326,8 @@ def check_google_service_account_key_exist(
 
 @router.put("/admin/connector/google-drive/service-account-key")
 def upsert_google_service_account_key(
-    service_account_key: GoogleServiceAccountKey, _: User = Depends(current_admin_user)
+    service_account_key: GoogleServiceAccountKey,
+    _: User = Depends(require_permission(Permission.FULL_ADMIN_PANEL_ACCESS)),
 ) -> StatusResponse:
     try:
         upsert_service_account_key(service_account_key, DocumentSource.GOOGLE_DRIVE)
@@ -319,7 +341,7 @@ def upsert_google_service_account_key(
 
 @router.delete("/admin/connector/google-drive/service-account-key")
 def delete_google_service_account_key(
-    _: User = Depends(current_admin_user),
+    _: User = Depends(require_permission(Permission.FULL_ADMIN_PANEL_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> StatusResponse:
     try:
@@ -336,7 +358,7 @@ def delete_google_service_account_key(
 @router.put("/admin/connector/google-drive/service-account-credential")
 def upsert_service_account_credential(
     service_account_credential_request: GoogleServiceAccountCredentialRequest,
-    user: User | None = Depends(current_curator_or_admin_user),
+    user: User = Depends(current_curator_or_admin_user),
     db_session: Session = Depends(get_session),
 ) -> ObjectCreationIdResponse:
     """Special API which allows the creation of a credential for a service account.
@@ -363,7 +385,7 @@ def upsert_service_account_credential(
 @router.put("/admin/connector/gmail/service-account-credential")
 def upsert_gmail_service_account_credential(
     service_account_credential_request: GoogleServiceAccountCredentialRequest,
-    user: User | None = Depends(current_curator_or_admin_user),
+    user: User = Depends(current_curator_or_admin_user),
     db_session: Session = Depends(get_session),
 ) -> ObjectCreationIdResponse:
     """Special API which allows the creation of a credential for a service account.
@@ -389,16 +411,17 @@ def upsert_gmail_service_account_credential(
 @router.get("/admin/connector/google-drive/check-auth/{credential_id}")
 def check_drive_tokens(
     credential_id: int,
-    user: User = Depends(current_admin_user),
+    user: User = Depends(require_permission(Permission.FULL_ADMIN_PANEL_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> AuthStatus:
     db_credentials = fetch_credential_by_id_for_user(credential_id, user, db_session)
-    if (
-        not db_credentials
-        or DB_CREDENTIALS_DICT_TOKEN_KEY not in db_credentials.credential_json
-    ):
+    if not db_credentials or not db_credentials.credential_json:
         return AuthStatus(authenticated=False)
-    token_json_str = str(db_credentials.credential_json[DB_CREDENTIALS_DICT_TOKEN_KEY])
+
+    credential_json = db_credentials.credential_json.get_value(apply_mask=False)
+    if DB_CREDENTIALS_DICT_TOKEN_KEY not in credential_json:
+        return AuthStatus(authenticated=False)
+    token_json_str = str(credential_json[DB_CREDENTIALS_DICT_TOKEN_KEY])
     google_drive_creds = get_google_oauth_creds(
         token_json_str=token_json_str,
         source=DocumentSource.GOOGLE_DRIVE,
@@ -408,29 +431,39 @@ def check_drive_tokens(
     return AuthStatus(authenticated=True)
 
 
-def extract_zip_metadata(zf: zipfile.ZipFile) -> dict[str, Any]:
-    zip_metadata = {}
+def save_zip_metadata_to_file_store(
+    zf: zipfile.ZipFile, file_store: FileStore
+) -> str | None:
+    """
+    Extract .onyx_metadata.json from zip and save to file store.
+    Returns the file_id or None if no metadata file exists.
+    """
     try:
         metadata_file_info = zf.getinfo(ONYX_METADATA_FILENAME)
         with zf.open(metadata_file_info, "r") as metadata_file:
+            metadata_bytes = metadata_file.read()
+
+            # Validate that it's valid JSON before saving
             try:
-                zip_metadata = json.load(metadata_file)
-                if isinstance(zip_metadata, list):
-                    # convert list of dicts to dict of dicts
-                    # Use just the basename for matching since metadata may not include
-                    # the full path within the ZIP file
-                    zip_metadata = {d["filename"]: d for d in zip_metadata}
+                json.loads(metadata_bytes)
             except json.JSONDecodeError as e:
                 logger.warning(f"Unable to load {ONYX_METADATA_FILENAME}: {e}")
-                # should fail loudly here to let users know that their metadata
-                # file is not valid JSON
                 raise HTTPException(
                     status_code=400,
                     detail=f"Unable to load {ONYX_METADATA_FILENAME}: {e}",
                 )
+
+            # Save to file store
+            file_id = file_store.save_file(
+                content=BytesIO(metadata_bytes),
+                display_name=ONYX_METADATA_FILENAME,
+                file_origin=FileOrigin.CONNECTOR_METADATA,
+                file_type="application/json",
+            )
+            return file_id
     except KeyError:
         logger.info(f"No {ONYX_METADATA_FILENAME} file")
-    return zip_metadata
+        return None
 
 
 def is_zip_file(file: UploadFile) -> bool:
@@ -454,11 +487,10 @@ def is_zip_file(file: UploadFile) -> bool:
 
 
 def upload_files(
-    files: list[UploadFile], file_origin: FileOrigin = FileOrigin.CONNECTOR
+    files: list[UploadFile],
+    file_origin: FileOrigin = FileOrigin.CONNECTOR,
+    unzip: bool = True,
 ) -> FileUploadResponse:
-    for file in files:
-        if not file.filename:
-            raise HTTPException(status_code=400, detail="File name cannot be empty")
 
     # Skip directories and known macOS metadata entries
     def should_process_file(file_path: str) -> bool:
@@ -467,64 +499,82 @@ def upload_files(
 
     deduped_file_paths = []
     deduped_file_names = []
-    zip_metadata = {}
+    zip_metadata_file_id: str | None = None
     try:
         file_store = get_default_file_store()
         seen_zip = False
         for file in files:
+            if not file.filename:
+                logger.warning("File has no filename, skipping")
+                continue
+
             if is_zip_file(file):
                 if seen_zip:
                     raise HTTPException(status_code=400, detail=SEEN_ZIP_DETAIL)
                 seen_zip = True
+
+                # Validate the zip by opening it (catches corrupt/non-zip files)
                 with zipfile.ZipFile(file.file, "r") as zf:
-                    zip_metadata = extract_zip_metadata(zf)
-                    for file_info in zf.namelist():
-                        if zf.getinfo(file_info).is_dir():
-                            continue
-
-                        if not should_process_file(file_info):
-                            continue
-
-                        sub_file_bytes = zf.read(file_info)
-
-                        mime_type, __ = mimetypes.guess_type(file_info)
-                        if mime_type is None:
-                            mime_type = "application/octet-stream"
-
-                        file_id = file_store.save_file(
-                            content=BytesIO(sub_file_bytes),
-                            display_name=os.path.basename(file_info),
-                            file_origin=FileOrigin.CONNECTOR,
-                            file_type=mime_type,
+                    if unzip:
+                        zip_metadata_file_id = save_zip_metadata_to_file_store(
+                            zf, file_store
                         )
-                        deduped_file_paths.append(file_id)
-                        deduped_file_names.append(os.path.basename(file_info))
-                continue
+                        for file_info in zf.namelist():
+                            if zf.getinfo(file_info).is_dir():
+                                continue
 
-            # For mypy, actual check happens at start of function
-            assert file.filename is not None
+                            if not should_process_file(file_info):
+                                continue
 
-            # Special handling for doc files - only store the plaintext version
-            file_type = mime_type_to_chat_file_type(file.content_type)
-            if file_type == ChatFileType.DOC:
-                extracted_text = extract_file_text(file.file, file.filename or "")
-                text_file_id = file_store.save_file(
-                    content=io.BytesIO(extracted_text.encode()),
+                            sub_file_bytes = zf.read(file_info)
+
+                            mime_type, __ = mimetypes.guess_type(file_info)
+                            if mime_type is None:
+                                mime_type = "application/octet-stream"
+
+                            file_id = file_store.save_file(
+                                content=BytesIO(sub_file_bytes),
+                                display_name=os.path.basename(file_info),
+                                file_origin=file_origin,
+                                file_type=mime_type,
+                            )
+                            deduped_file_paths.append(file_id)
+                            deduped_file_names.append(os.path.basename(file_info))
+                        continue
+
+                # Store the zip as-is (unzip=False)
+                file.file.seek(0)
+                file_id = file_store.save_file(
+                    content=file.file,
                     display_name=file.filename,
                     file_origin=file_origin,
-                    file_type="text/plain",
+                    file_type=file.content_type or "application/zip",
                 )
-                deduped_file_paths.append(text_file_id)
+                deduped_file_paths.append(file_id)
                 deduped_file_names.append(file.filename)
                 continue
 
-            # Default handling for all other file types
-            file_id = file_store.save_file(
-                content=file.file,
-                display_name=file.filename,
-                file_origin=FileOrigin.CONNECTOR,
-                file_type=file.content_type or "text/plain",
-            )
+            # Since we can't render docx files in the UI,
+            # we store them in the file store as plain text
+            if file.content_type == WORD_PROCESSING_MIME_TYPE:
+                # Lazy load to avoid importing markitdown when not needed
+                from onyx.file_processing.extract_file_text import read_docx_file
+
+                text, _ = read_docx_file(file.file, file.filename)
+                file_id = file_store.save_file(
+                    content=BytesIO(text.encode("utf-8")),
+                    display_name=file.filename,
+                    file_origin=file_origin,
+                    file_type=PLAIN_TEXT_MIME_TYPE,
+                )
+
+            else:
+                file_id = file_store.save_file(
+                    content=file.file,
+                    display_name=file.filename,
+                    file_origin=file_origin,
+                    file_type=file.content_type or "text/plain",
+                )
             deduped_file_paths.append(file_id)
             deduped_file_names.append(file.filename)
 
@@ -533,19 +583,351 @@ def upload_files(
     return FileUploadResponse(
         file_paths=deduped_file_paths,
         file_names=deduped_file_names,
-        zip_metadata=zip_metadata,
+        zip_metadata_file_id=zip_metadata_file_id,
     )
 
 
-@router.post("/admin/connector/file/upload")
+def _normalize_file_names_for_backwards_compatibility(
+    file_locations: list[str], file_names: list[str]
+) -> list[str]:
+    """
+    Ensures file_names list is the same length as file_locations for backwards compatibility.
+    In legacy data, file_names might not exist or be shorter than file_locations.
+    If file_names is shorter, pads it with corresponding file_locations values.
+    """
+    return file_names + file_locations[len(file_names) :]
+
+
+def _fetch_and_check_file_connector_cc_pair_permissions(
+    connector_id: int,
+    user: User,
+    db_session: Session,
+    require_editable: bool,
+) -> ConnectorCredentialPair:
+    cc_pair = fetch_connector_credential_pair_for_connector(db_session, connector_id)
+    if cc_pair is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No Connector-Credential Pair found for this connector",
+        )
+
+    has_requested_access = verify_user_has_access_to_cc_pair(
+        cc_pair_id=cc_pair.id,
+        db_session=db_session,
+        user=user,
+        get_editable=require_editable,
+    )
+    if has_requested_access:
+        return cc_pair
+
+    # Special case: global curators should be able to manage files
+    # for public file connectors even when they are not the creator.
+    if (
+        require_editable
+        and user.role == UserRole.GLOBAL_CURATOR
+        and cc_pair.access_type == AccessType.PUBLIC
+    ):
+        return cc_pair
+
+    raise HTTPException(
+        status_code=403,
+        detail="Access denied. User cannot manage files for this connector.",
+    )
+
+
+@router.post("/admin/connector/file/upload", tags=PUBLIC_API_TAGS)
 def upload_files_api(
     files: list[UploadFile],
+    unzip: bool = True,
     _: User = Depends(current_curator_or_admin_user),
 ) -> FileUploadResponse:
-    return upload_files(files, FileOrigin.OTHER)
+    return upload_files(files, FileOrigin.OTHER, unzip=unzip)
 
 
-@router.get("/admin/connector")
+@router.get("/admin/connector/{connector_id}/files", tags=PUBLIC_API_TAGS)
+def list_connector_files(
+    connector_id: int,
+    user: User = Depends(current_curator_or_admin_user),
+    db_session: Session = Depends(get_session),
+) -> ConnectorFilesResponse:
+    """List all files in a file connector."""
+    connector = fetch_connector_by_id(connector_id, db_session)
+    if connector is None:
+        raise HTTPException(status_code=404, detail="Connector not found")
+
+    if connector.source != DocumentSource.FILE:
+        raise HTTPException(
+            status_code=400, detail="This endpoint only works with file connectors"
+        )
+
+    _ = _fetch_and_check_file_connector_cc_pair_permissions(
+        connector_id=connector_id,
+        user=user,
+        db_session=db_session,
+        require_editable=False,
+    )
+
+    file_locations = connector.connector_specific_config.get("file_locations", [])
+    file_names = connector.connector_specific_config.get("file_names", [])
+
+    # Normalize file_names for backwards compatibility with legacy data
+    file_names = _normalize_file_names_for_backwards_compatibility(
+        file_locations, file_names
+    )
+
+    file_store = get_default_file_store()
+    files = []
+
+    for file_id, file_name in zip(file_locations, file_names):
+        try:
+            file_record = file_store.read_file_record(file_id)
+            file_size = None
+            upload_date = None
+            if file_record:
+                file_size = file_store.get_file_size(file_id)
+                upload_date = (
+                    file_record.created_at.isoformat()
+                    if file_record.created_at
+                    else None
+                )
+            files.append(
+                ConnectorFileInfo(
+                    file_id=file_id,
+                    file_name=file_name,
+                    file_size=file_size,
+                    upload_date=upload_date,
+                )
+            )
+        except Exception as e:
+            logger.warning(f"Error reading file record for {file_id}: {e}")
+            # Include file with basic info even if record fetch fails
+            files.append(
+                ConnectorFileInfo(
+                    file_id=file_id,
+                    file_name=file_name,
+                )
+            )
+
+    return ConnectorFilesResponse(files=files)
+
+
+@router.post("/admin/connector/{connector_id}/files/update", tags=PUBLIC_API_TAGS)
+def update_connector_files(
+    connector_id: int,
+    files: list[UploadFile] | None = File(None),
+    file_ids_to_remove: str = Form("[]"),
+    user: User = Depends(current_curator_or_admin_user),
+    db_session: Session = Depends(get_session),
+) -> FileUploadResponse:
+    """
+    Update files in a connector by adding new files and/or removing existing ones.
+    This is an atomic operation that validates, updates the connector config, and triggers indexing.
+    """
+    files = files or []
+    connector = fetch_connector_by_id(connector_id, db_session)
+    if connector is None:
+        raise HTTPException(status_code=404, detail="Connector not found")
+
+    if connector.source != DocumentSource.FILE:
+        raise HTTPException(
+            status_code=400, detail="This endpoint only works with file connectors"
+        )
+
+    # Get the connector-credential pair for indexing/pruning triggers
+    # and validate user permissions for file management.
+    cc_pair = _fetch_and_check_file_connector_cc_pair_permissions(
+        connector_id=connector_id,
+        user=user,
+        db_session=db_session,
+        require_editable=True,
+    )
+
+    # Parse file IDs to remove
+    try:
+        file_ids_list = json.loads(file_ids_to_remove)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid file_ids_to_remove format")
+
+    if not isinstance(file_ids_list, list):
+        raise HTTPException(
+            status_code=400,
+            detail="file_ids_to_remove must be a JSON-encoded list",
+        )
+
+    # Get current connector config
+    current_config = connector.connector_specific_config
+    current_file_locations = current_config.get("file_locations", [])
+    current_file_names = current_config.get("file_names", [])
+    current_zip_metadata_file_id = current_config.get("zip_metadata_file_id")
+
+    # Load existing metadata from file store if available
+    file_store = get_default_file_store()
+    current_zip_metadata: dict[str, Any] = {}
+    if current_zip_metadata_file_id:
+        try:
+            metadata_io = file_store.read_file(
+                file_id=current_zip_metadata_file_id, mode="b"
+            )
+            metadata_bytes = metadata_io.read()
+            loaded_metadata = json.loads(metadata_bytes)
+            if isinstance(loaded_metadata, list):
+                current_zip_metadata = {d["filename"]: d for d in loaded_metadata}
+            else:
+                current_zip_metadata = loaded_metadata
+        except Exception as e:
+            logger.warning(f"Failed to load existing metadata file: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to load existing connector metadata file",
+            )
+
+    # Upload new files if any
+    new_file_paths = []
+    new_file_names_list = []
+    new_zip_metadata_file_id: str | None = None
+    new_zip_metadata: dict[str, Any] = {}
+
+    if files and len(files) > 0:
+        upload_response = upload_files(files, FileOrigin.CONNECTOR)
+        new_file_paths = upload_response.file_paths
+        new_file_names_list = upload_response.file_names
+        new_zip_metadata_file_id = upload_response.zip_metadata_file_id
+
+        # Load new metadata from file store if available
+        if new_zip_metadata_file_id:
+            try:
+                metadata_io = file_store.read_file(
+                    file_id=new_zip_metadata_file_id, mode="b"
+                )
+                metadata_bytes = metadata_io.read()
+                loaded_metadata = json.loads(metadata_bytes)
+                if isinstance(loaded_metadata, list):
+                    new_zip_metadata = {d["filename"]: d for d in loaded_metadata}
+                else:
+                    new_zip_metadata = loaded_metadata
+            except Exception as e:
+                logger.warning(f"Failed to load new metadata file: {e}")
+
+    # Remove specified files
+    files_to_remove_set = set(file_ids_list)
+
+    # Normalize file_names for backwards compatibility with legacy data
+    current_file_names = _normalize_file_names_for_backwards_compatibility(
+        current_file_locations, current_file_names
+    )
+
+    remaining_file_locations = []
+    remaining_file_names = []
+    removed_file_names = set()
+
+    for file_id, file_name in zip(current_file_locations, current_file_names):
+        if file_id not in files_to_remove_set:
+            remaining_file_locations.append(file_id)
+            remaining_file_names.append(file_name)
+        else:
+            removed_file_names.add(file_name)
+
+    # Combine remaining files with new files
+    final_file_locations = remaining_file_locations + new_file_paths
+    final_file_names = remaining_file_names + new_file_names_list
+
+    # Validate that at least one file remains
+    if not final_file_locations:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot remove all files from connector. At least one file must remain.",
+        )
+
+    # Merge and filter metadata (remove metadata for deleted files)
+    final_zip_metadata = {
+        key: value
+        for key, value in current_zip_metadata.items()
+        if key not in removed_file_names
+    }
+    final_zip_metadata.update(new_zip_metadata)
+
+    # Save merged metadata to file store if we have any metadata
+    final_zip_metadata_file_id: str | None = None
+    if final_zip_metadata:
+        final_zip_metadata_file_id = file_store.save_file(
+            content=BytesIO(json.dumps(final_zip_metadata).encode("utf-8")),
+            display_name=ONYX_METADATA_FILENAME,
+            file_origin=FileOrigin.CONNECTOR_METADATA,
+            file_type="application/json",
+        )
+
+    # Update connector config
+    updated_config = {
+        **current_config,
+        "file_locations": final_file_locations,
+        "file_names": final_file_names,
+        "zip_metadata_file_id": final_zip_metadata_file_id,
+    }
+    # Remove old zip_metadata dict if present (backwards compatibility cleanup)
+    updated_config.pop("zip_metadata", None)
+
+    connector_base = ConnectorBase(
+        name=connector.name,
+        source=connector.source,
+        input_type=connector.input_type,
+        connector_specific_config=updated_config,
+        refresh_freq=connector.refresh_freq,
+        prune_freq=connector.prune_freq,
+        indexing_start=connector.indexing_start,
+    )
+
+    updated_connector = update_connector(connector_id, connector_base, db_session)
+    if updated_connector is None:
+        raise HTTPException(
+            status_code=500, detail="Failed to update connector configuration"
+        )
+
+    # Trigger re-indexing for new files and pruning for removed files
+    try:
+        tenant_id = get_current_tenant_id()
+
+        # If files were added, mark for UPDATE indexing (only new docs)
+        if new_file_paths:
+            mark_ccpair_with_indexing_trigger(
+                cc_pair.id, IndexingMode.UPDATE, db_session
+            )
+
+            # Send task to check for indexing immediately
+            client_app.send_task(
+                OnyxCeleryTask.CHECK_FOR_INDEXING,
+                kwargs={"tenant_id": tenant_id},
+                priority=OnyxCeleryPriority.HIGH,
+            )
+            logger.info(
+                f"Marked cc_pair {cc_pair.id} for UPDATE indexing (new files) for connector {connector_id}"
+            )
+
+        # If files were removed, trigger pruning immediately
+        if file_ids_list:
+            r = get_redis_client()
+            payload_id = try_creating_prune_generator_task(
+                client_app, cc_pair, db_session, r, tenant_id
+            )
+            if payload_id:
+                logger.info(
+                    f"Triggered pruning for cc_pair {cc_pair.id} (removed files) for connector "
+                    f"{connector_id}, payload_id={payload_id}"
+                )
+            else:
+                logger.warning(
+                    f"Failed to trigger pruning for cc_pair {cc_pair.id} (removed files) for connector {connector_id}"
+                )
+    except Exception as e:
+        logger.error(f"Failed to trigger re-indexing after file update: {e}")
+
+    return FileUploadResponse(
+        file_paths=final_file_locations,
+        file_names=final_file_names,
+        zip_metadata_file_id=final_zip_metadata_file_id,
+    )
+
+
+@router.get("/admin/connector", tags=PUBLIC_API_TAGS)
 def get_connectors_by_credential(
     _: User = Depends(current_curator_or_admin_user),
     db_session: Session = Depends(get_session),
@@ -578,7 +960,7 @@ def get_connectors_by_credential(
 
 
 # Retrieves most recent failure cases for connectors that are currently failing
-@router.get("/admin/connector/failed-indexing-status")
+@router.get("/admin/connector/failed-indexing-status", tags=PUBLIC_API_TAGS)
 def get_currently_failed_indexing_status(
     secondary_index: bool = False,
     user: User = Depends(current_curator_or_admin_user),
@@ -666,7 +1048,7 @@ def get_currently_failed_indexing_status(
     return indexing_statuses
 
 
-@router.get("/admin/connector/status")
+@router.get("/admin/connector/status", tags=PUBLIC_API_TAGS)
 def get_connector_status(
     user: User = Depends(current_curator_or_admin_user),
     db_session: Session = Depends(get_session),
@@ -678,6 +1060,7 @@ def get_connector_status(
         user=user,
         eager_load_connector=True,
         eager_load_credential=True,
+        eager_load_user=True,
         get_editable=False,
     )
 
@@ -691,11 +1074,23 @@ def get_connector_status(
             relationship.user_group_id
         )
 
+    # Pre-compute credential_ids per connector to avoid N+1 lazy loads
+    connector_to_credential_ids: dict[int, list[int]] = {}
+    for cc_pair in cc_pairs:
+        connector_to_credential_ids.setdefault(cc_pair.connector_id, []).append(
+            cc_pair.credential_id
+        )
+
     return [
         ConnectorStatus(
             cc_pair_id=cc_pair.id,
             name=cc_pair.name,
-            connector=ConnectorSnapshot.from_connector_db_model(cc_pair.connector),
+            connector=ConnectorSnapshot.from_connector_db_model(
+                cc_pair.connector,
+                credential_ids=connector_to_credential_ids.get(
+                    cc_pair.connector_id, []
+                ),
+            ),
             credential=CredentialSnapshot.from_credential_db_model(cc_pair.credential),
             access_type=cc_pair.access_type,
             groups=group_cc_pair_relationships_dict.get(cc_pair.id, []),
@@ -705,7 +1100,7 @@ def get_connector_status(
     ]
 
 
-@router.post("/admin/connector/indexing-status")
+@router.post("/admin/connector/indexing-status", tags=PUBLIC_API_TAGS)
 def get_connector_indexing_status(
     request: IndexingStatusRequest,
     user: User = Depends(current_curator_or_admin_user),
@@ -749,33 +1144,52 @@ def get_connector_indexing_status(
     parallel_functions: list[tuple[CallableProtocol, tuple[Any, ...]]] = [
         # Get editable connector/credential pairs
         (
-            get_connector_credential_pairs_for_user_parallel,
-            (user, True, None, True, True, True, True, request.source),
+            lambda: get_connector_credential_pairs_for_user_parallel(
+                user, True, None, True, True, False, True, request.source
+            ),
+            (),
         ),
         # Get federated connectors
         (fetch_all_federated_connectors_parallel, ()),
         # Get most recent index attempts
-        (get_latest_index_attempts_parallel, (request.secondary_index, True, False)),
+        (
+            lambda: get_latest_index_attempts_parallel(
+                request.secondary_index, True, False
+            ),
+            (),
+        ),
         # Get most recent finished index attempts
-        (get_latest_index_attempts_parallel, (request.secondary_index, True, True)),
+        (
+            lambda: get_latest_index_attempts_parallel(
+                request.secondary_index, True, True
+            ),
+            (),
+        ),
+        # Get most recent successful index attempts
+        (
+            lambda: get_latest_successful_index_attempts_parallel(
+                request.secondary_index,
+            ),
+            (),
+        ),
     ]
 
-    if (user is None and DISABLE_AUTH) or (user and user.role == UserRole.ADMIN):
-        # For Admin users, we already got all the cc pair in editable_cc_pairs
-        # its not needed to get them again
+    if user and user.role == UserRole.ADMIN:
         (
             editable_cc_pairs,
             federated_connectors,
             latest_index_attempts,
             latest_finished_index_attempts,
+            latest_successful_index_attempts,
         ) = run_functions_tuples_in_parallel(parallel_functions)
         non_editable_cc_pairs = []
     else:
         parallel_functions.append(
-            # Get non-editable connector/credential pairs
             (
-                get_connector_credential_pairs_for_user_parallel,
-                (user, False, None, True, True, True, True, request.source),
+                lambda: get_connector_credential_pairs_for_user_parallel(
+                    user, False, None, True, True, False, True, request.source
+                ),
+                (),
             ),
         )
 
@@ -784,6 +1198,7 @@ def get_connector_indexing_status(
             federated_connectors,
             latest_index_attempts,
             latest_finished_index_attempts,
+            latest_successful_index_attempts,
             non_editable_cc_pairs,
         ) = run_functions_tuples_in_parallel(parallel_functions)
 
@@ -795,6 +1210,9 @@ def get_connector_indexing_status(
     latest_finished_index_attempts = cast(
         list[IndexAttempt], latest_finished_index_attempts
     )
+    latest_successful_index_attempts = cast(
+        list[IndexAttempt], latest_successful_index_attempts
+    )
 
     document_count_info = get_document_counts_for_all_cc_pairs(db_session)
 
@@ -804,42 +1222,48 @@ def get_connector_indexing_status(
         for connector_id, credential_id, cnt in document_count_info
     }
 
-    cc_pair_to_latest_index_attempt: dict[tuple[int, int], IndexAttempt] = {
-        (
-            attempt.connector_credential_pair.connector_id,
-            attempt.connector_credential_pair.credential_id,
-        ): attempt
-        for attempt in latest_index_attempts
-    }
+    def _attempt_lookup(
+        attempts: list[IndexAttempt],
+    ) -> dict[int, IndexAttempt]:
+        return {attempt.connector_credential_pair_id: attempt for attempt in attempts}
 
-    cc_pair_to_latest_finished_index_attempt: dict[tuple[int, int], IndexAttempt] = {
-        (
-            attempt.connector_credential_pair.connector_id,
-            attempt.connector_credential_pair.credential_id,
-        ): attempt
-        for attempt in latest_finished_index_attempts
-    }
+    cc_pair_to_latest_index_attempt = _attempt_lookup(latest_index_attempts)
+    cc_pair_to_latest_finished_index_attempt = _attempt_lookup(
+        latest_finished_index_attempts
+    )
+    cc_pair_to_latest_successful_index_attempt = _attempt_lookup(
+        latest_successful_index_attempts
+    )
 
     def build_connector_indexing_status(
         cc_pair: ConnectorCredentialPair,
         is_editable: bool,
     ) -> ConnectorIndexingStatusLite | None:
-        # TODO remove this to enable ingestion API
         if cc_pair.name == "DefaultCCPair":
             return None
 
-        latest_attempt = cc_pair_to_latest_index_attempt.get(
-            (cc_pair.connector_id, cc_pair.credential_id)
-        )
+        latest_attempt = cc_pair_to_latest_index_attempt.get(cc_pair.id)
         latest_finished_attempt = cc_pair_to_latest_finished_index_attempt.get(
-            (cc_pair.connector_id, cc_pair.credential_id)
+            cc_pair.id
+        )
+        latest_successful_attempt = cc_pair_to_latest_successful_index_attempt.get(
+            cc_pair.id
         )
         doc_count = cc_pair_to_document_cnt.get(
             (cc_pair.connector_id, cc_pair.credential_id), 0
         )
 
         return _get_connector_indexing_status_lite(
-            cc_pair, latest_attempt, latest_finished_attempt, is_editable, doc_count
+            cc_pair,
+            latest_attempt,
+            latest_finished_attempt,
+            (
+                latest_successful_attempt.time_started
+                if latest_successful_attempt
+                else None
+            ),
+            is_editable,
+            doc_count,
         )
 
     # Process editable cc_pairs
@@ -933,12 +1357,10 @@ def get_connector_indexing_status(
             ].total_docs_indexed += connector_status.docs_indexed
 
     # Track admin page visit for analytics
-    create_milestone_and_report(
-        user=user,
-        distinct_id=user.email if user else tenant_id or "N/A",
-        event_type=MilestoneRecordType.VISITED_ADMIN_PAGE,
-        properties=None,
-        db_session=db_session,
+    mt_cloud_telemetry(
+        tenant_id=tenant_id,
+        distinct_id=str(user.id),
+        event=MilestoneRecordType.VISITED_ADMIN_PAGE,
     )
 
     # Group statuses by source for pagination
@@ -1002,6 +1424,7 @@ def _get_connector_indexing_status_lite(
     cc_pair: ConnectorCredentialPair,
     latest_index_attempt: IndexAttempt | None,
     latest_finished_index_attempt: IndexAttempt | None,
+    last_successful_index_time: datetime | None,
     is_editable: bool,
     document_cnt: int,
 ) -> ConnectorIndexingStatusLite | None:
@@ -1035,7 +1458,7 @@ def _get_connector_indexing_status_lite(
             else None
         ),
         last_status=latest_index_attempt.status if latest_index_attempt else None,
-        last_success=cc_pair.last_successful_index_time,
+        last_success=last_successful_index_time,
         docs_indexed=document_cnt,
         latest_index_attempt_docs_indexed=(
             latest_index_attempt.total_docs_indexed if latest_index_attempt else None
@@ -1118,12 +1541,11 @@ def _validate_connector_allowed(source: DocumentSource) -> None:
             return
 
     raise ValueError(
-        "This connector type has been disabled by your system admin. "
-        "Please contact them to get it enabled if you wish to use it."
+        "This connector type has been disabled by your system admin. Please contact them to get it enabled if you wish to use it."
     )
 
 
-@router.post("/admin/connector")
+@router.post("/admin/connector", tags=PUBLIC_API_TAGS)
 def create_connector_from_model(
     connector_data: ConnectorUpdateRequest,
     user: User = Depends(current_curator_or_admin_user),
@@ -1150,12 +1572,10 @@ def create_connector_from_model(
             connector_data=connector_base,
         )
 
-        create_milestone_and_report(
-            user=user,
-            distinct_id=user.email if user else tenant_id or "N/A",
-            event_type=MilestoneRecordType.CREATED_CONNECTOR,
-            properties=None,
-            db_session=db_session,
+        mt_cloud_telemetry(
+            tenant_id=tenant_id,
+            distinct_id=str(user.id),
+            event=MilestoneRecordType.CREATED_CONNECTOR,
         )
 
         return connector_response
@@ -1227,16 +1647,13 @@ def create_connector_with_mock_credential(
         )
 
         logger.info(
-            f"create_connector_with_mock_credential - running check_for_indexing: "
-            f"cc_pair={response.data}"
+            f"create_connector_with_mock_credential - running check_for_indexing: cc_pair={response.data}"
         )
 
-        create_milestone_and_report(
-            user=user,
-            distinct_id=user.email if user else tenant_id or "N/A",
-            event_type=MilestoneRecordType.CREATED_CONNECTOR,
-            properties=None,
-            db_session=db_session,
+        mt_cloud_telemetry(
+            tenant_id=tenant_id,
+            distinct_id=str(user.id),
+            event=MilestoneRecordType.CREATED_CONNECTOR,
         )
         return response
 
@@ -1248,7 +1665,7 @@ def create_connector_with_mock_credential(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.patch("/admin/connector/{connector_id}")
+@router.patch("/admin/connector/{connector_id}", tags=PUBLIC_API_TAGS)
 def update_connector_from_model(
     connector_id: int,
     connector_data: ConnectorUpdateRequest,
@@ -1295,7 +1712,11 @@ def update_connector_from_model(
     )
 
 
-@router.delete("/admin/connector/{connector_id}", response_model=StatusResponse[int])
+@router.delete(
+    "/admin/connector/{connector_id}",
+    response_model=StatusResponse[int],
+    tags=PUBLIC_API_TAGS,
+)
 def delete_connector_by_id(
     connector_id: int,
     _: User = Depends(current_curator_or_admin_user),
@@ -1311,7 +1732,7 @@ def delete_connector_by_id(
         raise HTTPException(status_code=400, detail="Connector is not deletable")
 
 
-@router.post("/admin/connector/run-once")
+@router.post("/admin/connector/run-once", tags=PUBLIC_API_TAGS)
 def connector_run_once(
     run_info: RunConnectorRequest,
     _: User = Depends(current_curator_or_admin_user),
@@ -1376,7 +1797,9 @@ def connector_run_once(
 
 @router.get("/connector/gmail/authorize/{credential_id}")
 def gmail_auth(
-    response: Response, credential_id: str, _: User = Depends(current_user)
+    response: Response,
+    credential_id: str,
+    _: User = Depends(require_permission(Permission.BASIC_ACCESS)),
 ) -> AuthUrl:
     # set a cookie that we can read in the callback (used for `verify_csrf`)
     response.set_cookie(
@@ -1390,7 +1813,9 @@ def gmail_auth(
 
 @router.get("/connector/google-drive/authorize/{credential_id}")
 def google_drive_auth(
-    response: Response, credential_id: str, _: User = Depends(current_user)
+    response: Response,
+    credential_id: str,
+    _: User = Depends(require_permission(Permission.BASIC_ACCESS)),
 ) -> AuthUrl:
     # set a cookie that we can read in the callback (used for `verify_csrf`)
     response.set_cookie(
@@ -1408,7 +1833,7 @@ def google_drive_auth(
 def gmail_callback(
     request: Request,
     callback: GmailCallback = Depends(),
-    user: User = Depends(current_user),
+    user: User = Depends(require_permission(Permission.BASIC_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> StatusResponse:
     credential_id_cookie = request.cookies.get(_GMAIL_CREDENTIAL_ID_COOKIE_NAME)
@@ -1438,7 +1863,7 @@ def gmail_callback(
 def google_drive_callback(
     request: Request,
     callback: GDriveCallback = Depends(),
-    user: User = Depends(current_user),
+    user: User = Depends(require_permission(Permission.BASIC_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> StatusResponse:
     credential_id_cookie = request.cookies.get(_GOOGLE_DRIVE_CREDENTIAL_ID_COOKIE_NAME)
@@ -1465,9 +1890,9 @@ def google_drive_callback(
     return StatusResponse(success=True, message="Updated Google Drive access tokens")
 
 
-@router.get("/connector")
+@router.get("/connector", tags=PUBLIC_API_TAGS)
 def get_connectors(
-    _: User = Depends(current_user),
+    _: User = Depends(require_permission(Permission.BASIC_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> list[ConnectorSnapshot]:
     connectors = fetch_connectors(db_session)
@@ -1480,9 +1905,9 @@ def get_connectors(
     ]
 
 
-@router.get("/indexed-sources")
+@router.get("/indexed-sources", tags=PUBLIC_API_TAGS)
 def get_indexed_sources(
-    _: User | None = Depends(current_user),
+    _: User = Depends(require_permission(Permission.BASIC_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> IndexedSourcesResponse:
     sources = sorted(
@@ -1491,10 +1916,10 @@ def get_indexed_sources(
     return IndexedSourcesResponse(sources=sources)
 
 
-@router.get("/connector/{connector_id}")
+@router.get("/connector/{connector_id}", tags=PUBLIC_API_TAGS)
 def get_connector_by_id(
     connector_id: int,
-    _: User = Depends(current_user),
+    _: User = Depends(require_permission(Permission.BASIC_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> ConnectorSnapshot | StatusResponse[int]:
     connector = fetch_connector_by_id(connector_id, db_session)
@@ -1520,12 +1945,90 @@ def get_connector_by_id(
     )
 
 
+@router.post("/connector-request")
+def submit_connector_request(
+    request_data: ConnectorRequestSubmission,
+    user: User = Depends(require_permission(Permission.BASIC_ACCESS)),
+) -> StatusResponse:
+    """
+    Submit a connector request for Cloud deployments.
+    Tracks via PostHog telemetry and sends email to hello@onyx.app.
+    """
+    tenant_id = get_current_tenant_id()
+    connector_name = request_data.connector_name.strip()
+
+    if not connector_name:
+        raise HTTPException(status_code=400, detail="Connector name cannot be empty")
+
+    user_email = user.email
+
+    # Track connector request via PostHog telemetry (Cloud only)
+    from shared_configs.configs import MULTI_TENANT
+
+    if MULTI_TENANT:
+        mt_cloud_telemetry(
+            tenant_id=tenant_id,
+            distinct_id=str(user.id),
+            event=MilestoneRecordType.REQUESTED_CONNECTOR,
+            properties={
+                "connector_name": connector_name,
+                "user_email": user.email,
+            },
+        )
+
+    # Send email notification (if email is configured)
+    if EMAIL_CONFIGURED:
+        try:
+            subject = "Onyx Craft Connector Request"
+            email_body_text = f"""A new connector request has been submitted:
+
+Connector Name: {connector_name}
+User Email: {user_email or "Not provided (anonymous user)"}
+Tenant ID: {tenant_id}
+"""
+            email_body_html = f"""<html>
+<body>
+<p>A new connector request has been submitted:</p>
+<ul>
+<li><strong>Connector Name:</strong> {connector_name}</li>
+<li><strong>User Email:</strong> {user_email or "Not provided (anonymous user)"}</li>
+<li><strong>Tenant ID:</strong> {tenant_id}</li>
+</ul>
+</body>
+</html>"""
+
+            send_email(
+                user_email="hello@onyx.app",
+                subject=subject,
+                html_body=email_body_html,
+                text_body=email_body_text,
+            )
+            logger.info(
+                f"Connector request email sent to hello@onyx.app for connector: {connector_name}"
+            )
+        except Exception as e:
+            # Log error but don't fail the request if email fails
+            logger.error(
+                f"Failed to send connector request email for {connector_name}: {e}"
+            )
+
+    logger.info(
+        f"Connector request submitted: {connector_name} by user {user_email or 'anonymous'} (tenant: {tenant_id})"
+    )
+
+    return StatusResponse(
+        success=True,
+        message="Connector request submitted successfully. We'll prioritize popular requests!",
+    )
+
+
 class BasicCCPairInfo(BaseModel):
     has_successful_run: bool
     source: DocumentSource
+    status: ConnectorCredentialPairStatus
 
 
-@router.get("/connector-status")
+@router.get("/connector-status", tags=PUBLIC_API_TAGS)
 def get_basic_connector_indexing_status(
     user: User = Depends(current_chat_accessible_user),
     db_session: Session = Depends(get_session),
@@ -1536,13 +2039,17 @@ def get_basic_connector_indexing_status(
         get_editable=False,
         user=user,
     )
+
+    # NOTE: This endpoint excludes Craft connectors
     return [
         BasicCCPairInfo(
             has_successful_run=cc_pair.last_successful_index_time is not None,
             source=cc_pair.connector.source,
+            status=cc_pair.status,
         )
         for cc_pair in cc_pairs
         if cc_pair.connector.source != DocumentSource.INGESTION_API
+        and cc_pair.processing_mode == ProcessingMode.REGULAR
     ]
 
 
@@ -1552,7 +2059,6 @@ def trigger_indexing_for_cc_pair(
     from_beginning: bool,
     tenant_id: str,
     db_session: Session,
-    is_user_file: bool = False,
 ) -> int:
     try:
         possible_credential_ids = get_connector_credential_ids(connector_id, db_session)
@@ -1616,8 +2122,9 @@ def trigger_indexing_for_cc_pair(
                 f"indexing_trigger={indexing_mode}"
             )
 
+    priority = OnyxCeleryPriority.HIGH
+
     # run the beat task to pick up the triggers immediately
-    priority = OnyxCeleryPriority.HIGHEST if is_user_file else OnyxCeleryPriority.HIGH
     logger.info(f"Sending indexing check task with priority {priority}")
     client_app.send_task(
         OnyxCeleryTask.CHECK_FOR_INDEXING,

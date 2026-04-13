@@ -359,16 +359,11 @@ def build_user_email_invite(
         )
         message += ("<p>The EEA AI Hub is a restricted-access application designed as a safe environment to explore the potential benefits and risks of using EEA's public content with state-of-the-art Large Language Models (LLMs). The application is for experimental purposes only, with access limited to users with EEA email addresses and selected partners. AI Hub is built with a robust privacy architecture to ensure that sensitive and personal information is not sent to third-party LLM AI providers.<br/>"
             "See <a href='https://gptlab.eea.europa.eu/pages/privacy'>Privacy Architecture</a>.<p>")
+
     elif auth_type == AuthType.GOOGLE_OAUTH:
-        message += (
-            "<p>To join the organization, please click the button below to login with Google "
-            "and complete your registration.</p>"
-        )
+        message += "<p>To join the organization, please click the button below to login with Google and complete your registration.</p>"
     elif auth_type == AuthType.OIDC or auth_type == AuthType.SAML:
-        message += (
-            "<p>To join the organization, please click the button below to"
-            " complete your registration.</p>"
-        )
+        message += "<p>To join the organization, please click the button below to complete your registration.</p>"
     else:
         raise ValueError(f"Invalid auth type: {auth_type}")
 

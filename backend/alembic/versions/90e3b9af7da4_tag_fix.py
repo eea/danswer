@@ -16,7 +16,6 @@ from typing import Generator
 from alembic import op
 import sqlalchemy as sa
 
-from onyx.document_index.factory import get_default_document_index
 from onyx.document_index.vespa_constants import DOCUMENT_ID_ENDPOINT
 from onyx.db.search_settings import SearchSettings
 from onyx.configs.app_configs import AUTH_TYPE
@@ -126,14 +125,11 @@ def remove_old_tags() -> None:
     the document got reindexed, the old tag would not be removed.
     This function removes those old tags by comparing it against the tags in vespa.
     """
-    current_search_settings, future_search_settings = active_search_settings()
-    document_index = get_default_document_index(
-        current_search_settings, future_search_settings
-    )
+    current_search_settings, _ = active_search_settings()
 
     # Get the index name
-    if hasattr(document_index, "index_name"):
-        index_name = document_index.index_name
+    if hasattr(current_search_settings, "index_name"):
+        index_name = current_search_settings.index_name
     else:
         # Default index name if we can't get it from the document_index
         index_name = "danswer_index"
@@ -164,7 +160,7 @@ def remove_old_tags() -> None:
                     f"""
                     DELETE FROM document__tag
                     WHERE document_id = '{document_id}'
-                    AND tag_id IN ({','.join(to_delete)})
+                    AND tag_id IN ({",".join(to_delete)})
                     """
                 )
             )
@@ -243,7 +239,7 @@ def _get_batch_documents_with_multiple_tags(
         ).fetchall()
         if not batch:
             break
-        doc_ids = [document_id for document_id, in batch]
+        doc_ids = [document_id for (document_id,) in batch]
         yield doc_ids
         offset_clause = f"AND document__tag.document_id > '{doc_ids[-1]}'"
 

@@ -1,3 +1,4 @@
+import os
 from datetime import datetime
 
 import jwt
@@ -9,9 +10,10 @@ from fastapi import status
 from ee.onyx.configs.app_configs import SUPER_CLOUD_API_KEY
 from ee.onyx.configs.app_configs import SUPER_USERS
 from ee.onyx.server.seeding import get_seed_config
-from onyx.auth.users import current_admin_user
+from onyx.auth.permissions import require_permission
 from onyx.configs.app_configs import AUTH_TYPE
 from onyx.configs.app_configs import USER_AUTH_SECRET
+from onyx.db.enums import Permission
 from onyx.db.models import User
 from onyx.utils.logger import setup_logger
 
@@ -20,7 +22,12 @@ logger = setup_logger()
 
 
 def verify_auth_setting() -> None:
-    # All the Auth flows are valid for EE version
+    # All the Auth flows are valid for EE version, but warn about deprecated 'disabled'
+    raw_auth_type = (os.environ.get("AUTH_TYPE") or "").lower()
+    if raw_auth_type == "disabled":
+        logger.warning(
+            "AUTH_TYPE='disabled' is no longer supported. Using 'basic' instead. Please update your configuration."
+        )
     logger.notice(f"Using Auth Type: {AUTH_TYPE.value}")
 
 
@@ -33,8 +40,8 @@ def get_default_admin_user_emails_() -> list[str]:
 
 async def current_cloud_superuser(
     request: Request,
-    user: User | None = Depends(current_admin_user),
-) -> User | None:
+    user: User = Depends(require_permission(Permission.FULL_ADMIN_PANEL_ACCESS)),
+) -> User:
     api_key = request.headers.get("Authorization", "").replace("Bearer ", "")
     if api_key != SUPER_CLOUD_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")

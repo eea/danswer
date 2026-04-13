@@ -1,8 +1,8 @@
 "use client";
 
 import { PageSelector } from "@/components/PageSelector";
-import { PopupSpec } from "@/components/admin/connectors/Popup";
-import { EditIcon, TrashIcon } from "@/components/icons/icons";
+import { toast } from "@/hooks/useToast";
+import { EditIcon } from "@/components/icons/icons";
 import { SlackChannelConfig } from "@/lib/types";
 import {
   Table,
@@ -13,29 +13,25 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import Link from "next/link";
+import type { Route } from "next";
 import { useState } from "react";
 import { deleteSlackChannelConfig, isPersonaASlackBotPersona } from "./lib";
 import { Card } from "@/components/ui/card";
-import Button from "@/refresh-components/buttons/Button";
-import SvgSettings from "@/icons/settings";
 import CreateButton from "@/refresh-components/buttons/CreateButton";
-import IconButton from "@/refresh-components/buttons/IconButton";
-import SvgTrash from "@/icons/trash";
-
+import { Button } from "@opal/components";
+import { SvgSettings, SvgTrash } from "@opal/icons";
 const numToDisplay = 50;
 
 export interface SlackChannelConfigsTableProps {
   slackBotId: number;
   slackChannelConfigs: SlackChannelConfig[];
   refresh: () => void;
-  setPopup: (popupSpec: PopupSpec | null) => void;
 }
 
 export default function SlackChannelConfigsTable({
   slackBotId,
   slackChannelConfigs,
   refresh,
-  setPopup,
 }: SlackChannelConfigsTableProps) {
   const [page, setPage] = useState(1);
 
@@ -48,11 +44,11 @@ export default function SlackChannelConfigsTable({
     <div className="space-y-8">
       <div className="flex justify-between items-center mb-6">
         <Button
+          prominence="secondary"
           onClick={() => {
             window.location.href = `/admin/bots/${slackBotId}/channels/${defaultConfig?.id}`;
           }}
-          secondary
-          leftIcon={SvgSettings}
+          icon={SvgSettings}
         >
           Edit Default Configuration
         </Button>
@@ -102,7 +98,9 @@ export default function SlackChannelConfigsTable({
                           slackChannelConfig.persona
                         ) ? (
                           <Link
-                            href={`/assistants/${slackChannelConfig.persona.id}`}
+                            href={
+                              `/app/agents/edit/${slackChannelConfig.persona.id}` as Route
+                            }
                             className="text-primary hover:underline"
                           >
                             {slackChannelConfig.persona.name}
@@ -122,28 +120,27 @@ export default function SlackChannelConfigsTable({
                         </div>
                       </TableCell>
                       <TableCell onClick={(e) => e.stopPropagation()}>
-                        <IconButton
+                        <Button
                           onClick={async (e) => {
                             e.stopPropagation();
                             const response = await deleteSlackChannelConfig(
                               slackChannelConfig.id
                             );
                             if (response.ok) {
-                              setPopup({
-                                message: `Slack bot config "${slackChannelConfig.id}" deleted`,
-                                type: "success",
-                              });
+                              toast.success(
+                                `Slack bot config "${slackChannelConfig.id}" deleted`
+                              );
                             } else {
                               const errorMsg = await response.text();
-                              setPopup({
-                                message: `Failed to delete Slack bot config - ${errorMsg}`,
-                                type: "error",
-                              });
+                              toast.error(
+                                `Failed to delete Slack bot config - ${errorMsg}`
+                              );
                             }
                             refresh();
                           }}
                           icon={SvgTrash}
-                          internal
+                          prominence="tertiary"
+                          size="sm"
                         />
                       </TableCell>
                     </TableRow>

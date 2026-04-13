@@ -1,8 +1,6 @@
-import SvgFileText from "@/icons/file-text";
 import Text from "@/refresh-components/texts/Text";
-import IconButton from "@/refresh-components/buttons/IconButton";
-import SvgMaximize2 from "@/icons/maximize-2";
-
+import { Button } from "@opal/components";
+import { SvgFileText, SvgMaximize2 } from "@opal/icons";
 export interface AttachmentsProps {
   fileName: string;
   open?: () => void;
@@ -15,18 +13,21 @@ export default function Attachments({ fileName, open }: AttachmentsProps) {
         <SvgFileText className="w-[1.25rem] h-[1.25rem] stroke-text-02" />
       </div>
       <div className="flex flex-col px-2">
-        <Text secondaryAction>{fileName}</Text>
-        <Text secondaryBody text03>
+        <Text as="p" secondaryAction>
+          {fileName}
+        </Text>
+        <Text as="p" secondaryBody text03>
           Document
         </Text>
       </div>
 
       {open && (
-        <IconButton
+        <Button
           aria-label="Expand document"
           onClick={open}
           icon={SvgMaximize2}
-          internal
+          prominence="tertiary"
+          size="sm"
         />
       )}
     </div>

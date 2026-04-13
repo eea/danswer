@@ -4,7 +4,9 @@ from tests.integration.common_utils.managers.persona import PersonaManager
 from tests.integration.common_utils.test_models import DATestUser
 
 
-def test_unified_assistant(reset: None, admin_user: DATestUser) -> None:
+def test_unified_assistant(
+    reset: None, admin_user: DATestUser  # noqa: ARG001
+) -> None:  # noqa: ARG001
     """Combined test verifying unified assistant existence, tools, and starter messages."""
     # Fetch all personas
     personas = PersonaManager.get_all(admin_user)
@@ -31,18 +33,17 @@ def test_unified_assistant(reset: None, admin_user: DATestUser) -> None:
         "search, web browsing, and image generation"
         in unified_assistant.description.lower()
     )
-    assert unified_assistant.is_default_persona is True
-    assert unified_assistant.is_visible is True
-    assert unified_assistant.num_chunks == 25
+    assert unified_assistant.is_featured is True
+    assert unified_assistant.is_listed is True
 
     # Verify tools
     tools = unified_assistant.tools
     tool_names = [tool.name for tool in tools]
-    assert "SearchTool" in tool_names, "SearchTool not found in unified assistant"
+    assert "internal_search" in tool_names, "SearchTool not found in unified assistant"
     assert (
-        "ImageGenerationTool" in tool_names
+        "generate_image" in tool_names
     ), "ImageGenerationTool not found in unified assistant"
-    assert "WebSearchTool" in tool_names, "WebSearchTool not found in unified assistant"
+    assert "web_search" in tool_names, "WebSearchTool not found in unified assistant"
 
     # Verify no starter messages
     starter_messages = unified_assistant.starter_messages or []

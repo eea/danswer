@@ -1,43 +1,125 @@
 "use client";
 
-import { SEARCH_TOOL_ID } from "@/app/chat/components/tools/constants";
-import { useState, useEffect } from "react";
 import {
-  Popover,
-  PopoverContent,
-  PopoverMenu,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+  FILE_READER_TOOL_ID,
+  IMAGE_GENERATION_TOOL_ID,
+  PYTHON_TOOL_ID,
+  SEARCH_TOOL_ID,
+  WEB_SEARCH_TOOL_ID,
+} from "@/app/app/components/tools/constants";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import Popover, { PopoverMenu } from "@/refresh-components/Popover";
 import SwitchList, {
   SwitchListItem,
 } from "@/refresh-components/popovers/ActionsPopover/SwitchList";
-import { MinimalPersonaSnapshot } from "@/app/admin/assistants/interfaces";
+import { MinimalPersonaSnapshot } from "@/app/admin/agents/interfaces";
 import {
   MCPAuthenticationType,
   MCPAuthenticationPerformer,
+  ToolSnapshot,
 } from "@/lib/tools/interfaces";
-import { useAgentsContext } from "@/refresh-components/contexts/AgentsContext";
-import { useUser } from "@/components/user/UserProvider";
+import { useForcedTools } from "@/lib/hooks/useForcedTools";
+import useAgentPreferences from "@/hooks/useAgentPreferences";
+import { useUser } from "@/providers/UserProvider";
 import { FilterManager, useSourcePreferences } from "@/lib/hooks";
 import { listSourceMetadata } from "@/lib/sources";
-import SvgChevronRight from "@/icons/chevron-right";
-import SvgKey from "@/icons/key";
-import { MCPApiKeyModal } from "@/components/chat/MCPApiKeyModal";
+import MCPApiKeyModal from "@/components/chat/MCPApiKeyModal";
 import { ValidSources } from "@/lib/types";
 import { SourceMetadata } from "@/lib/search/interfaces";
 import { SourceIcon } from "@/components/SourceIcon";
-import { useChatContext } from "@/refresh-components/contexts/ChatContext";
-import IconButton from "@/refresh-components/buttons/IconButton";
-import SvgSliders from "@/icons/sliders";
+import { useAvailableTools } from "@/hooks/useAvailableTools";
+import useCCPairs from "@/hooks/useCCPairs";
+import { useLLMProviders } from "@/hooks/useLLMProviders";
+import { useVectorDbEnabled } from "@/providers/SettingsProvider";
 import InputTypeIn from "@/refresh-components/inputs/InputTypeIn";
 import { useToolOAuthStatus } from "@/lib/hooks/useToolOAuthStatus";
 import LineItem from "@/refresh-components/buttons/LineItem";
 import SimpleLoader from "@/refresh-components/loaders/SimpleLoader";
-import SvgActions from "@/icons/actions";
 import ActionLineItem from "@/refresh-components/popovers/ActionsPopover/ActionLineItem";
 import MCPLineItem, {
   MCPServer,
 } from "@/refresh-components/popovers/ActionsPopover/MCPLineItem";
+import { useProjectsContext } from "@/providers/ProjectsContext";
+import { SvgActions, SvgChevronRight, SvgKey, SvgSliders } from "@opal/icons";
+import { Button } from "@opal/components";
+
+function buildTooltipMessage(
+  actionDescription: string,
+  isConfigured: boolean,
+  canManageAction: boolean
+) {
+  const _CONFIGURE_MESSAGE = "Press the settings cog to enable.";
+  const _USER_NOT_ADMIN_MESSAGE = "Ask an admin to configure.";
+
+  if (isConfigured) {
+    return actionDescription;
+  }
+
+  if (canManageAction) {
+    return actionDescription + " " + _CONFIGURE_MESSAGE;
+  }
+
+  return actionDescription + " " + _USER_NOT_ADMIN_MESSAGE;
+}
+
+const TOOL_DESCRIPTIONS: Record<string, string> = {
+  [SEARCH_TOOL_ID]: "Search through connected knowledge to inform the answer.",
+  [IMAGE_GENERATION_TOOL_ID]: "Generate images based on a prompt.",
+  [WEB_SEARCH_TOOL_ID]: "Search the web for up-to-date information.",
+  [PYTHON_TOOL_ID]: "Execute code for complex analysis.",
+};
+
+const DEFAULT_TOOL_DESCRIPTION = "This action is not configured yet.";
+
+function getToolTooltip(
+  tool: ToolSnapshot,
+  isConfigured: boolean,
+  canManageAction: boolean
+): string {
+  const description =
+    (tool.in_code_tool_id && TOOL_DESCRIPTIONS[tool.in_code_tool_id]) ||
+    tool.description ||
+    DEFAULT_TOOL_DESCRIPTION;
+  return buildTooltipMessage(description, isConfigured, canManageAction);
+}
+
+const ADMIN_CONFIG_LINKS: Record<string, { href: string; tooltip: string }> = {
+  [IMAGE_GENERATION_TOOL_ID]: {
+    href: "/admin/configuration/image-generation",
+    tooltip: "Configure Image Generation",
+  },
+  [WEB_SEARCH_TOOL_ID]: {
+    href: "/admin/configuration/web-search",
+    tooltip: "Configure Web Search",
+  },
+  [PYTHON_TOOL_ID]: {
+    href: "/admin/configuration/code-interpreter",
+    tooltip: "Configure Code Interpreter",
+  },
+  KnowledgeGraphTool: {
+    href: "/admin/kg",
+    tooltip: "Configure Knowledge Graph",
+  },
+};
+
+const OPENAPI_ADMIN_CONFIG = {
+  href: "/admin/actions/open-api",
+  tooltip: "Manage OpenAPI Actions",
+};
+
+const getAdminConfigureInfo = (
+  tool: ToolSnapshot
+): { href: string; tooltip: string } | null => {
+  if (tool.in_code_tool_id && ADMIN_CONFIG_LINKS[tool.in_code_tool_id]) {
+    return ADMIN_CONFIG_LINKS[tool.in_code_tool_id] ?? null;
+  }
+
+  if (!tool.in_code_tool_id && !tool.mcp_server_id) {
+    return OPENAPI_ADMIN_CONFIG;
+  }
+
+  return null;
+};
 
 // Get source metadata for configured sources - deduplicated by source type
 function getConfiguredSources(
@@ -75,14 +157,14 @@ type SecondaryViewState =
   | { type: "mcp"; serverId: number };
 
 export interface ActionsPopoverProps {
-  selectedAssistant: MinimalPersonaSnapshot;
+  selectedAgent: MinimalPersonaSnapshot;
   filterManager: FilterManager;
   availableSources?: ValidSources[];
   disabled?: boolean;
 }
 
 export default function ActionsPopover({
-  selectedAssistant,
+  selectedAgent,
   filterManager,
   availableSources = [],
   disabled = false,
@@ -96,20 +178,96 @@ export default function ActionsPopover({
   // const [showTopShadow, setShowTopShadow] = useState(false);
   const { selectedSources, setSelectedSources } = filterManager;
   const [mcpServers, setMcpServers] = useState<MCPServer[]>([]);
+  const { llmProviders, isLoading: isLLMLoading } = useLLMProviders(
+    selectedAgent.id
+  );
+  const hasAnyProvider = !isLLMLoading && (llmProviders?.length ?? 0) > 0;
 
   // Use the OAuth hook
   const { getToolAuthStatus, authenticateTool } = useToolOAuthStatus(
-    selectedAssistant.id
+    selectedAgent.id
   );
 
-  const { enableAllSources, disableAllSources, toggleSource, isSourceEnabled } =
-    useSourcePreferences({
-      availableSources,
-      selectedSources,
-      setSelectedSources,
+  const {
+    sourcesInitialized,
+    enableSources,
+    enableAllSources: baseEnableAllSources,
+    disableAllSources: baseDisableAllSources,
+    toggleSource: baseToggleSource,
+    isSourceEnabled,
+  } = useSourcePreferences({
+    availableSources,
+    selectedSources,
+    setSelectedSources,
+  });
+
+  // Store previously enabled sources when search tool is disabled
+  const previouslyEnabledSourcesRef = useRef<SourceMetadata[]>([]);
+
+  const isDefaultAgent = selectedAgent.id === 0;
+
+  // Check if the search tool is explicitly enabled on this persona (admin enabled "Use Knowledge")
+  const hasSearchTool = selectedAgent.tools.some(
+    (tool) => tool.in_code_tool_id === SEARCH_TOOL_ID
+  );
+
+  // Get sources the agent has access to via document sets, hierarchy nodes, and attached documents
+  // Default agent has access to all sources
+  const agentAccessibleSources = useMemo(() => {
+    if (isDefaultAgent) {
+      return null; // null means "all accessible"
+    }
+
+    const sourceSet = new Set<string>();
+
+    // Add sources from document sets
+    selectedAgent.document_sets.forEach((docSet) => {
+      // Check cc_pair_summaries (regular connectors)
+      docSet.cc_pair_summaries?.forEach((ccPair) => {
+        // Normalize by removing federated_ prefix
+        const normalized = ccPair.source.replace("federated_", "");
+        sourceSet.add(normalized);
+      });
+
+      // Check federated_connector_summaries (federated connectors)
+      docSet.federated_connector_summaries?.forEach((fedConnector) => {
+        // Normalize by removing federated_ prefix
+        const normalized = fedConnector.source.replace("federated_", "");
+        sourceSet.add(normalized);
+      });
     });
 
-  // Store MCP server auth/loading state (tools are part of selectedAssistant.tools)
+    // Add sources from hierarchy nodes and attached documents (via knowledge_sources)
+    selectedAgent.knowledge_sources?.forEach((source) => {
+      // Normalize by removing federated_ prefix
+      const normalized = source.replace("federated_", "");
+      sourceSet.add(normalized);
+    });
+
+    // If agent has search tool but no specific sources, it can search everything
+    if (sourceSet.size === 0 && hasSearchTool) {
+      return null;
+    }
+
+    return sourceSet;
+  }, [
+    isDefaultAgent,
+    selectedAgent.document_sets,
+    selectedAgent.knowledge_sources,
+    hasSearchTool,
+  ]);
+
+  // Check if non-default agent has no knowledge sources (Internal Search should be disabled)
+  // Knowledge sources include document sets, hierarchy nodes, and attached documents
+  // If the search tool is present, the admin intentionally enabled knowledge search
+  const hasNoKnowledgeSources =
+    !isDefaultAgent &&
+    !hasSearchTool &&
+    selectedAgent.document_sets.length === 0 &&
+    (selectedAgent.hierarchy_node_count ?? 0) === 0 &&
+    (selectedAgent.attached_document_count ?? 0) === 0;
+
+  // Store MCP server auth/loading state (tools are part of selectedAgent.tools)
   const [mcpServerData, setMcpServerData] = useState<{
     [serverId: number]: {
       isAuthenticated: boolean;
@@ -134,27 +292,32 @@ export default function ActionsPopover({
     isAuthenticated: false,
   });
 
-  // Get the assistant preference for this assistant
-  const {
-    agentPreferences: assistantPreferences,
-    setSpecificAgentPreferences: setSpecificAssistantPreferences,
-    forcedToolIds,
-    setForcedToolIds,
-  } = useAgentsContext();
+  // Get the agent preference for this assistant
+  const { agentPreferences, setSpecificAgentPreferences } =
+    useAgentPreferences();
+  const { forcedToolIds, setForcedToolIds } = useForcedTools();
 
-  const { user, isAdmin, isCurator } = useUser();
+  // Reset state when assistant changes
+  useEffect(() => {
+    setForcedToolIds([]);
+  }, [selectedAgent.id, setForcedToolIds]);
 
-  const { availableTools, ccPairs } = useChatContext();
-  const availableToolIds = availableTools.map((tool) => tool.id);
+  const { isAdmin, isCurator } = useUser();
+  const vectorDbEnabled = useVectorDbEnabled();
+
+  const { tools: availableTools } = useAvailableTools();
+  const { ccPairs } = useCCPairs(vectorDbEnabled);
+  const { currentProjectId, allCurrentProjectFiles } = useProjectsContext();
+  const availableToolIdSet = new Set(availableTools.map((tool) => tool.id));
 
   // Check if there are any connectors available
   const hasNoConnectors = ccPairs.length === 0;
 
-  const assistantPreference = assistantPreferences?.[selectedAssistant.id];
-  const disabledToolIds = assistantPreference?.disabled_tool_ids || [];
-  const toggleToolForCurrentAssistant = (toolId: number) => {
+  const agentPreference = agentPreferences?.[selectedAgent.id];
+  const disabledToolIds = agentPreference?.disabled_tool_ids || [];
+  const toggleToolForCurrentAgent = (toolId: number) => {
     const disabled = disabledToolIds.includes(toolId);
-    setSpecificAssistantPreferences(selectedAssistant.id, {
+    setSpecificAgentPreferences(selectedAgent.id, {
       disabled_tool_ids: disabled
         ? disabledToolIds.filter((id) => id !== toolId)
         : [...disabledToolIds, toolId],
@@ -176,21 +339,144 @@ export default function ActionsPopover({
     }
   };
 
+  // Get internal search tool reference for auto-pin logic
+  const internalSearchTool = useMemo(
+    () =>
+      selectedAgent.tools.find(
+        (tool) => tool.in_code_tool_id === SEARCH_TOOL_ID && !tool.mcp_server_id
+      ),
+    [selectedAgent.tools]
+  );
+
+  // Handle explicit force toggle from ActionLineItem
+  const handleForceToggleWithTracking = useCallback(
+    (toolId: number, wasForced: boolean) => {
+      // If pinning internal search, enable all accessible sources
+      if (
+        !wasForced &&
+        internalSearchTool &&
+        toolId === internalSearchTool.id
+      ) {
+        const sources = getConfiguredSources(availableSources);
+        const accessibleSources = sources.filter(
+          (s) =>
+            agentAccessibleSources === null ||
+            agentAccessibleSources.has(s.uniqueKey)
+        );
+        setSelectedSources(accessibleSources);
+      }
+      toggleForcedTool(toolId);
+    },
+    [
+      toggleForcedTool,
+      internalSearchTool,
+      availableSources,
+      agentAccessibleSources,
+      setSelectedSources,
+    ]
+  );
+
+  // Wrapped source functions that auto-pin internal search when sources change
+  const enableAllSources = useCallback(() => {
+    // Only enable sources the agent has access to
+    const allConfiguredSources = getConfiguredSources(availableSources);
+    const accessibleSources = allConfiguredSources.filter(
+      (s) =>
+        agentAccessibleSources === null ||
+        agentAccessibleSources.has(s.uniqueKey)
+    );
+    setSelectedSources(accessibleSources);
+
+    if (internalSearchTool) {
+      setForcedToolIds([internalSearchTool.id]);
+    }
+  }, [
+    agentAccessibleSources,
+    availableSources,
+    setSelectedSources,
+    internalSearchTool,
+    setForcedToolIds,
+  ]);
+
+  const disableAllSources = useCallback(() => {
+    baseDisableAllSources();
+    const willUnpin =
+      internalSearchTool && forcedToolIds.includes(internalSearchTool.id);
+    if (willUnpin) {
+      setForcedToolIds([]);
+    }
+  }, [
+    baseDisableAllSources,
+    internalSearchTool,
+    forcedToolIds,
+    setForcedToolIds,
+  ]);
+
+  const toggleSource = useCallback(
+    (sourceUniqueKey: string) => {
+      const wasEnabled = isSourceEnabled(sourceUniqueKey);
+      baseToggleSource(sourceUniqueKey);
+
+      const configuredSources = getConfiguredSources(availableSources);
+
+      if (internalSearchTool) {
+        if (!wasEnabled) {
+          // Enabling a source - auto-pin internal search
+          setForcedToolIds([internalSearchTool.id]);
+        } else {
+          // Disabling a source - check if all sources will be disabled
+          const remainingEnabled = configuredSources.filter(
+            (s) =>
+              s.uniqueKey !== sourceUniqueKey && isSourceEnabled(s.uniqueKey)
+          );
+          if (
+            remainingEnabled.length === 0 &&
+            forcedToolIds.includes(internalSearchTool.id)
+          ) {
+            // All sources disabled - unpin
+            setForcedToolIds([]);
+          }
+        }
+      }
+    },
+    [
+      baseToggleSource,
+      internalSearchTool,
+      isSourceEnabled,
+      availableSources,
+      forcedToolIds,
+      setForcedToolIds,
+    ]
+  );
+
   // Filter out MCP tools from the main list (they have mcp_server_id)
-  // and filter out tools that are not available
   // Also filter out internal search tool for basic users when there are no connectors
-  const displayTools = selectedAssistant.tools.filter((tool) => {
+  // Also filter out tools that are not chat-selectable (e.g., OpenURL)
+  const displayTools = selectedAgent.tools.filter((tool) => {
     // Filter out MCP tools
     if (tool.mcp_server_id) return false;
+
+    // Filter out tools that are not chat-selectable (visibility set by backend)
+    if (!tool.chat_selectable) return false;
+
+    // Always hide File Reader from the actions popover
+    if (tool.in_code_tool_id === FILE_READER_TOOL_ID) return false;
+
+    // Special handling for Project Search
+    // Ensure Project Search is hidden if no files exist
+    if (tool.in_code_tool_id === SEARCH_TOOL_ID && !!currentProjectId) {
+      if (!allCurrentProjectFiles || allCurrentProjectFiles.length === 0) {
+        return false;
+      }
+      // If files exist, show it (even if backend thinks it's strictly unavailable due to no connectors)
+      return true;
+    }
 
     // Advertise to admin/curator users that they can connect an internal search tool
     // even if it's not available or has no connectors
     if (tool.in_code_tool_id === SEARCH_TOOL_ID && (isAdmin || isCurator)) {
       return true;
     }
-
-    // Filter out tools that are not available
-    if (!availableToolIds.includes(tool.id)) return false;
 
     // Filter out internal search tool for non-admin/curator users when there are no connectors
     if (
@@ -205,16 +491,21 @@ export default function ActionsPopover({
     return true;
   });
 
-  // Fetch MCP servers for the assistant on mount
+  const searchToolId =
+    displayTools.find((tool) => tool.in_code_tool_id === SEARCH_TOOL_ID)?.id ??
+    null;
+
+  // Fetch MCP servers for the agent on mount
   useEffect(() => {
-    if (selectedAssistant == null || selectedAssistant.id == null) return;
+    if (selectedAgent == null || selectedAgent.id == null || !hasAnyProvider)
+      return;
 
     const abortController = new AbortController();
 
     const fetchMCPServers = async () => {
       try {
         const response = await fetch(
-          `/api/mcp/servers/persona/${selectedAssistant.id}`,
+          `/api/mcp/servers/persona/${selectedAgent.id}`,
           {
             signal: abortController.signal,
           }
@@ -248,9 +539,9 @@ export default function ActionsPopover({
     return () => {
       abortController.abort();
     };
-  }, [selectedAssistant?.id]);
+  }, [selectedAgent?.id, hasAnyProvider]);
 
-  // No separate MCP tool loading; tools already exist in selectedAssistant.tools
+  // No separate MCP tool loading; tools already exist in selectedAgent.tools
 
   // Handle MCP authentication
   const handleMCPAuthenticate = async (
@@ -373,7 +664,17 @@ export default function ActionsPopover({
         serverId: server.id,
         serverName: server.name,
         authTemplate: server.auth_template,
-        onSuccess: undefined,
+        onSuccess: () => {
+          // Update the authentication state after successful credential submission
+          setMcpServerData((prev) => ({
+            ...prev,
+            [server.id]: {
+              ...prev[server.id],
+              isAuthenticated: true,
+              isLoading: false,
+            },
+          }));
+        },
         isAuthenticated: server.user_authenticated,
         existingCredentials: server.user_credentials,
       });
@@ -405,7 +706,7 @@ export default function ActionsPopover({
     : undefined;
   const selectedMcpTools =
     selectedMcpServerId !== null
-      ? selectedAssistant.tools.filter(
+      ? selectedAgent.tools.filter(
           (t) => t.mcp_server_id === Number(selectedMcpServerId)
         )
       : [];
@@ -430,7 +731,7 @@ export default function ActionsPopover({
     label: tool.display_name || tool.name,
     description: tool.description,
     isEnabled: !disabledToolIds.includes(tool.id),
-    onToggle: () => toggleToolForCurrentAssistant(tool.id),
+    onToggle: () => toggleToolForCurrentAgent(tool.id),
   }));
 
   const mcpAllDisabled = selectedMcpTools.every((tool) =>
@@ -441,7 +742,7 @@ export default function ActionsPopover({
     if (!selectedMcpServer) return;
     const serverToolIds = selectedMcpTools.map((tool) => tool.id);
     const merged = Array.from(new Set([...disabledToolIds, ...serverToolIds]));
-    setSpecificAssistantPreferences(selectedAssistant.id, {
+    setSpecificAgentPreferences(selectedAgent.id, {
       disabled_tool_ids: merged,
     });
     setForcedToolIds(forcedToolIds.filter((id) => !serverToolIds.includes(id)));
@@ -450,7 +751,7 @@ export default function ActionsPopover({
   const enableAllToolsForSelectedServer = () => {
     if (!selectedMcpServer) return;
     const serverToolIdSet = new Set(selectedMcpTools.map((tool) => tool.id));
-    setSpecificAssistantPreferences(selectedAssistant.id, {
+    setSpecificAgentPreferences(selectedAgent.id, {
       disabled_tool_ids: disabledToolIds.filter(
         (id) => !serverToolIdSet.has(id)
       ),
@@ -463,11 +764,21 @@ export default function ActionsPopover({
     }
   };
 
+  const handleOpenChange = (newOpen: boolean) => {
+    setOpen(newOpen);
+    if (newOpen) {
+      setSecondaryView(null);
+      setSearchTerm("");
+    }
+  };
+
   const mcpFooter = showActiveReauthRow ? (
     <LineItem
       onClick={handleFooterReauthClick}
       icon={selectedMcpServerData?.isLoading ? SimpleLoader : SvgKey}
-      rightChildren={<IconButton icon={SvgChevronRight} internal />}
+      rightChildren={
+        <Button icon={SvgChevronRight} prominence="tertiary" size="sm" />
+      }
     >
       Re-Authenticate
     </LineItem>
@@ -475,13 +786,97 @@ export default function ActionsPopover({
 
   const configuredSources = getConfiguredSources(availableSources);
 
-  const sourceToggleItems: SwitchListItem[] = configuredSources.map(
+  const numSourcesEnabled = configuredSources.filter((source) =>
+    isSourceEnabled(source.uniqueKey)
+  ).length;
+  const searchToolDisabled =
+    searchToolId !== null && disabledToolIds.includes(searchToolId);
+
+  // Sync search tool state with sources on mount/when states change
+  useEffect(() => {
+    if (searchToolId === null || !sourcesInitialized) return;
+
+    const hasEnabledSources = numSourcesEnabled > 0;
+    if (hasEnabledSources && searchToolDisabled) {
+      // Sources are enabled but search tool is disabled - enable it
+      toggleToolForCurrentAgent(searchToolId);
+    } else if (!hasEnabledSources && !searchToolDisabled) {
+      // No sources enabled but search tool is enabled - disable it
+      toggleToolForCurrentAgent(searchToolId);
+    }
+  }, [
+    searchToolId,
+    numSourcesEnabled,
+    searchToolDisabled,
+    sourcesInitialized,
+    toggleToolForCurrentAgent,
+  ]);
+
+  // Set search tool to a specific enabled/disabled state (only toggles if needed)
+  const setSearchToolEnabled = (enabled: boolean) => {
+    if (searchToolId === null) return;
+
+    if (enabled && searchToolDisabled) {
+      toggleToolForCurrentAgent(searchToolId);
+    } else if (!enabled && !searchToolDisabled) {
+      toggleToolForCurrentAgent(searchToolId);
+    }
+  };
+
+  const handleSourceToggle = (sourceUniqueKey: string) => {
+    const willEnable = !isSourceEnabled(sourceUniqueKey);
+    const newEnabledCount = numSourcesEnabled + (willEnable ? 1 : -1);
+
+    toggleSource(sourceUniqueKey);
+    setSearchToolEnabled(newEnabledCount > 0);
+  };
+
+  const handleDisableAllSources = () => {
+    disableAllSources();
+    setSearchToolEnabled(false);
+  };
+
+  const handleEnableAllSources = () => {
+    enableAllSources();
+    setSearchToolEnabled(true);
+  };
+
+  const handleToggleTool = (toolId: number) => {
+    const wasDisabled = disabledToolIds.includes(toolId);
+    toggleToolForCurrentAgent(toolId);
+
+    if (toolId === searchToolId) {
+      if (wasDisabled) {
+        // Enabling - restore previous sources or enable all (persisted to localStorage)
+        const previous = previouslyEnabledSourcesRef.current;
+        if (previous.length > 0) {
+          enableSources(previous);
+        } else {
+          baseEnableAllSources();
+        }
+        previouslyEnabledSourcesRef.current = [];
+      } else {
+        // Disabling - store current sources then disable all (persisted to localStorage)
+        previouslyEnabledSourcesRef.current = [...selectedSources];
+        baseDisableAllSources();
+      }
+    }
+  };
+
+  // Only show sources the agent has access to
+  const accessibleConfiguredSources = configuredSources.filter(
+    (source) =>
+      agentAccessibleSources === null ||
+      agentAccessibleSources.has(source.uniqueKey)
+  );
+
+  const sourceToggleItems: SwitchListItem[] = accessibleConfiguredSources.map(
     (source) => ({
       id: source.uniqueKey,
       label: source.displayName,
       leading: <SourceIcon sourceType={source.internalName} iconSize={16} />,
       isEnabled: isSourceEnabled(source.uniqueKey),
-      onToggle: () => toggleSource(source.uniqueKey),
+      onToggle: () => handleSourceToggle(source.uniqueKey),
     })
   );
 
@@ -489,8 +884,14 @@ export default function ActionsPopover({
     (source) => !isSourceEnabled(source.uniqueKey)
   );
 
+  // Count enabled sources for display (only accessible sources)
+  const enabledSourceCount = accessibleConfiguredSources.filter((source) =>
+    isSourceEnabled(source.uniqueKey)
+  ).length;
+  const totalSourceCount = accessibleConfiguredSources.length;
+
   const primaryView = (
-    <PopoverMenu medium>
+    <PopoverMenu>
       {[
         <InputTypeIn
           key="search"
@@ -498,27 +899,57 @@ export default function ActionsPopover({
           value={searchTerm}
           onChange={(event) => setSearchTerm(event.target.value)}
           autoFocus
-          internal
+          variant="internal"
         />,
 
         // Actions
-        ...filteredTools.map((tool) => (
-          <ActionLineItem
-            key={tool.id}
-            tool={tool}
-            disabled={disabledToolIds.includes(tool.id)}
-            isForced={forcedToolIds.includes(tool.id)}
-            onToggle={() => toggleToolForCurrentAssistant(tool.id)}
-            onForceToggle={() => {
-              toggleForcedTool(tool.id);
-              setOpen(false);
-            }}
-            onSourceManagementOpen={() => setSecondaryView({ type: "sources" })}
-            hasNoConnectors={hasNoConnectors}
-            toolAuthStatus={getToolAuthStatus(tool)}
-            onOAuthAuthenticate={() => authenticateTool(tool)}
-          />
-        )),
+        ...filteredTools.map((tool) =>
+          (() => {
+            const isToolAvailable = availableToolIdSet.has(tool.id);
+            const isUnavailable =
+              !isToolAvailable && tool.in_code_tool_id !== SEARCH_TOOL_ID;
+            const canAdminConfigure = isAdmin || isCurator;
+            const adminConfigureInfo =
+              isUnavailable && canAdminConfigure
+                ? getAdminConfigureInfo(tool)
+                : null;
+            return (
+              <ActionLineItem
+                key={tool.id}
+                tool={tool}
+                disabled={disabledToolIds.includes(tool.id)}
+                isForced={forcedToolIds.includes(tool.id)}
+                isUnavailable={isUnavailable}
+                tooltip={getToolTooltip(
+                  tool,
+                  isToolAvailable,
+                  canAdminConfigure
+                )}
+                showAdminConfigure={!!adminConfigureInfo}
+                adminConfigureHref={adminConfigureInfo?.href}
+                adminConfigureTooltip={adminConfigureInfo?.tooltip}
+                onToggle={() => handleToggleTool(tool.id)}
+                onForceToggle={() =>
+                  handleForceToggleWithTracking(
+                    tool.id,
+                    forcedToolIds.includes(tool.id)
+                  )
+                }
+                onSourceManagementOpen={() =>
+                  setSecondaryView({ type: "sources" })
+                }
+                hasNoConnectors={hasNoConnectors}
+                toolAuthStatus={getToolAuthStatus(tool)}
+                onOAuthAuthenticate={() => authenticateTool(tool)}
+                onClose={() => setOpen(false)}
+                sourceCounts={{
+                  enabled: enabledSourceCount,
+                  total: totalSourceCount,
+                }}
+              />
+            );
+          })()
+        ),
 
         // MCP Servers
         ...filteredMCPServers.map((server) => {
@@ -529,7 +960,7 @@ export default function ActionsPopover({
           };
 
           // Tools for this server come from assistant.tools
-          const serverTools = selectedAssistant.tools.filter(
+          const serverTools = selectedAgent.tools.filter(
             (t) => t.mcp_server_id === Number(server.id)
           );
           const enabledTools = serverTools.filter(
@@ -572,8 +1003,8 @@ export default function ActionsPopover({
       items={sourceToggleItems}
       searchPlaceholder="Search Filters"
       allDisabled={allSourcesDisabled}
-      onDisableAll={disableAllSources}
-      onEnableAll={enableAllSources}
+      onDisableAll={handleDisableAllSources}
+      onEnableAll={handleEnableAllSources}
       disableAllLabel="Disable All Sources"
       enableAllLabel="Enable All Sources"
       onBack={() => setSecondaryView(null)}
@@ -599,19 +1030,19 @@ export default function ActionsPopover({
 
   return (
     <>
-      <Popover open={open} onOpenChange={setOpen}>
-        <PopoverTrigger asChild>
+      <Popover open={open} onOpenChange={handleOpenChange}>
+        <Popover.Trigger asChild>
           <div data-testid="action-management-toggle">
-            <IconButton
-              icon={SvgSliders}
-              transient={open}
-              tertiary
-              tooltip="Manage Actions"
+            <Button
               disabled={disabled}
+              icon={SvgSliders}
+              interaction={open ? "hover" : "rest"}
+              prominence="tertiary"
+              tooltip="Manage Actions"
             />
           </div>
-        </PopoverTrigger>
-        <PopoverContent side="bottom" align="start">
+        </Popover.Trigger>
+        <Popover.Content side="bottom" align="start" width="lg">
           <div data-testid="tool-options">
             {secondaryView
               ? secondaryView.type === "mcp"
@@ -619,7 +1050,7 @@ export default function ActionsPopover({
                 : toolsView
               : primaryView}
           </div>
-        </PopoverContent>
+        </Popover.Content>
       </Popover>
 
       {/* MCP API Key Modal */}

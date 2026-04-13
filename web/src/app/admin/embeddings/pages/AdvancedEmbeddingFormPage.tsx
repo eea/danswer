@@ -1,7 +1,6 @@
 import React, { forwardRef } from "react";
 import { Formik, Form, FormikProps, FieldArray, Field } from "formik";
 import * as Yup from "yup";
-import { TrashIcon } from "@/components/icons/icons";
 import {
   AdvancedSearchConfiguration,
   EmbeddingPrecision,
@@ -16,13 +15,11 @@ import {
 import NumberInput from "../../connectors/[connector]/pages/ConnectorInput/NumberInput";
 import { StringOrNumberOption } from "@/components/Dropdown";
 import useSWR from "swr";
-import { LLM_CONTEXTUAL_COST_ADMIN_URL } from "../../configuration/llm/constants";
-import { getDisplayNameForModel } from "@/lib/hooks";
+import { LLM_CONTEXTUAL_COST_ADMIN_URL } from "@/lib/llmConfig/constants";
 import { errorHandlingFetcher } from "@/lib/fetcher";
 import Button from "@/refresh-components/buttons/Button";
-import SvgPlusCircle from "@/icons/plus-circle";
 import { NEXT_PUBLIC_CLOUD_ENABLED } from "@/lib/constants";
-
+import { SvgPlusCircle, SvgTrash } from "@opal/icons";
 // Number of tokens to show cost calculation for
 const COST_CALCULATION_TOKENS = 1_000_000;
 
@@ -67,7 +64,8 @@ const AdvancedEmbeddingFormPage = forwardRef<
       () =>
         (contextualCosts || []).map((cost) => {
           return {
-            name: getDisplayNameForModel(cost.model_name),
+            // Use model_name as display - contextual costs don't have display_name field
+            name: cost.model_name,
             value: cost.model_name,
           };
         }),
@@ -118,10 +116,6 @@ const AdvancedEmbeddingFormPage = forwardRef<
                   return !enableContextualRag || value !== null;
                 }
               ),
-            disable_rerank_for_streaming: Yup.boolean(),
-            num_rerank: Yup.number()
-              .required("Number of results to rerank is required")
-              .min(1, "Must be at least 1"),
             embedding_precision: Yup.string().nullable(),
             reduced_dimension: Yup.number()
               .nullable()
@@ -189,10 +183,6 @@ const AdvancedEmbeddingFormPage = forwardRef<
                           return !enableContextualRag || value !== null;
                         }
                       ),
-                    disable_rerank_for_streaming: Yup.boolean(),
-                    num_rerank: Yup.number()
-                      .required("Number of results to rerank is required")
-                      .min(1, "Must be at least 1"),
                     embedding_precision: Yup.string().nullable(),
                     reduced_dimension: Yup.number()
                       .nullable()
@@ -232,54 +222,11 @@ const AdvancedEmbeddingFormPage = forwardRef<
         >
           {({ values }) => (
             <Form>
-              <FieldArray name="multilingual_expansion">
-                {({ push, remove }) => (
-                  <div className="w-full">
-                    <Label>Multi-lingual Expansion</Label>
-
-                    <SubLabel>Add additional languages to the search.</SubLabel>
-                    {values.multilingual_expansion.map(
-                      (_: any, index: number) => (
-                        <div key={index} className="w-full flex mb-4">
-                          <Field
-                            name={`multilingual_expansion.${index}`}
-                            className={`w-full bg-input text-sm p-2  border border-border-medium rounded-md
-                                      focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 mr-2`}
-                          />
-                          <button
-                            type="button"
-                            onClick={() => remove(index)}
-                            className={`p-2 my-auto bg-input flex-none rounded-md 
-                              bg-red-500 text-white hover:bg-red-600
-                              focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-opacity-50`}
-                          >
-                            <TrashIcon className="text-white my-auto" />
-                          </button>
-                        </div>
-                      )
-                    )}
-                    <Button
-                      leftIcon={SvgPlusCircle}
-                      onClick={() => push("")}
-                      className="bg-rose-500 hover:bg-rose-600"
-                    >
-                      Add Language
-                    </Button>
-                  </div>
-                )}
-              </FieldArray>
-
               <BooleanFormField
                 subtext="Enable multipass indexing for both mini and large chunks."
                 optional
                 label="Multipass Indexing"
                 name="multipass_indexing"
-              />
-              <BooleanFormField
-                subtext="Disable reranking for streaming to improve response time."
-                optional
-                label="Disable Rerank for Streaming"
-                name="disable_rerank_for_streaming"
               />
               <BooleanFormField
                 subtext={
@@ -336,13 +283,6 @@ const AdvancedEmbeddingFormPage = forwardRef<
                     </div>
                   )}
               </div>
-              <NumberInput
-                description="Number of results to rerank"
-                optional={false}
-                label="Number of Results to Rerank"
-                name="num_rerank"
-              />
-
               <SelectorFormField
                 name="embedding_precision"
                 label="Embedding Precision"
@@ -351,9 +291,9 @@ const AdvancedEmbeddingFormPage = forwardRef<
               />
 
               <NumberInput
-                description="Number of dimensions to reduce the embedding to. 
-              Will reduce memory usage but may reduce accuracy. 
-              If not specified, will just use the selected model's default dimensionality without any reduction. 
+                description="Number of dimensions to reduce the embedding to.
+              Will reduce memory usage but may reduce accuracy.
+              If not specified, will just use the selected model's default dimensionality without any reduction.
               Currently only supported for OpenAI embedding models"
                 optional={true}
                 label="Reduced Dimension"

@@ -1,5 +1,5 @@
 import { ThreeDotsLoader } from "@/components/Loading";
-import { Modal } from "@/components/Modal";
+import Modal from "@/refresh-components/Modal";
 import { errorHandlingFetcher } from "@/lib/fetcher";
 import {
   ConnectorIndexingStatusLite,
@@ -7,11 +7,15 @@ import {
   FailedConnectorIndexingStatus,
   ValidStatuses,
 } from "@/lib/types";
-import Text from "@/components/ui/text";
+import { Text } from "@opal/components";
+import { markdown } from "@opal/utils";
+import Spacer from "@/refresh-components/Spacer";
 import Title from "@/components/ui/title";
 import Button from "@/refresh-components/buttons/Button";
+import { Button as OpalButton } from "@opal/components";
 import { useMemo, useState } from "react";
 import useSWR, { mutate } from "swr";
+import { SWR_KEYS } from "@/lib/swr-keys";
 import { ReindexingProgressTable } from "../../../../components/embedding/ReindexingProgressTable";
 import { ErrorCallout } from "@/components/ErrorCallout";
 import {
@@ -20,8 +24,10 @@ import {
 } from "../../../../components/embedding/interfaces";
 import { Connector } from "@/lib/connectors/connectors";
 import { FailedReIndexAttempts } from "@/components/embedding/FailedReIndexAttempts";
-import { usePopup } from "@/components/admin/connectors/Popup";
 import { useConnectorIndexingStatusWithPagination } from "@/lib/hooks";
+import { SvgX } from "@opal/icons";
+import { ConnectorCredentialPairStatus } from "@/app/admin/connector/[ccPairId]/types";
+import { useVectorDbEnabled } from "@/providers/SettingsProvider";
 
 export default function UpgradingPage({
   futureEmbeddingModel,
@@ -29,12 +35,12 @@ export default function UpgradingPage({
   futureEmbeddingModel: CloudEmbeddingModel | HostedEmbeddingModel;
 }) {
   const [isCancelling, setIsCancelling] = useState<boolean>(false);
+  const vectorDbEnabled = useVectorDbEnabled();
 
-  const { setPopup, popup } = usePopup();
   const { data: connectors, isLoading: isLoadingConnectors } = useSWR<
     Connector<any>[]
-  >("/api/manage/connector", errorHandlingFetcher, {
-    refreshInterval: 5000, // 5 seconds
+  >(vectorDbEnabled ? SWR_KEYS.connector : null, errorHandlingFetcher, {
+    refreshInterval: 5000,
   });
 
   const {
@@ -42,7 +48,8 @@ export default function UpgradingPage({
     isLoading: isLoadingOngoingReIndexingStatus,
   } = useConnectorIndexingStatusWithPagination(
     { secondary_index: true, get_all_connectors: true },
-    5000
+    5000,
+    vectorDbEnabled
   ) as {
     data: ConnectorIndexingStatusLiteResponse[];
     isLoading: boolean;
@@ -51,9 +58,11 @@ export default function UpgradingPage({
   const { data: failedIndexingStatus } = useSWR<
     FailedConnectorIndexingStatus[]
   >(
-    "/api/manage/admin/connector/failed-indexing-status?secondary_index=true",
+    vectorDbEnabled
+      ? "/api/manage/admin/connector/failed-indexing-status?secondary_index=true"
+      : null,
     errorHandlingFetcher,
-    { refreshInterval: 5000 } // 5 seconds
+    { refreshInterval: 5000 }
   );
 
   const onCancel = async () => {
@@ -61,7 +70,7 @@ export default function UpgradingPage({
       method: "POST",
     });
     if (response.ok) {
-      mutate("/api/search-settings/get-secondary-search-settings");
+      mutate(SWR_KEYS.secondarySearchSettings);
     } else {
       alert(
         `Failed to cancel embedding model update - ${await response.text()}`
@@ -90,8 +99,21 @@ export default function UpgradingPage({
       .filter((status) => status.cc_pair_id !== undefined);
   }, [connectorIndexingStatuses]);
 
+  const visibleReindexingStatus = useMemo(() => {
+    const statuses = ongoingReIndexingStatus || [];
+
+    if (futureEmbeddingModel.switchover_type === "active_only") {
+      return statuses.filter(
+        (status) =>
+          status.cc_pair_status !== ConnectorCredentialPairStatus.PAUSED
+      );
+    }
+
+    return statuses;
+  }, [futureEmbeddingModel.switchover_type, ongoingReIndexingStatus]);
+
   const sortedReindexingProgress = useMemo(() => {
-    return [...(ongoingReIndexingStatus || [])].sort((a, b) => {
+    return [...(visibleReindexingStatus || [])].sort((a, b) => {
       const statusComparison =
         statusOrder[a.last_status || "not_started"] -
         statusOrder[b.last_status || "not_started"];
@@ -102,7 +124,9 @@ export default function UpgradingPage({
 
       return (a.cc_pair_id || 0) - (b.cc_pair_id || 0);
     });
-  }, [ongoingReIndexingStatus, statusOrder]);
+  }, [visibleReindexingStatus, statusOrder]);
+
+  const hasVisibleReindexingProgress = sortedReindexingProgress.length > 0;
 
   if (isLoadingConnectors || isLoadingOngoingReIndexingStatus) {
     return <ThreeDotsLoader />;
@@ -110,24 +134,30 @@ export default function UpgradingPage({
 
   return (
     <>
-      {popup}
       {isCancelling && (
-        <Modal
-          onOutsideClick={() => setIsCancelling(false)}
-          title="Cancel Embedding Model Switch"
-        >
-          <div>
-            <div>
-              Are you sure you want to cancel? Cancelling will revert to the
-              previous model and all progress will be lost.
-            </div>
-            <div className="mt-12 gap-x-2 w-full justify-end flex">
-              <Button onClick={onCancel}>Confirm</Button>
-              <Button onClick={() => setIsCancelling(false)} secondary>
+        <Modal open onOpenChange={() => setIsCancelling(false)}>
+          <Modal.Content width="sm" height="sm">
+            <Modal.Header
+              icon={SvgX}
+              title="Cancel Embedding Model Switch"
+              onClose={() => setIsCancelling(false)}
+            />
+            <Modal.Body>
+              <div>
+                Are you sure you want to cancel? Cancelling will revert to the
+                previous model and all progress will be lost.
+              </div>
+            </Modal.Body>
+            <Modal.Footer>
+              <OpalButton onClick={onCancel}>Confirm</OpalButton>
+              <OpalButton
+                prominence="secondary"
+                onClick={() => setIsCancelling(false)}
+              >
                 Cancel
-              </Button>
-            </div>
-          </div>
+              </OpalButton>
+            </Modal.Footer>
+          </Modal.Content>
         </Modal>
       )}
 
@@ -140,6 +170,7 @@ export default function UpgradingPage({
               {futureEmbeddingModel.model_name}
             </div>
 
+            {/* TODO(@raunakab): migrate to opal Button once className/iconClassName is resolved */}
             <Button
               danger
               className="mt-4"
@@ -168,44 +199,40 @@ export default function UpgradingPage({
                   {failedIndexingStatus && failedIndexingStatus.length > 0 && (
                     <FailedReIndexAttempts
                       failedIndexingStatuses={failedIndexingStatus}
-                      setPopup={setPopup}
                     />
                   )}
 
-                  <Text className="my-4">
-                    {futureEmbeddingModel.switchover_type === "active_only" ? (
-                      <>
-                        The table below shows the re-indexing progress of active
-                        (non-paused) connectors. Once all active connectors have
-                        been re-indexed successfully, the new model will be used
-                        for all search queries. Paused connectors will continue
-                        to be indexed in the background but won&apos;t block the
-                        switchover. Until then, we will use the old model so
-                        that no downtime is necessary during this transition.
-                        <br />
-                        Note: User file re-indexing progress is not shown. You
-                        will see this page until all active connectors are
-                        re-indexed!
-                      </>
-                    ) : (
-                      <>
-                        The table below shows the re-indexing progress of all
-                        existing connectors. Once all connectors have been
-                        re-indexed successfully, the new model will be used for
-                        all search queries. Until then, we will use the old
-                        model so that no downtime is necessary during this
-                        transition.
-                        <br />
-                        Note: User file re-indexing progress is not shown. You
-                        will see this page until all user files are re-indexed!
-                      </>
-                    )}
+                  <Spacer rem={1} />
+                  <Text as="p">
+                    {futureEmbeddingModel.switchover_type === "active_only"
+                      ? markdown(
+                          "The table below shows the re-indexing progress of active (non-paused) connectors. Once all active connectors have been re-indexed successfully, the new model will be used for all search queries. Paused connectors will continue to be indexed in the background but won't block the switchover. Until then, we will use the old model so that no downtime is necessary during this transition.\nNote: User file re-indexing progress is not shown. You will see this page until all active connectors are re-indexed!"
+                        )
+                      : markdown(
+                          "The table below shows the re-indexing progress of all existing connectors. Once all connectors have been re-indexed successfully, the new model will be used for all search queries. Until then, we will use the old model so that no downtime is necessary during this transition.\nNote: User file re-indexing progress is not shown. You will see this page until all user files are re-indexed!"
+                        )}
                   </Text>
+                  <Spacer rem={1} />
 
                   {sortedReindexingProgress ? (
-                    <ReindexingProgressTable
-                      reindexingProgress={sortedReindexingProgress}
-                    />
+                    <>
+                      {futureEmbeddingModel.switchover_type === "active_only" &&
+                        !hasVisibleReindexingProgress && (
+                          <>
+                            <Spacer rem={1} />
+                            <Text as="p">
+                              All connectors are currently paused, so none are
+                              blocking the switchover. Paused connectors will
+                              keep re-indexing in the background.
+                            </Text>
+                          </>
+                        )}
+                      {hasVisibleReindexingProgress && (
+                        <ReindexingProgressTable
+                          reindexingProgress={sortedReindexingProgress}
+                        />
+                      )}
+                    </>
                   ) : (
                     <ErrorCallout errorTitle="Failed to fetch re-indexing progress" />
                   )}

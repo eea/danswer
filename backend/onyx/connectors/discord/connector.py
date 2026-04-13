@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import AsyncGenerator
 from collections.abc import AsyncIterable
 from collections.abc import Iterable
 from datetime import datetime
@@ -10,17 +11,20 @@ from discord import Client
 from discord.channel import TextChannel
 from discord.channel import Thread
 from discord.enums import MessageType
+from discord.errors import LoginFailure
 from discord.flags import Intents
 from discord.message import Message as DiscordMessage
 
 from onyx.configs.app_configs import INDEX_BATCH_SIZE
 from onyx.configs.constants import DocumentSource
+from onyx.connectors.exceptions import CredentialInvalidError
 from onyx.connectors.interfaces import GenerateDocumentsOutput
 from onyx.connectors.interfaces import LoadConnector
 from onyx.connectors.interfaces import PollConnector
 from onyx.connectors.interfaces import SecondsSinceUnixEpoch
 from onyx.connectors.models import ConnectorMissingCredentialError
 from onyx.connectors.models import Document
+from onyx.connectors.models import HierarchyNode
 from onyx.connectors.models import ImageSection
 from onyx.connectors.models import TextSection
 from onyx.utils.logger import setup_logger
@@ -203,12 +207,23 @@ def _manage_async_retrieval(
 
     end_time: datetime | None = end
 
-    async def _async_fetch() -> AsyncIterable[Document]:
+    async def _async_fetch() -> AsyncGenerator[Document, None]:
         intents = Intents.default()
         intents.message_content = True
         async with Client(intents=intents) as discord_client:
-            asyncio.create_task(discord_client.start(token))
-            await discord_client.wait_until_ready()
+            start_task = asyncio.create_task(discord_client.start(token))
+            ready_task = asyncio.create_task(discord_client.wait_until_ready())
+
+            done, _ = await asyncio.wait(
+                {start_task, ready_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            # start() runs indefinitely once connected, so it only lands
+            # in `done` when login/connection failed — propagate the error.
+            if start_task in done:
+                ready_task.cancel()
+                start_task.result()
 
             filtered_channels: list[TextChannel] = await _fetch_filtered_channels(
                 discord_client=discord_client,
@@ -226,22 +241,23 @@ def _manage_async_retrieval(
 
     def run_and_yield() -> Iterable[Document]:
         loop = asyncio.new_event_loop()
+        async_gen = _async_fetch()
         try:
-            # Get the async generator
-            async_gen = _async_fetch()
-            # Convert to AsyncIterator
-            async_iter = async_gen.__aiter__()
             while True:
                 try:
-                    # Create a coroutine by calling anext with the async iterator
-                    next_coro = anext(async_iter)
-                    # Run the coroutine to get the next document
-                    doc = loop.run_until_complete(next_coro)
+                    doc = loop.run_until_complete(anext(async_gen))
                     yield doc
                 except StopAsyncIteration:
                     break
         finally:
-            loop.close()
+            # Must close the async generator before the loop so the Discord
+            # client's `async with` block can await its shutdown coroutine.
+            # The nested try/finally ensures the loop always closes even if
+            # aclose() raises (same pattern as cursor.close() before conn.close()).
+            try:
+                loop.run_until_complete(async_gen.aclose())
+            finally:
+                loop.close()
 
     return run_and_yield()
 
@@ -273,12 +289,25 @@ class DiscordConnector(PollConnector, LoadConnector):
         self._discord_bot_token = credentials["discord_bot_token"]
         return None
 
+    def validate_connector_settings(self) -> None:
+        loop = asyncio.new_event_loop()
+        try:
+            client = Client(intents=Intents.default())
+            try:
+                loop.run_until_complete(client.login(self.discord_bot_token))
+            except LoginFailure as e:
+                raise CredentialInvalidError(f"Invalid Discord bot token: {e}")
+            finally:
+                loop.run_until_complete(client.close())
+        finally:
+            loop.close()
+
     def _manage_doc_batching(
         self,
         start: datetime | None = None,
         end: datetime | None = None,
     ) -> GenerateDocumentsOutput:
-        doc_batch = []
+        doc_batch: list[Document | HierarchyNode] = []
         for doc in _manage_async_retrieval(
             token=self.discord_bot_token,
             requested_start_date_string=self.requested_start_date_string,

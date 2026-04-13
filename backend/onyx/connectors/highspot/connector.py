@@ -21,11 +21,11 @@ from onyx.connectors.interfaces import SecondsSinceUnixEpoch
 from onyx.connectors.interfaces import SlimConnectorWithPermSync
 from onyx.connectors.models import ConnectorMissingCredentialError
 from onyx.connectors.models import Document
+from onyx.connectors.models import HierarchyNode
 from onyx.connectors.models import SlimDocument
 from onyx.connectors.models import TextSection
-from onyx.file_processing.extract_file_text import ACCEPTED_DOCUMENT_FILE_EXTENSIONS
-from onyx.file_processing.extract_file_text import ACCEPTED_PLAIN_TEXT_FILE_EXTENSIONS
 from onyx.file_processing.extract_file_text import extract_file_text
+from onyx.file_processing.file_types import OnyxFileExtensions
 from onyx.indexing.indexing_heartbeat import IndexingHeartbeatInterface
 from onyx.utils.logger import setup_logger
 
@@ -112,8 +112,7 @@ class HighspotConnector(LoadConnector, PollConnector, SlimConnectorWithPermSync)
             ]
             if not spots_to_process:
                 raise ValueError(
-                    f"No valid spots found in Highspot. Found {spots} "
-                    f"but {self.spot_names} were requested."
+                    f"No valid spots found in Highspot. Found {spots} but {self.spot_names} were requested."
                 )
             return spots_to_process
 
@@ -144,7 +143,7 @@ class HighspotConnector(LoadConnector, PollConnector, SlimConnectorWithPermSync)
         """
         spots_to_process = self._fetch_spots_to_process()
 
-        doc_batch: list[Document] = []
+        doc_batch: list[Document | HierarchyNode] = []
         try:
             for spot in spots_to_process:
                 try:
@@ -309,10 +308,7 @@ class HighspotConnector(LoadConnector, PollConnector, SlimConnectorWithPermSync)
 
             elif (
                 is_valid_format
-                and (
-                    file_extension in ACCEPTED_PLAIN_TEXT_FILE_EXTENSIONS
-                    or file_extension in ACCEPTED_DOCUMENT_FILE_EXTENSIONS
-                )
+                and file_extension in OnyxFileExtensions.TEXT_AND_DOCUMENT_EXTENSIONS
                 and can_download
             ):
                 content_response = self.client.get_item_content(item_id)
@@ -364,9 +360,9 @@ class HighspotConnector(LoadConnector, PollConnector, SlimConnectorWithPermSync)
 
     def retrieve_all_slim_docs_perm_sync(
         self,
-        start: SecondsSinceUnixEpoch | None = None,
-        end: SecondsSinceUnixEpoch | None = None,
-        callback: IndexingHeartbeatInterface | None = None,
+        start: SecondsSinceUnixEpoch | None = None,  # noqa: ARG002
+        end: SecondsSinceUnixEpoch | None = None,  # noqa: ARG002
+        callback: IndexingHeartbeatInterface | None = None,  # noqa: ARG002
     ) -> GenerateSlimDocumentOutput:
         """
         Retrieve all document IDs from the configured spots.
@@ -382,7 +378,7 @@ class HighspotConnector(LoadConnector, PollConnector, SlimConnectorWithPermSync)
         """
         spots_to_process = self._fetch_spots_to_process()
 
-        slim_doc_batch: list[SlimDocument] = []
+        slim_doc_batch: list[SlimDocument | HierarchyNode] = []
         try:
             for spot in spots_to_process:
                 try:

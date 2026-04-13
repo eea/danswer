@@ -3,13 +3,13 @@ from abc import ABC
 from abc import abstractmethod
 from copy import copy
 
-from tokenizers import Encoding  # type: ignore
-from tokenizers import Tokenizer  # type: ignore
+from tokenizers import Encoding  # type: ignore[import-untyped]
+from tokenizers import Tokenizer
 
-from onyx.configs.model_configs import DOC_EMBEDDING_CONTEXT_SIZE
 from onyx.configs.model_configs import DOCUMENT_ENCODER_MODEL
 from onyx.context.search.models import InferenceChunk
 from onyx.utils.logger import setup_logger
+from shared_configs.configs import DOC_EMBEDDING_CONTEXT_SIZE
 from shared_configs.enums import EmbeddingProvider
 
 TRIM_SEP_PAT = "\n... {n} tokens removed...\n"
@@ -176,6 +176,32 @@ def get_tokenizer(
             )
             return _get_default_tokenizer()
     return _check_tokenizer_cache(provider_type, model_name)
+
+
+# Max characters per encode() call.
+_ENCODE_CHUNK_SIZE = 500_000
+
+
+def count_tokens(
+    text: str,
+    tokenizer: BaseTokenizer,
+    token_limit: int | None = None,
+) -> int:
+    """Count tokens, chunking the input to avoid tiktoken stack overflow.
+
+    If token_limit is provided and the text is large enough to require
+    multiple chunks (> 500k chars), stops early once the count exceeds it.
+    When early-exiting, the returned value exceeds token_limit but may be
+    less than the true full token count.
+    """
+    if len(text) <= _ENCODE_CHUNK_SIZE:
+        return len(tokenizer.encode(text))
+    total = 0
+    for start in range(0, len(text), _ENCODE_CHUNK_SIZE):
+        total += len(tokenizer.encode(text[start : start + _ENCODE_CHUNK_SIZE]))
+        if token_limit is not None and total > token_limit:
+            return total  # Already over — skip remaining chunks
+    return total
 
 
 def tokenizer_trim_content(

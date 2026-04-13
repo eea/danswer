@@ -1,6 +1,8 @@
+import threading
 from typing import Any
 from typing import cast
 from typing import List
+from unittest.mock import MagicMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
@@ -11,21 +13,21 @@ from onyx.connectors.models import Document
 from onyx.connectors.models import DocumentSource
 from onyx.connectors.models import ImageSection
 from onyx.connectors.models import TextSection
+from onyx.hooks.executor import HookSkipped
+from onyx.hooks.executor import HookSoftFailed
+from onyx.hooks.points.document_ingestion import DocumentIngestionResponse
+from onyx.hooks.points.document_ingestion import DocumentIngestionSection
 from onyx.indexing.chunker import Chunker
 from onyx.indexing.embedder import DefaultIndexingEmbedder
-from onyx.indexing.indexing_pipeline import _get_aggregated_chunk_boost_factor
+from onyx.indexing.indexing_pipeline import _apply_document_ingestion_hook
 from onyx.indexing.indexing_pipeline import add_contextual_summaries
 from onyx.indexing.indexing_pipeline import filter_documents
 from onyx.indexing.indexing_pipeline import process_image_sections
-from onyx.indexing.models import ChunkEmbedding
-from onyx.indexing.models import IndexChunk
+from onyx.llm.constants import LlmProviderNames
+from onyx.llm.model_response import Choice
+from onyx.llm.model_response import Message
+from onyx.llm.model_response import ModelResponse
 from onyx.llm.utils import get_max_input_tokens
-from onyx.natural_language_processing.search_nlp_models import (
-    ContentClassificationPrediction,
-)
-from shared_configs.configs import (
-    INDEXING_INFORMATION_CONTENT_CLASSIFICATION_CUTOFF_LENGTH,
-)
 
 
 def create_test_document(
@@ -144,123 +146,6 @@ def test_filter_documents_empty_batch() -> None:
     assert len(result) == 0
 
 
-# Tests for get_aggregated_boost_factor
-
-
-def create_test_chunk(
-    content: str, chunk_id: int = 0, doc_id: str = "test_doc"
-) -> IndexChunk:
-    doc = Document(
-        id=doc_id,
-        semantic_identifier="test doc",
-        sections=[],
-        source=DocumentSource.FILE,
-        metadata={},
-    )
-    return IndexChunk(
-        chunk_id=chunk_id,
-        content=content,
-        source_document=doc,
-        blurb=content[:50],  # First 50 chars as blurb
-        source_links={0: "test_link"},
-        section_continuation=False,
-        title_prefix="",
-        metadata_suffix_semantic="",
-        metadata_suffix_keyword="",
-        mini_chunk_texts=None,
-        large_chunk_id=None,
-        large_chunk_reference_ids=[],
-        embeddings=ChunkEmbedding(full_embedding=[], mini_chunk_embeddings=[]),
-        title_embedding=None,
-        image_file_id=None,
-        chunk_context="",
-        doc_summary="",
-        contextual_rag_reserved_tokens=200,
-    )
-
-
-def test_get_aggregated_boost_factor() -> None:
-    # Create test chunks - mix of short and long content
-    chunks = [
-        create_test_chunk("Short content", 0),
-        create_test_chunk(
-            "Long " * (INDEXING_INFORMATION_CONTENT_CLASSIFICATION_CUTOFF_LENGTH + 1), 1
-        ),
-        create_test_chunk("Another short chunk", 2),
-    ]
-
-    # Mock the classification model
-    mock_model = Mock()
-    mock_model.predict.return_value = [
-        ContentClassificationPrediction(predicted_label=1, content_boost_factor=0.8),
-        ContentClassificationPrediction(predicted_label=1, content_boost_factor=0.9),
-    ]
-
-    # Execute the function
-    boost_scores = _get_aggregated_chunk_boost_factor(
-        chunks=chunks, information_content_classification_model=mock_model
-    )
-
-    # Assertions
-    assert len(boost_scores) == 3
-
-    # Check that long content got default boost
-    assert boost_scores[1] == 1.0
-
-    # Check that short content got predicted boosts
-    assert boost_scores[0] == 0.8
-    assert boost_scores[2] == 0.9
-
-    # Verify model was only called once with the short chunks
-    mock_model.predict.assert_called_once()
-    assert len(mock_model.predict.call_args[0][0]) == 2
-
-
-def test_get_aggregated_boost_factorilure() -> None:
-    chunks = [
-        create_test_chunk("Short content 1", 0),
-        create_test_chunk("Short content 2", 1),
-    ]
-
-    # Mock model to fail on batch prediction but succeed on individual predictions
-    mock_model = Mock()
-    mock_model.predict.side_effect = [
-        Exception("Batch prediction failed"),  # First call fails
-        [
-            ContentClassificationPrediction(predicted_label=1, content_boost_factor=0.7)
-        ],  # Individual calls succeed
-        [ContentClassificationPrediction(predicted_label=1, content_boost_factor=0.8)],
-    ]
-
-    # Execute
-    boost_scores = _get_aggregated_chunk_boost_factor(
-        chunks=chunks, information_content_classification_model=mock_model
-    )
-
-    # Assertions
-    assert len(boost_scores) == 2
-    assert boost_scores == [0.7, 0.8]
-
-
-def test_get_aggregated_boost_factor_individual_failure() -> None:
-    chunks = [
-        create_test_chunk("Short content", 0),
-        create_test_chunk("Short content", 1),
-    ]
-
-    # Mock model to fail on both batch and individual prediction
-    mock_model = Mock()
-    mock_model.predict.side_effect = Exception("Prediction failed")
-
-    # Execute and verify it raises an exception
-    with pytest.raises(Exception) as exc_info:
-        _get_aggregated_chunk_boost_factor(
-            chunks=chunks, information_content_classification_model=mock_model
-        )
-
-    assert "Failed to predict content classification for chunk" in str(exc_info.value)
-
-
 @patch("onyx.llm.utils.GEN_AI_MAX_TOKENS", 4096)
 @pytest.mark.parametrize("enable_contextual_rag", [True, False])
 def test_contextual_rag(
@@ -292,21 +177,27 @@ def test_contextual_rag(
     indexing_documents = process_image_sections([document])
 
     mock_llm_invoke_count = 0
+    counter_lock = threading.Lock()
 
-    def mock_llm_invoke(self: Any, *args: Any, **kwargs: Any) -> Mock:
+    def mock_llm_invoke(
+        *args: Any, **kwargs: Any  # noqa: ARG001
+    ) -> ModelResponse:  # noqa: ARG001
         nonlocal mock_llm_invoke_count
-        mock_llm_invoke_count += 1
-        m = Mock()
-        m.content = f"Test{mock_llm_invoke_count}"
-        return m
+        with counter_lock:
+            mock_llm_invoke_count += 1
+        return ModelResponse(
+            id=f"test-{mock_llm_invoke_count}",
+            created="2024-01-01T00:00:00Z",
+            choice=Choice(message=Message(content=f"Test{mock_llm_invoke_count}")),
+        )
 
     llm_tokenizer = embedder.embedding_model.tokenizer
 
     mock_llm = Mock()
     mock_llm.config.max_input_tokens = get_max_input_tokens(
-        model_provider="openai", model_name="gtp-4o"
+        model_provider=LlmProviderNames.OPENAI, model_name="gpt-4o"
     )
-    mock_llm.invoke_langchain = mock_llm_invoke
+    mock_llm.invoke = mock_llm_invoke
 
     chunker = Chunker(
         tokenizer=embedder.embedding_model.tokenizer,
@@ -338,3 +229,148 @@ def test_contextual_rag(
             count += 1
         assert chunk.doc_summary == doc_summary
         assert chunk.chunk_context == chunk_context
+
+
+# ---------------------------------------------------------------------------
+# _apply_document_ingestion_hook
+# ---------------------------------------------------------------------------
+
+_PATCH_EXECUTE_HOOK = "onyx.indexing.indexing_pipeline.execute_hook"
+
+
+def _make_doc(
+    doc_id: str = "doc1",
+    sections: list[TextSection | ImageSection] | None = None,
+) -> Document:
+    if sections is None:
+        sections = [TextSection(text="Hello", link="http://example.com")]
+    return Document(
+        id=doc_id,
+        title="Test Doc",
+        semantic_identifier="test-doc",
+        sections=cast(list[TextSection | ImageSection], sections),
+        source=DocumentSource.FILE,
+        metadata={},
+    )
+
+
+def test_document_ingestion_hook_skipped_passes_through() -> None:
+    doc = _make_doc()
+    with patch(_PATCH_EXECUTE_HOOK, return_value=HookSkipped()):
+        result = _apply_document_ingestion_hook([doc], MagicMock())
+    assert result == [doc]
+
+
+def test_document_ingestion_hook_soft_failed_passes_through() -> None:
+    doc = _make_doc()
+    with patch(_PATCH_EXECUTE_HOOK, return_value=HookSoftFailed()):
+        result = _apply_document_ingestion_hook([doc], MagicMock())
+    assert result == [doc]
+
+
+def test_document_ingestion_hook_none_sections_drops_document() -> None:
+    doc = _make_doc()
+    with patch(
+        _PATCH_EXECUTE_HOOK,
+        return_value=DocumentIngestionResponse(
+            sections=None, rejection_reason="PII detected"
+        ),
+    ):
+        result = _apply_document_ingestion_hook([doc], MagicMock())
+    assert result == []
+
+
+def test_document_ingestion_hook_all_invalid_sections_drops_document() -> None:
+    """A non-empty list where every section has neither text nor image_file_id drops the doc."""
+    doc = _make_doc()
+    with patch(
+        _PATCH_EXECUTE_HOOK,
+        return_value=DocumentIngestionResponse(sections=[DocumentIngestionSection()]),
+    ):
+        result = _apply_document_ingestion_hook([doc], MagicMock())
+    assert result == []
+
+
+def test_document_ingestion_hook_empty_sections_drops_document() -> None:
+    doc = _make_doc()
+    with patch(
+        _PATCH_EXECUTE_HOOK,
+        return_value=DocumentIngestionResponse(sections=[]),
+    ):
+        result = _apply_document_ingestion_hook([doc], MagicMock())
+    assert result == []
+
+
+def test_document_ingestion_hook_rewrites_text_sections() -> None:
+    doc = _make_doc(sections=[TextSection(text="original", link="http://a.com")])
+    with patch(
+        _PATCH_EXECUTE_HOOK,
+        return_value=DocumentIngestionResponse(
+            sections=[DocumentIngestionSection(text="rewritten", link="http://b.com")]
+        ),
+    ):
+        result = _apply_document_ingestion_hook([doc], MagicMock())
+    assert len(result) == 1
+    assert len(result[0].sections) == 1
+    section = result[0].sections[0]
+    assert isinstance(section, TextSection)
+    assert section.text == "rewritten"
+    assert section.link == "http://b.com"
+
+
+def test_document_ingestion_hook_preserves_image_section_order() -> None:
+    """Hook receives all sections including images and controls final ordering."""
+    image = ImageSection(image_file_id="img-1", link=None)
+    doc = _make_doc(
+        sections=cast(
+            list[TextSection | ImageSection],
+            [TextSection(text="original", link=None), image],
+        )
+    )
+    # Hook moves the image before the text section
+    with patch(
+        _PATCH_EXECUTE_HOOK,
+        return_value=DocumentIngestionResponse(
+            sections=[
+                DocumentIngestionSection(image_file_id="img-1", link=None),
+                DocumentIngestionSection(text="rewritten", link=None),
+            ]
+        ),
+    ):
+        result = _apply_document_ingestion_hook([doc], MagicMock())
+    assert len(result) == 1
+    sections = result[0].sections
+    assert len(sections) == 2
+    assert (
+        isinstance(sections[0], ImageSection) and sections[0].image_file_id == "img-1"
+    )
+    assert isinstance(sections[1], TextSection) and sections[1].text == "rewritten"
+
+
+def test_document_ingestion_hook_mixed_batch() -> None:
+    """Drop one doc, rewrite another, pass through a third."""
+    doc_drop = _make_doc(doc_id="drop")
+    doc_rewrite = _make_doc(doc_id="rewrite")
+    doc_skip = _make_doc(doc_id="skip")
+
+    def _side_effect(**kwargs: Any) -> Any:
+        doc_id = kwargs["payload"]["document_id"]
+        if doc_id == "drop":
+            return DocumentIngestionResponse(sections=None)
+        if doc_id == "rewrite":
+            return DocumentIngestionResponse(
+                sections=[DocumentIngestionSection(text="new text", link=None)]
+            )
+        return HookSkipped()
+
+    with patch(_PATCH_EXECUTE_HOOK, side_effect=_side_effect):
+        result = _apply_document_ingestion_hook(
+            [doc_drop, doc_rewrite, doc_skip], MagicMock()
+        )
+
+    assert len(result) == 2
+    ids = {d.id for d in result}
+    assert ids == {"rewrite", "skip"}
+    rewritten = next(d for d in result if d.id == "rewrite")
+    assert isinstance(rewritten.sections[0], TextSection)
+    assert rewritten.sections[0].text == "new text"

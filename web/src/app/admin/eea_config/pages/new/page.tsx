@@ -3,17 +3,16 @@ import { use } from "react";
 
 //import { useDocumentSets } from "../hooks";
 import { AdminPageTitle } from "@/components/admin/Title";
-import { BackButton } from "@/components/BackButton";
+import BackButton from "@/refresh-components/buttons/BackButton";
 //import { DocumentSetCreationForm } from "../DocumentSetCreationForm";
 import { errorHandlingFetcher } from "@/lib/fetcher";
 import useSWR from "swr";
-import { usePopup } from "@/components/admin/connectors/Popup";
+import { useToast } from "@/hooks/useToast";
 import { LoadingAnimation } from "@/components/Loading";
 import { FiCpu } from "react-icons/fi";
 // import { Text, Title, Button } from "@tremor/react";
 import Button from "@/refresh-components/buttons/Button";
-import Text from "@/components/ui/text";
-import Title from "@/components/ui/title";
+import { Text } from "@opal/components";
 
 import { Form, Formik, Field } from "formik";
 import { TextFormField } from "@/components/Field";
@@ -38,27 +37,34 @@ export default function Page(props: { params: Promise<{ pageTitle: string }> }) 
     let pages: any = config_json?.pages || {};
     initial_page_text = pages[initial_page_title];
   }
-  const { popup, setPopup } = usePopup();
+  const { toast } = useToast();
   if (isLoading) {
     return <LoadingAnimation text="Loading" />;
   }
   return (
     <div>
-      {popup}
       <BackButton />
       <div className="mx-auto container">
         <AdminPageTitle
           title="Customize Layout"
           icon={<FiCpu size={32} className="my-auto" />}
         />
-        <Title className="mb-2 mt-6">Customize footer:</Title>
-        <Text className="mb-2">
+        <div className="mb-2 mt-6 font-heading-h2 text-text-04">
+          Customize footer:
+        </div>
+        <div className="mb-2 text-text-04 font-main-ui-body">
           Footer.
-        </Text>
+        </div>
         <div className="border rounded-md border-border p-3">
           <Formik
             initialValues={{ page_title: initial_page_title, page_text:initial_page_text}}
-            onSubmit={async ({ page_title, page_text }, formikHelpers) => {
+            onSubmit={async ({
+              page_title,
+              page_text,
+            }: {
+              page_title: string;
+              page_text: string;
+            }) => {
               console.log(config_json)
               let isDuplicated = false;
               for (const [key, value] of Object.entries(config_json?.pages || {})) {
@@ -67,7 +73,7 @@ export default function Page(props: { params: Promise<{ pageTitle: string }> }) 
                 }
               }
               if (isDuplicated){
-                setPopup({ message: "Duplicated page", type: "error" });
+                toast.error("Duplicated page title");
                 return;
               } else{
                 let pages: any = config_json?.pages || {};
@@ -87,13 +93,10 @@ export default function Page(props: { params: Promise<{ pageTitle: string }> }) 
               });
               console.log(response);
               if (!response?.ok) {
-                setPopup({
-                  message: `Error while saving the page: ${response.status} - ${response.statusText}`,
-                  type: "error",
-                });
+                toast.error(`Error while saving the page: ${response.status} - ${response.statusText}`);
                 return;
               } else {
-                setPopup({ message: "Page saved", type: "success" });
+                toast.success("Page saved successfully");
                 return;
               }
             }}

@@ -1,14 +1,16 @@
 "use client";
 
 import { LoadingAnimation } from "@/components/Loading";
-import { ThumbsUpIcon } from "@/components/icons/icons";
 import { useMostReactedToDocuments } from "@/lib/hooks";
 import { DocumentFeedbackTable } from "./DocumentFeedbackTable";
 import { numPages, numToDisplay } from "./constants";
-import { AdminPageTitle } from "@/components/admin/Title";
 import Title from "@/components/ui/title";
+import * as SettingsLayouts from "@/layouts/settings-layouts";
+import { ADMIN_ROUTES } from "@/lib/admin-routes";
 
-const Main = () => {
+const route = ADMIN_ROUTES.DOCUMENT_FEEDBACK;
+
+function Main() {
   const {
     data: mostLikedDocuments,
     isLoading: isMostLikedDocumentsLoading,
@@ -47,7 +49,7 @@ const Main = () => {
   }
 
   return (
-    <div className="mb-8">
+    <div>
       <Title className="mb-2">Most Liked Documents</Title>
       <DocumentFeedbackTable documents={mostLikedDocuments} refresh={refresh} />
 
@@ -58,19 +60,15 @@ const Main = () => {
       />
     </div>
   );
-};
+}
 
-const Page = () => {
+export default function Page() {
   return (
-    <div className="container mx-auto">
-      <AdminPageTitle
-        icon={<ThumbsUpIcon size={32} />}
-        title="Document Feedback"
-      />
-
-      <Main />
-    </div>
+    <SettingsLayouts.Root>
+      <SettingsLayouts.Header icon={route.icon} title={route.title} separator />
+      <SettingsLayouts.Body>
+        <Main />
+      </SettingsLayouts.Body>
+    </SettingsLayouts.Root>
   );
-};
-
-export default Page;
+}

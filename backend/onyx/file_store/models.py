@@ -13,19 +13,20 @@ class ChatFileType(str, Enum):
     DOC = "document"
     # Plain text only contain the text
     PLAIN_TEXT = "plain_text"
-    CSV = "csv"
-
-    # NOTE(rkuo): don't understand the motivation for this
-    # "user knowledge" is not a file type, it's a source or intent
-    USER_KNOWLEDGE = "user_knowledge"
+    # Tabular data files (CSV, XLSX)
+    TABULAR = "tabular"
 
     def is_text_file(self) -> bool:
         return self in (
             ChatFileType.PLAIN_TEXT,
             ChatFileType.DOC,
-            ChatFileType.CSV,
-            ChatFileType.USER_KNOWLEDGE,
+            ChatFileType.TABULAR,
         )
+
+    def use_metadata_only(self) -> bool:
+        """File types where we can ignore the file content
+        and only use the metadata."""
+        return self in (ChatFileType.TABULAR,)
 
 
 class FileDescriptor(TypedDict):

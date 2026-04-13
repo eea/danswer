@@ -7,8 +7,10 @@ from sqlalchemy.orm import Session
 
 from onyx.db.engine.sql_engine import get_session_with_current_tenant
 from onyx.db.engine.sql_engine import SqlEngine
+from onyx.db.enums import AccountType
 from onyx.db.models import User
 from onyx.db.models import UserRole
+from onyx.file_store.file_store import get_default_file_store
 from shared_configs.contextvars import CURRENT_TENANT_ID_CONTEXTVAR
 from tests.external_dependency_unit.constants import TEST_TENANT_ID
 from tests.external_dependency_unit.full_setup import (
@@ -51,7 +53,12 @@ def tenant_context() -> Generator[None, None, None]:
         CURRENT_TENANT_ID_CONTEXTVAR.reset(token)
 
 
-def create_test_user(db_session: Session, email_prefix: str) -> User:
+def create_test_user(
+    db_session: Session,
+    email_prefix: str,
+    role: UserRole = UserRole.BASIC,
+    account_type: AccountType = AccountType.STANDARD,
+) -> User:
     """Helper to create a test user with a unique email"""
     # Use UUID to ensure unique email addresses
     unique_email = f"{email_prefix}_{uuid4().hex[:8]}@example.com"
@@ -67,9 +74,21 @@ def create_test_user(db_session: Session, email_prefix: str) -> User:
         is_active=True,
         is_superuser=False,
         is_verified=True,
-        role=UserRole.EXT_PERM_USER,
+        role=role,
+        account_type=account_type,
     )
     db_session.add(user)
     db_session.commit()
     db_session.refresh(user)
     return user
+
+
+@pytest.fixture(scope="module")
+def initialize_file_store() -> Generator[None, None, None]:
+    """Initialize the file store for testing.
+
+    Scoped to module level since file store initialization is idempotent
+    and doesn't need to be reset between tests.
+    """
+    get_default_file_store().initialize()
+    yield

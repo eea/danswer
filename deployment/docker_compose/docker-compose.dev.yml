@@ -2,20 +2,26 @@
 # This file exposes service ports for development and testing purposes
 #
 # Usage:
-#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --wait
 #
 # Or set COMPOSE_FILE environment variable:
 #   export COMPOSE_FILE=docker-compose.yml:docker-compose.dev.yml
-#   docker compose up -d
+#   docker compose up -d --wait
 
 services:
   api_server:
     ports:
       - "8080:8080"
+    deploy:
+      resources:
+        limits:
+          cpus: "${API_SERVER_CPU_LIMIT:-0}"
+          memory: "${API_SERVER_MEM_LIMIT:-0}"
 
-  mcp_server:
-    ports:
-      - "8090:8090"
+  # Uncomment the block below to enable the MCP server for Onyx.
+  # mcp_server:
+  #   ports:
+  #     - "8090:8090"
 
   relational_db:
     ports:
@@ -25,6 +31,27 @@ services:
     ports:
       - "19071:19071"
       - "8081:8081"
+    healthcheck:
+      # We use 19071 because the application server at 8010 is not ready until
+      # it is activated/configured by the application.
+      test: ["CMD-SHELL", "curl -sf http://localhost:19071/state/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  opensearch:
+    ports:
+      - "9200:9200"
+    # Rootless Docker can reject the base OpenSearch ulimit settings, so clear
+    # the inherited block entirely in the dev override.
+    ulimits: !reset null
+    environment:
+      - bootstrap.memory_lock=false
+
+  inference_model_server:
+    ports:
+      - "9000:9000"
 
   cache:
     ports:

@@ -4,6 +4,15 @@ import React from "react";
 import * as SeparatorPrimitive from "@radix-ui/react-separator";
 import { cn } from "@/lib/utils";
 
+export interface SeparatorProps
+  extends React.ComponentPropsWithoutRef<typeof SeparatorPrimitive.Root> {
+  noPadding?: boolean;
+  /** Custom horizontal padding in rem. Overrides the default padding. */
+  paddingXRem?: number;
+  /** Custom vertical padding in rem. Overrides the default padding. */
+  paddingYRem?: number;
+}
+
 /**
  * Separator Component
  *
@@ -25,33 +34,57 @@ import { cn } from "@/lib/utils";
  * <Separator decorative={false} />
  * ```
  */
-function SeparatorInner(
-  {
-    className,
-    orientation = "horizontal",
-    decorative = true,
-    ...props
-  }: React.ComponentPropsWithoutRef<typeof SeparatorPrimitive.Root>,
-  ref: React.ForwardedRef<React.ComponentRef<typeof SeparatorPrimitive.Root>>
-) {
-  const isHorizontal = orientation === "horizontal";
+const Separator = React.forwardRef(
+  (
+    {
+      noPadding,
+      paddingXRem,
+      paddingYRem,
+      className,
+      orientation = "horizontal",
+      decorative = true,
+      ...props
+    }: SeparatorProps,
+    ref: React.ForwardedRef<React.ComponentRef<typeof SeparatorPrimitive.Root>>
+  ) => {
+    const isHorizontal = orientation === "horizontal";
 
-  return (
-    <div className={cn(isHorizontal ? "py-4" : "px-4", className)}>
-      <SeparatorPrimitive.Root
-        ref={ref}
-        decorative={decorative}
-        orientation={orientation}
+    return (
+      <div
+        style={{
+          ...(paddingXRem != null
+            ? {
+                paddingLeft: `${paddingXRem}rem`,
+                paddingRight: `${paddingXRem}rem`,
+              }
+            : {}),
+          ...(paddingYRem != null
+            ? {
+                paddingTop: `${paddingYRem}rem`,
+                paddingBottom: `${paddingYRem}rem`,
+              }
+            : {}),
+        }}
         className={cn(
-          "bg-border-01",
-          isHorizontal ? "h-[1px] w-full" : "h-full w-[1px]"
+          isHorizontal ? "w-full" : "h-full",
+          paddingXRem == null && !noPadding && (isHorizontal ? "py-4" : "px-4"),
+          className
         )}
-        {...props}
-      />
-    </div>
-  );
-}
-
-const Separator = React.forwardRef(SeparatorInner);
+      >
+        <SeparatorPrimitive.Root
+          ref={ref}
+          decorative={decorative}
+          orientation={orientation}
+          className={cn(
+            "bg-border-01",
+            isHorizontal ? "h-[1px] w-full" : "h-full w-[1px]"
+          )}
+          {...props}
+        />
+      </div>
+    );
+  }
+);
 Separator.displayName = SeparatorPrimitive.Root.displayName;
+
 export default Separator;

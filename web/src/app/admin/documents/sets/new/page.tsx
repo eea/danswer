@@ -1,27 +1,28 @@
 "use client";
 
-import { AdminPageTitle } from "@/components/admin/Title";
-import { BookmarkIcon } from "@/components/icons/icons";
+import * as SettingsLayouts from "@/layouts/settings-layouts";
+import { ADMIN_ROUTES } from "@/lib/admin-routes";
 import { DocumentSetCreationForm } from "../DocumentSetCreationForm";
 import { useConnectorStatus, useUserGroups } from "@/lib/hooks";
 import { ThreeDotsLoader } from "@/components/Loading";
-import { usePopup } from "@/components/admin/connectors/Popup";
-import { BackButton } from "@/components/BackButton";
 import { ErrorCallout } from "@/components/ErrorCallout";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { refreshDocumentSets } from "../hooks";
 import CardSection from "@/components/admin/CardSection";
+import { useVectorDbEnabled } from "@/providers/SettingsProvider";
+
+const route = ADMIN_ROUTES.DOCUMENT_SETS;
 
 function Main() {
-  const { popup, setPopup } = usePopup();
   const router = useRouter();
+  const vectorDbEnabled = useVectorDbEnabled();
 
   const {
     data: ccPairs,
     isLoading: isCCPairsLoading,
     error: ccPairsError,
-  } = useConnectorStatus();
+  } = useConnectorStatus(30000, vectorDbEnabled);
 
   // EE only
   const [userGroupsIsLoadingState, setUserGroupsIsLoadingState] =
@@ -31,7 +32,7 @@ function Main() {
     setUserGroupsIsLoadingState(false);
   }
 
-  if (isCCPairsLoading || userGroupsIsLoading) {
+  if ((vectorDbEnabled && isCCPairsLoading) || userGroupsIsLoading) {
     return (
       <div className="flex justify-center items-center min-h-[400px]">
         <ThreeDotsLoader />
@@ -39,7 +40,7 @@ function Main() {
     );
   }
 
-  if (ccPairsError || !ccPairs) {
+  if (vectorDbEnabled && (ccPairsError || !ccPairs)) {
     return (
       <ErrorCallout
         errorTitle="Failed to fetch Connectors"
@@ -50,36 +51,32 @@ function Main() {
 
   return (
     <>
-      {popup}
-
       <CardSection>
         <DocumentSetCreationForm
-          ccPairs={ccPairs}
+          ccPairs={ccPairs ?? []}
           userGroups={userGroups}
           onClose={() => {
             refreshDocumentSets();
             router.push("/admin/documents/sets");
           }}
-          setPopup={setPopup}
         />
       </CardSection>
     </>
   );
 }
 
-const Page = () => {
+export default function Page() {
   return (
-    <div className="container mx-auto">
-      <BackButton />
-
-      <AdminPageTitle
-        icon={<BookmarkIcon size={32} />}
+    <SettingsLayouts.Root>
+      <SettingsLayouts.Header
+        icon={route.icon}
         title="New Document Set"
+        separator
+        backButton
       />
-
-      <Main />
-    </div>
+      <SettingsLayouts.Body>
+        <Main />
+      </SettingsLayouts.Body>
+    </SettingsLayouts.Root>
   );
-};
-
-export default Page;
+}

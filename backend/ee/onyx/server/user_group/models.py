@@ -2,6 +2,7 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+from onyx.auth.permissions import Permission
 from onyx.db.models import UserGroup as UserGroupModel
 from onyx.server.documents.models import ConnectorCredentialPairDescriptor
 from onyx.server.documents.models import ConnectorSnapshot
@@ -22,6 +23,7 @@ class UserGroup(BaseModel):
     personas: list[PersonaSnapshot]
     is_up_to_date: bool
     is_up_for_deletion: bool
+    is_default: bool
 
     @classmethod
     def from_model(cls, user_group_model: UserGroupModel) -> "UserGroup":
@@ -53,7 +55,8 @@ class UserGroup(BaseModel):
                     id=cc_pair_relationship.cc_pair.id,
                     name=cc_pair_relationship.cc_pair.name,
                     connector=ConnectorSnapshot.from_connector_db_model(
-                        cc_pair_relationship.cc_pair.connector
+                        cc_pair_relationship.cc_pair.connector,
+                        credential_ids=[cc_pair_relationship.cc_pair.credential_id],
                     ),
                     credential=CredentialSnapshot.from_credential_db_model(
                         cc_pair_relationship.cc_pair.credential
@@ -73,6 +76,21 @@ class UserGroup(BaseModel):
             ],
             is_up_to_date=user_group_model.is_up_to_date,
             is_up_for_deletion=user_group_model.is_up_for_deletion,
+            is_default=user_group_model.is_default,
+        )
+
+
+class MinimalUserGroupSnapshot(BaseModel):
+    id: int
+    name: str
+    is_default: bool
+
+    @classmethod
+    def from_model(cls, user_group_model: UserGroupModel) -> "MinimalUserGroupSnapshot":
+        return cls(
+            id=user_group_model.id,
+            name=user_group_model.name,
+            is_default=user_group_model.is_default,
         )
 
 
@@ -91,6 +109,26 @@ class AddUsersToUserGroupRequest(BaseModel):
     user_ids: list[UUID]
 
 
+class UserGroupRename(BaseModel):
+    id: int
+    name: str
+
+
 class SetCuratorRequest(BaseModel):
     user_id: UUID
     is_curator: bool
+
+
+class UpdateGroupAgentsRequest(BaseModel):
+    added_agent_ids: list[int]
+    removed_agent_ids: list[int]
+
+
+class SetPermissionRequest(BaseModel):
+    permission: Permission
+    enabled: bool
+
+
+class SetPermissionResponse(BaseModel):
+    permission: Permission
+    enabled: bool

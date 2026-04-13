@@ -1,231 +1,153 @@
+import json
 import re
+from collections.abc import Callable
 from typing import cast
 from uuid import UUID
 
-from fastapi import HTTPException
 from fastapi.datastructures import Headers
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from onyx.auth.users import is_user_admin
-from onyx.background.celery.tasks.kg_processing.kg_indexing import (
-    try_creating_kg_processing_task,
-)
-from onyx.background.celery.tasks.kg_processing.kg_indexing import (
-    try_creating_kg_source_reset_task,
-)
-from onyx.chat.models import LlmDoc
-from onyx.chat.models import PersonaOverrideConfig
-from onyx.chat.models import ThreadMessage
-from onyx.chat.turn.models import FetchedDocumentCacheEntry
+from onyx.chat.models import ChatHistoryResult
+from onyx.chat.models import ChatLoadedFile
+from onyx.chat.models import ChatMessageSimple
+from onyx.chat.models import FileToolMetadata
+from onyx.chat.models import ToolCallSimple
 from onyx.configs.constants import DEFAULT_PERSONA_ID
 from onyx.configs.constants import MessageType
 from onyx.configs.constants import TMP_DRALPHA_PERSONA_NAME
-from onyx.context.search.models import InferenceSection
-from onyx.context.search.models import RerankingDetails
-from onyx.context.search.models import RetrievalDetails
-from onyx.context.search.models import SavedSearchDoc
-from onyx.context.search.models import SearchDoc
 from onyx.db.chat import create_chat_session
 from onyx.db.chat import get_chat_messages_by_session
+from onyx.db.chat import get_or_create_root_message
 from onyx.db.kg_config import get_kg_config_settings
 from onyx.db.kg_config import is_kg_config_settings_enabled_valid
-from onyx.db.llm import fetch_existing_doc_sets
-from onyx.db.llm import fetch_existing_tools
 from onyx.db.models import ChatMessage
+from onyx.db.models import ChatSession
 from onyx.db.models import Persona
 from onyx.db.models import SearchDoc as DbSearchDoc
-from onyx.db.models import Tool
-from onyx.db.models import User
-from onyx.db.search_settings import get_current_search_settings
+from onyx.db.models import UserFile
+from onyx.db.projects import check_project_ownership
+from onyx.file_processing.extract_file_text import extract_file_text
+from onyx.file_store.file_store import get_default_file_store
+from onyx.file_store.models import ChatFileType
+from onyx.file_store.models import FileDescriptor
+from onyx.file_store.utils import plaintext_file_name_for_id
+from onyx.file_store.utils import store_plaintext
 from onyx.kg.models import KGException
 from onyx.kg.setup.kg_default_entity_definitions import (
     populate_missing_default_entity_types__commit,
 )
-from onyx.llm.models import PreviousMessage
-from onyx.llm.override_models import LLMOverride
-from onyx.natural_language_processing.utils import BaseTokenizer
-from onyx.onyxbot.slack.models import SlackContext
-from onyx.server.query_and_chat.models import CreateChatMessageRequest
+from onyx.prompts.chat_prompts import ADDITIONAL_CONTEXT_PROMPT
+from onyx.prompts.chat_prompts import TOOL_CALL_RESPONSE_CROSS_MESSAGE
+from onyx.prompts.tool_prompts import TOOL_CALL_FAILURE_PROMPT
+from onyx.server.query_and_chat.models import ChatSessionCreationRequest
 from onyx.server.query_and_chat.streaming_models import CitationInfo
-from onyx.tools.tool_implementations.custom.custom_tool import (
-    build_custom_tools_from_openapi_schema_and_headers,
-)
+from onyx.tools.models import ToolCallKickoff
 from onyx.utils.logger import setup_logger
+from onyx.utils.threadpool_concurrency import run_functions_tuples_in_parallel
+from onyx.utils.timing import log_function_time
+
 
 logger = setup_logger()
+IMAGE_GENERATION_TOOL_NAME = "generate_image"
 
 
-def prepare_chat_message_request(
-    message_text: str,
-    user: User | None,
-    persona_id: int | None,
-    # Does the question need to have a persona override
-    persona_override_config: PersonaOverrideConfig | None,
-    message_ts_to_respond_to: str | None,
-    retrieval_details: RetrievalDetails | None,
-    rerank_settings: RerankingDetails | None,
-    db_session: Session,
-    use_agentic_search: bool = False,
-    skip_gen_ai_answer_generation: bool = False,
-    llm_override: LLMOverride | None = None,
-    allowed_tool_ids: list[int] | None = None,
-    slack_context: SlackContext | None = None,
-) -> CreateChatMessageRequest:
-    # Typically used for one shot flows like SlackBot or non-chat API endpoint use cases
-    new_chat_session = create_chat_session(
-        db_session=db_session,
-        description=None,
-        user_id=user.id if user else None,
-        # If using an override, this id will be ignored later on
-        persona_id=persona_id or DEFAULT_PERSONA_ID,
-        onyxbot_flow=True,
-        slack_thread_id=message_ts_to_respond_to,
-    )
+class FileContextResult(BaseModel):
+    """Result of building a file's LLM context representation."""
 
-    return CreateChatMessageRequest(
-        chat_session_id=new_chat_session.id,
-        parent_message_id=None,  # It's a standalone chat session each time
-        message=message_text,
-        file_descriptors=[],  # Currently SlackBot/answer api do not support files in the context
-        # Can always override the persona for the single query, if it's a normal persona
-        # then it will be treated the same
-        persona_override_config=persona_override_config,
-        search_doc_ids=None,
-        retrieval_options=retrieval_details,
-        rerank_settings=rerank_settings,
-        use_agentic_search=use_agentic_search,
-        skip_gen_ai_answer_generation=skip_gen_ai_answer_generation,
-        llm_override=llm_override,
-        allowed_tool_ids=allowed_tool_ids,
-        slack_context=slack_context,  # Pass Slack context
-    )
+    message: ChatMessageSimple
+    tool_metadata: FileToolMetadata
 
 
-def llm_doc_from_inference_section(inference_section: InferenceSection) -> LlmDoc:
-    return LlmDoc(
-        document_id=inference_section.center_chunk.document_id,
-        # This one is using the combined content of all the chunks of the section
-        # In default settings, this is the same as just the content of base chunk
-        content=inference_section.combined_content,
-        blurb=inference_section.center_chunk.blurb,
-        semantic_identifier=inference_section.center_chunk.semantic_identifier,
-        source_type=inference_section.center_chunk.source_type,
-        metadata=inference_section.center_chunk.metadata,
-        updated_at=inference_section.center_chunk.updated_at,
-        link=(
-            inference_section.center_chunk.source_links[0]
-            if inference_section.center_chunk.source_links
-            else None
-        ),
-        source_links=inference_section.center_chunk.source_links,
-        match_highlights=inference_section.center_chunk.match_highlights,
-    )
+def build_file_context(
+    tool_file_id: str,
+    filename: str,
+    file_type: ChatFileType,
+    content_text: str | None = None,
+    token_count: int = 0,
+    approx_char_count: int | None = None,
+) -> FileContextResult:
+    """Build the LLM context representation for a single file.
 
-
-def llm_docs_from_fetched_documents_cache(
-    fetched_documents_cache: dict[str, "FetchedDocumentCacheEntry"],
-) -> list[LlmDoc]:
-    """Convert FetchedDocumentCacheEntry objects to LlmDoc objects.
-
-    This ensures that citation numbers are properly transferred from the cache
-    entries to the LlmDoc objects, which is critical for proper citation rendering.
-
-    Args:
-        fetched_documents_cache: Dictionary mapping document IDs to FetchedDocumentCacheEntry
-
-    Returns:
-        List of LlmDoc objects with properly set document_citation_number
+    Centralises how files should appear in the LLM prompt
+    — the ID that FileReaderTool accepts (``UserFile.id`` for user files).
     """
-    llm_docs = []
-    for cache_value in fetched_documents_cache.values():
-        llm_doc = llm_doc_from_inference_section(cache_value.inference_section)
-        llm_doc.document_citation_number = cache_value.document_citation_number
-        llm_docs.append(llm_doc)
-    return llm_docs
-
-
-def saved_search_docs_from_llm_docs(
-    llm_docs: list[LlmDoc] | None,
-) -> list[SavedSearchDoc]:
-    """Convert LlmDoc objects to SavedSearchDoc format."""
-    if not llm_docs:
-        return []
-
-    search_docs = []
-    for i, llm_doc in enumerate(llm_docs):
-        # Convert LlmDoc to SearchDoc format
-        # Note: Some fields need default values as they're not in LlmDoc
-        search_doc = SearchDoc(
-            document_id=llm_doc.document_id,
-            chunk_ind=0,  # Default value as LlmDoc doesn't have chunk index
-            semantic_identifier=llm_doc.semantic_identifier,
-            link=llm_doc.link,
-            blurb=llm_doc.blurb,
-            source_type=llm_doc.source_type,
-            boost=0,  # Default value
-            hidden=False,  # Default value
-            metadata=llm_doc.metadata,
-            score=None,  # Will be set by SavedSearchDoc
-            match_highlights=llm_doc.match_highlights or [],
-            updated_at=llm_doc.updated_at,
-            primary_owners=None,  # Default value
-            secondary_owners=None,  # Default value
-            is_internet=False,  # Default value
+    if file_type.use_metadata_only():
+        message_text = (
+            f"File: {filename} (id={tool_file_id})\n"
+            "Use the file_reader or python tools to access "
+            "this file's contents."
+        )
+        message = ChatMessageSimple(
+            message=message_text,
+            token_count=max(1, len(message_text) // 4),
+            message_type=MessageType.USER,
+            file_id=tool_file_id,
+        )
+    else:
+        message_text = f"File: {filename}\n{content_text or ''}\nEnd of File"
+        message = ChatMessageSimple(
+            message=message_text,
+            token_count=token_count,
+            message_type=MessageType.USER,
+            file_id=tool_file_id,
         )
 
-        # Convert SearchDoc to SavedSearchDoc
-        saved_search_doc = SavedSearchDoc.from_search_doc(search_doc, db_doc_id=0)
-        search_docs.append(saved_search_doc)
+    metadata = FileToolMetadata(
+        file_id=tool_file_id,
+        filename=filename,
+        approx_char_count=(
+            approx_char_count
+            if approx_char_count is not None
+            else len(content_text or "")
+        ),
+    )
 
-    return search_docs
-
-
-def combine_message_thread(
-    messages: list[ThreadMessage],
-    max_tokens: int | None,
-    llm_tokenizer: BaseTokenizer,
-) -> str:
-    """Used to create a single combined message context from threads"""
-    if not messages:
-        return ""
-
-    message_strs: list[str] = []
-    total_token_count = 0
-
-    for message in reversed(messages):
-        if message.role == MessageType.USER:
-            role_str = message.role.value.upper()
-            if message.sender:
-                role_str += " " + message.sender
-            else:
-                # Since other messages might have the user identifying information
-                # better to use Unknown for symmetry
-                role_str += " Unknown"
-        else:
-            role_str = message.role.value.upper()
-
-        msg_str = f"{role_str}:\n{message.message}"
-        message_token_count = len(llm_tokenizer.encode(msg_str))
-
-        if (
-            max_tokens is not None
-            and total_token_count + message_token_count > max_tokens
-        ):
-            break
-
-        message_strs.insert(0, msg_str)
-        total_token_count += message_token_count
-
-    return "\n\n".join(message_strs)
+    return FileContextResult(message=message, tool_metadata=metadata)
 
 
-def create_chat_chain(
+def create_chat_session_from_request(
+    chat_session_request: ChatSessionCreationRequest,
+    user_id: UUID | None,
+    db_session: Session,
+) -> ChatSession:
+    """Create a chat session from a ChatSessionCreationRequest.
+
+    Includes project ownership validation when project_id is provided.
+
+    Args:
+        chat_session_request: The request containing persona_id, description, and project_id
+        user_id: The ID of the user creating the session (can be None for anonymous)
+        db_session: The database session
+
+    Returns:
+        The newly created ChatSession
+
+    Raises:
+        ValueError: If user lacks access to the specified project
+        Exception: If the persona is invalid
+    """
+    project_id = chat_session_request.project_id
+    if project_id:
+        if not check_project_ownership(project_id, user_id, db_session):
+            raise ValueError("User does not have access to project")
+
+    return create_chat_session(
+        db_session=db_session,
+        description=chat_session_request.description or "",
+        user_id=user_id,
+        persona_id=chat_session_request.persona_id,
+        project_id=chat_session_request.project_id,
+    )
+
+
+def create_chat_history_chain(
     chat_session_id: UUID,
     db_session: Session,
-    prefetch_tool_calls: bool = True,
+    prefetch_top_two_level_tool_calls: bool = True,
     # Optional id at which we finish processing
     stop_at_message_id: int | None = None,
-) -> tuple[ChatMessage, list[ChatMessage]]:
+) -> list[ChatMessage]:
     """Build the linear chain of messages without including the root message"""
     mainline_messages: list[ChatMessage] = []
 
@@ -234,18 +156,19 @@ def create_chat_chain(
         user_id=None,
         db_session=db_session,
         skip_permission_check=True,
-        prefetch_tool_calls=prefetch_tool_calls,
+        prefetch_top_two_level_tool_calls=prefetch_top_two_level_tool_calls,
     )
-    id_to_msg = {msg.id: msg for msg in all_chat_messages}
 
     if not all_chat_messages:
-        raise RuntimeError("No messages in Chat Session")
-
-    root_message = all_chat_messages[0]
-    if root_message.parent_message is not None:
-        raise RuntimeError(
-            "Invalid root message, unable to fetch valid chat message sequence"
+        root_message = get_or_create_root_message(
+            chat_session_id=chat_session_id, db_session=db_session
         )
+    else:
+        root_message = all_chat_messages[0]
+        if root_message.parent_message is not None:
+            raise RuntimeError(
+                "Invalid root message, unable to fetch valid chat message sequence"
+            )
 
     current_message: ChatMessage | None = root_message
     previous_message: ChatMessage | None = None
@@ -258,13 +181,7 @@ def create_chat_chain(
             stop_at_message_id and current_message.id == stop_at_message_id
         ):
             break
-        current_message = id_to_msg.get(child_msg)
-
-        if current_message is None:
-            raise RuntimeError(
-                "Invalid message chain,"
-                "could not find next message in the same session"
-            )
+        current_message = child_msg
 
         if (
             current_message.message_type == MessageType.ASSISTANT
@@ -272,42 +189,17 @@ def create_chat_chain(
             and previous_message.message_type == MessageType.ASSISTANT
             and mainline_messages
         ):
-            if current_message.refined_answer_improvement:
-                mainline_messages[-1] = current_message
+            # Note that 2 user messages in a row is fine since this is often used for
+            # adding custom prompts and reminders
+            raise RuntimeError(
+                "Invalid message chain, cannot have two assistant messages in a row"
+            )
         else:
             mainline_messages.append(current_message)
 
         previous_message = current_message
 
-    if not mainline_messages:
-        raise RuntimeError("Could not trace chat message history")
-
-    return mainline_messages[-1], mainline_messages[:-1]
-
-
-def combine_message_chain(
-    messages: list[ChatMessage] | list[PreviousMessage],
-    token_limit: int,
-    msg_limit: int | None = None,
-) -> str:
-    """Used for secondary LLM flows that require the chat history,"""
-    message_strs: list[str] = []
-    total_token_count = 0
-
-    if msg_limit is not None:
-        messages = messages[-msg_limit:]
-
-    for message in cast(list[ChatMessage] | list[PreviousMessage], reversed(messages)):
-        message_token_count = message.token_count
-
-        if total_token_count + message_token_count > token_limit:
-            break
-
-        role = message.message_type.value.upper()
-        message_strs.insert(0, f"{role}:\n{message.message}")
-        total_token_count += message_token_count
-
-    return "\n\n".join(message_strs)
+    return mainline_messages
 
 
 def reorganize_citations(
@@ -330,14 +222,14 @@ def reorganize_citations(
                 continue
 
             matching_citation = next(
-                iter([c for c in citations if c.citation_num == int(citation_num)]),
+                iter([c for c in citations if c.citation_number == int(citation_num)]),
                 None,
             )
             if matching_citation is None:
                 continue
 
             new_citation_info[citation_num] = CitationInfo(
-                citation_num=len(new_citation_info) + 1,
+                citation_number=len(new_citation_info) + 1,
                 document_id=matching_citation.document_id,
             )
         except Exception:
@@ -349,7 +241,7 @@ def reorganize_citations(
         try:
             citation_num = int(link_text)
             if citation_num in new_citation_info:
-                link_text = new_citation_info[citation_num].citation_num
+                link_text = new_citation_info[citation_num].citation_number
         except Exception:
             pass
 
@@ -361,8 +253,8 @@ def reorganize_citations(
 
     # if any citations weren't parsable, just add them back to be safe
     for citation in citations:
-        if citation.citation_num not in new_citation_info:
-            new_citation_info[citation.citation_num] = citation
+        if citation.citation_number not in new_citation_info:
+            new_citation_info[citation.citation_number] = citation
 
     return new_answer, list(new_citation_info.values())
 
@@ -383,10 +275,10 @@ def build_citation_map_from_infos(
 
     citation_to_saved_doc_id_map: dict[int, int] = {}
     for citation in citations_list:
-        if citation.citation_num not in citation_to_saved_doc_id_map:
+        if citation.citation_number not in citation_to_saved_doc_id_map:
             saved_id = doc_id_to_saved_doc_id_map.get(citation.document_id)
             if saved_id is not None:
-                citation_to_saved_doc_id_map[citation.citation_num] = saved_id
+                citation_to_saved_doc_id_map[citation.citation_number] = saved_id
 
     return citation_to_saved_doc_id_map
 
@@ -434,69 +326,11 @@ def extract_headers(
     return extracted_headers
 
 
-def create_temporary_persona(
-    persona_config: PersonaOverrideConfig, db_session: Session, user: User | None = None
-) -> Persona:
-    if not is_user_admin(user):
-        raise HTTPException(
-            status_code=403,
-            detail="User is not authorized to create a persona in one shot queries",
-        )
-
-    """Create a temporary Persona object from the provided configuration."""
-    persona = Persona(
-        name=persona_config.name,
-        description=persona_config.description,
-        num_chunks=persona_config.num_chunks,
-        llm_relevance_filter=persona_config.llm_relevance_filter,
-        llm_filter_extraction=persona_config.llm_filter_extraction,
-        recency_bias=persona_config.recency_bias,
-        llm_model_provider_override=persona_config.llm_model_provider_override,
-        llm_model_version_override=persona_config.llm_model_version_override,
-    )
-
-    if persona_config.prompts:
-        # Use the first prompt from the override config for embedded prompt fields
-        first_prompt = persona_config.prompts[0]
-        persona.system_prompt = first_prompt.system_prompt
-        persona.task_prompt = first_prompt.task_prompt
-        persona.datetime_aware = first_prompt.datetime_aware
-
-    persona.tools = []
-    if persona_config.custom_tools_openapi:
-        for schema in persona_config.custom_tools_openapi:
-            tools = cast(
-                list[Tool],
-                build_custom_tools_from_openapi_schema_and_headers(
-                    tool_id=0,  # dummy tool id
-                    openapi_schema=schema,
-                ),
-            )
-            persona.tools.extend(tools)
-
-    if persona_config.tools:
-        tool_ids = [tool.id for tool in persona_config.tools]
-        persona.tools.extend(
-            fetch_existing_tools(db_session=db_session, tool_ids=tool_ids)
-        )
-
-    if persona_config.tool_ids:
-        persona.tools.extend(
-            fetch_existing_tools(
-                db_session=db_session, tool_ids=persona_config.tool_ids
-            )
-        )
-
-    fetched_docs = fetch_existing_doc_sets(
-        db_session=db_session, doc_ids=persona_config.document_set_ids
-    )
-    persona.document_sets = fetched_docs
-
-    return persona
-
-
 def process_kg_commands(
-    message: str, persona_name: str, tenant_id: str, db_session: Session
+    message: str,
+    persona_name: str,
+    tenant_id: str,  # noqa: ARG001
+    db_session: Session,
 ) -> None:
     # Temporarily, until we have a draft UI for the KG Operations/Management
     # TODO: move to api endpoint once we get frontend
@@ -507,38 +341,521 @@ def process_kg_commands(
     if not is_kg_config_settings_enabled_valid(kg_config_settings):
         return
 
-    # get Vespa index
-    search_settings = get_current_search_settings(db_session)
-    index_str = search_settings.index_name
-
-    if message == "kg_p":
-        success = try_creating_kg_processing_task(tenant_id)
-        if success:
-            raise KGException("KG processing scheduled")
-        else:
-            raise KGException(
-                "Cannot schedule another KG processing if one is already running "
-                "or there are no documents to process"
-            )
-
-    elif message.startswith("kg_rs_source"):
-        msg_split = [x for x in message.split(":")]
-        if len(msg_split) > 2:
-            raise KGException("Invalid format for a source reset command")
-        elif len(msg_split) == 2:
-            source_name = msg_split[1].strip()
-        elif len(msg_split) == 1:
-            source_name = None
-        else:
-            raise KGException("Invalid format for a source reset command")
-
-        success = try_creating_kg_source_reset_task(tenant_id, source_name, index_str)
-        if success:
-            source_name = source_name or "all"
-            raise KGException(f"KG index reset for source '{source_name}' scheduled")
-        else:
-            raise KGException("Cannot reset index while KG processing is running")
-
-    elif message == "kg_setup":
+    if message == "kg_setup":
         populate_missing_default_entity_types__commit(db_session=db_session)
         raise KGException("KG setup done")
+
+
+def _get_or_extract_plaintext(
+    file_id: str,
+    extract_fn: Callable[[], str],
+) -> str:
+    """Load cached plaintext for a file, or extract and store it.
+
+    Tries to read pre-stored plaintext from the file store.  On a miss,
+    calls extract_fn to produce the text, then stores the result so
+    future calls skip the expensive extraction.
+    """
+    file_store = get_default_file_store()
+    plaintext_key = plaintext_file_name_for_id(file_id)
+
+    # Try cached plaintext first.
+    try:
+        plaintext_io = file_store.read_file(plaintext_key, mode="b")
+        return plaintext_io.read().decode("utf-8")
+    except Exception:
+        logger.exception(f"Error when reading file, id={file_id}")
+
+    # Cache miss — extract and store.
+    content_text = extract_fn()
+    if content_text:
+        store_plaintext(file_id, content_text)
+    return content_text
+
+
+@log_function_time(print_only=True)
+def load_chat_file(
+    file_descriptor: FileDescriptor, db_session: Session
+) -> ChatLoadedFile:
+    file_io = get_default_file_store().read_file(file_descriptor["id"], mode="b")
+    content = file_io.read()
+
+    # Extract text content if it's a text file type (not an image)
+    content_text = None
+    # `FileDescriptor` is often JSON-roundtripped (e.g. JSONB / API), so `type`
+    # may arrive as a raw string value instead of a `ChatFileType`.
+    file_type = ChatFileType(file_descriptor["type"])
+
+    if file_type.is_text_file():
+        file_id = file_descriptor["id"]
+
+        def _extract() -> str:
+            return extract_file_text(
+                file=file_io,
+                file_name=file_descriptor.get("name") or "",
+                break_on_unprocessable=False,
+            )
+
+        # Use the user_file_id as cache key when available (matches what
+        # the celery indexing worker stores), otherwise fall back to the
+        # file store id (covers code-interpreter-generated files, etc.).
+        user_file_id_str = file_descriptor.get("user_file_id")
+        cache_key = user_file_id_str or file_id
+
+        try:
+            content_text = _get_or_extract_plaintext(cache_key, _extract)
+        except Exception as e:
+            logger.warning(
+                f"Failed to retrieve content for file {file_descriptor['id']}: {str(e)}"
+            )
+
+    # Get token count from UserFile if available
+    token_count = 0
+    user_file_id_str = file_descriptor.get("user_file_id")
+    if user_file_id_str:
+        try:
+            user_file_id = UUID(user_file_id_str)
+            user_file = (
+                db_session.query(UserFile).filter(UserFile.id == user_file_id).first()
+            )
+            if user_file and user_file.token_count:
+                token_count = user_file.token_count
+        except (ValueError, TypeError) as e:
+            logger.warning(
+                f"Failed to get token count for file {file_descriptor['id']}: {e}"
+            )
+
+    return ChatLoadedFile(
+        file_id=file_descriptor["id"],
+        content=content,
+        file_type=file_type,
+        filename=file_descriptor.get("name"),
+        content_text=content_text,
+        token_count=token_count,
+    )
+
+
+def load_all_chat_files(
+    chat_messages: list[ChatMessage],
+    db_session: Session,
+) -> list[ChatLoadedFile]:
+    # TODO There is likely a more efficient/standard way to load the files here.
+    file_descriptors_for_history: list[FileDescriptor] = []
+    for chat_message in chat_messages:
+        if chat_message.files:
+            file_descriptors_for_history.extend(chat_message.files)
+
+    files = cast(
+        list[ChatLoadedFile],
+        run_functions_tuples_in_parallel(
+            [
+                (load_chat_file, (file, db_session))
+                for file in file_descriptors_for_history
+            ]
+        ),
+    )
+    return files
+
+
+def convert_chat_history_basic(
+    chat_history: list[ChatMessage],
+    token_counter: Callable[[str], int],
+    max_individual_message_tokens: int | None = None,
+    max_total_tokens: int | None = None,
+) -> list[ChatMessageSimple]:
+    """Convert ChatMessage history to ChatMessageSimple format with no tool calls or files included.
+
+    Args:
+        chat_history: List of ChatMessage objects to convert
+        token_counter: Function to count tokens in a message string
+        max_individual_message_tokens: If set, messages exceeding this number of tokens are dropped.
+            If None, no messages are dropped based on individual token count.
+        max_total_tokens: If set, maximum number of tokens allowed for the entire history.
+            If None, the history is not trimmed based on total token count.
+
+    Returns:
+        List of ChatMessageSimple objects
+    """
+    # Defensive: treat a non-positive total budget as "no history".
+    if max_total_tokens is not None and max_total_tokens <= 0:
+        return []
+
+    # Convert only the core USER/ASSISTANT messages; omit files and tool calls.
+    converted: list[ChatMessageSimple] = []
+    for chat_message in chat_history:
+        if chat_message.message_type not in (MessageType.USER, MessageType.ASSISTANT):
+            continue
+
+        message = chat_message.message or ""
+        token_count = getattr(chat_message, "token_count", None)
+        if token_count is None:
+            token_count = token_counter(message)
+
+        # Drop any single message that would dominate the context window.
+        if (
+            max_individual_message_tokens is not None
+            and token_count > max_individual_message_tokens
+        ):
+            continue
+
+        converted.append(
+            ChatMessageSimple(
+                message=message,
+                token_count=token_count,
+                message_type=chat_message.message_type,
+                image_files=None,
+            )
+        )
+
+    if max_total_tokens is None:
+        return converted
+
+    # Enforce a max total budget by keeping a contiguous suffix of the conversation.
+    trimmed_reversed: list[ChatMessageSimple] = []
+    total_tokens = 0
+    for msg in reversed(converted):
+        if total_tokens + msg.token_count > max_total_tokens:
+            break
+        trimmed_reversed.append(msg)
+        total_tokens += msg.token_count
+
+    return list(reversed(trimmed_reversed))
+
+
+def _build_tool_call_response_history_message(
+    tool_name: str,
+    generated_images: list[dict] | None,
+    tool_call_response: str | None,
+) -> str:
+    if tool_name != IMAGE_GENERATION_TOOL_NAME:
+        return TOOL_CALL_RESPONSE_CROSS_MESSAGE
+
+    if generated_images:
+        llm_image_context: list[dict[str, str]] = []
+        for image in generated_images:
+            file_id = image.get("file_id")
+            revised_prompt = image.get("revised_prompt")
+            if not isinstance(file_id, str):
+                continue
+
+            llm_image_context.append(
+                {
+                    "file_id": file_id,
+                    "revised_prompt": (
+                        revised_prompt if isinstance(revised_prompt, str) else ""
+                    ),
+                }
+            )
+
+        if llm_image_context:
+            return json.dumps(llm_image_context)
+
+    if tool_call_response:
+        return tool_call_response
+
+    return TOOL_CALL_RESPONSE_CROSS_MESSAGE
+
+
+def convert_chat_history(
+    chat_history: list[ChatMessage],
+    files: list[ChatLoadedFile],
+    context_image_files: list[ChatLoadedFile],
+    additional_context: str | None,
+    token_counter: Callable[[str], int],
+    tool_id_to_name_map: dict[int, str],
+) -> ChatHistoryResult:
+    """Convert ChatMessage history to ChatMessageSimple format.
+
+    For user messages: includes attached files (images attached to message, text files as separate messages)
+    For assistant messages with tool calls: creates ONE ASSISTANT message with tool_calls array,
+        followed by N TOOL_CALL_RESPONSE messages (OpenAI parallel tool calling format)
+    For assistant messages without tool calls: creates a simple ASSISTANT message
+
+    Every injected text-file message is tagged with ``file_id`` and its
+    metadata is collected in ``ChatHistoryResult.all_injected_file_metadata``.
+    After context-window truncation, callers compare surviving ``file_id`` tags
+    against this map to discover "forgotten" files and provide their metadata
+    to the FileReaderTool.
+    """
+    simple_messages: list[ChatMessageSimple] = []
+    all_injected_file_metadata: dict[str, FileToolMetadata] = {}
+
+    # Create a mapping of file IDs to loaded files for quick lookup
+    file_map = {str(f.file_id): f for f in files}
+
+    # Find the index of the last USER message
+    last_user_message_idx = None
+    for i in range(len(chat_history) - 1, -1, -1):
+        if chat_history[i].message_type == MessageType.USER:
+            last_user_message_idx = i
+            break
+
+    for idx, chat_message in enumerate(chat_history):
+        if chat_message.message_type == MessageType.USER:
+            # Process files attached to this message
+            text_files: list[tuple[ChatLoadedFile, FileDescriptor]] = []
+            image_files: list[ChatLoadedFile] = []
+
+            if chat_message.files:
+                for file_descriptor in chat_message.files:
+                    file_id = file_descriptor["id"]
+                    loaded_file = file_map.get(file_id)
+                    if loaded_file:
+                        if loaded_file.file_type == ChatFileType.IMAGE:
+                            image_files.append(loaded_file)
+                        else:
+                            # Text files (DOC, PLAIN_TEXT, TABULAR) are added as separate messages
+                            text_files.append((loaded_file, file_descriptor))
+
+            # Add text files as separate messages before the user message.
+            # Each message is tagged with ``file_id`` so that forgotten files
+            # can be detected after context-window truncation.
+            for text_file, fd in text_files:
+                # Use user_file_id as the FileReaderTool accepts that.
+                # Fall back to the file-store path id.
+                tool_id = fd.get("user_file_id") or text_file.file_id
+                filename = text_file.filename or "unknown"
+                ctx = build_file_context(
+                    tool_file_id=tool_id,
+                    filename=filename,
+                    file_type=text_file.file_type,
+                    content_text=text_file.content_text,
+                    token_count=text_file.token_count,
+                )
+                simple_messages.append(ctx.message)
+                all_injected_file_metadata[tool_id] = ctx.tool_metadata
+
+            # Sum token counts from image files (excluding project image files)
+            image_token_count = (
+                sum(img.token_count for img in image_files) if image_files else 0
+            )
+
+            # Add the user message with image files attached
+            # If this is the last USER message, also include context_image_files
+            # Note: context image file tokens are NOT counted in the token count
+            if idx == last_user_message_idx:
+                if context_image_files:
+                    image_files.extend(context_image_files)
+
+                if additional_context:
+                    simple_messages.append(
+                        ChatMessageSimple(
+                            message=ADDITIONAL_CONTEXT_PROMPT.format(
+                                additional_context=additional_context
+                            ),
+                            token_count=token_counter(additional_context),
+                            message_type=MessageType.USER,
+                            image_files=None,
+                        )
+                    )
+
+            simple_messages.append(
+                ChatMessageSimple(
+                    message=chat_message.message,
+                    token_count=chat_message.token_count + image_token_count,
+                    message_type=MessageType.USER,
+                    image_files=image_files if image_files else None,
+                )
+            )
+
+        elif chat_message.message_type == MessageType.ASSISTANT:
+            # Handle tool calls if present using OpenAI parallel tool calling format:
+            # 1. Group tool calls by turn_number
+            # 2. For each turn: ONE ASSISTANT message with tool_calls array
+            # 3. Followed by N TOOL_CALL_RESPONSE messages (one per tool call)
+            if chat_message.tool_calls:
+                # Group tool calls by turn number
+                tool_calls_by_turn: dict[int, list] = {}
+                for tool_call in chat_message.tool_calls:
+                    if tool_call.turn_number not in tool_calls_by_turn:
+                        tool_calls_by_turn[tool_call.turn_number] = []
+                    tool_calls_by_turn[tool_call.turn_number].append(tool_call)
+
+                # Sort turns and process each turn
+                for turn_number in sorted(tool_calls_by_turn.keys()):
+                    turn_tool_calls = tool_calls_by_turn[turn_number]
+                    # Sort by tool_id within the turn for consistent ordering
+                    turn_tool_calls.sort(key=lambda tc: tc.tool_id)
+
+                    # Build ToolCallSimple list for this turn
+                    tool_calls_simple: list[ToolCallSimple] = []
+                    for tool_call in turn_tool_calls:
+                        tool_name = tool_id_to_name_map.get(
+                            tool_call.tool_id, "unknown"
+                        )
+                        tool_calls_simple.append(
+                            ToolCallSimple(
+                                tool_call_id=tool_call.tool_call_id,
+                                tool_name=tool_name,
+                                tool_arguments=tool_call.tool_call_arguments or {},
+                                token_count=tool_call.tool_call_tokens,
+                            )
+                        )
+
+                    # Create ONE ASSISTANT message with all tool calls for this turn
+                    total_tool_call_tokens = sum(
+                        tc.token_count for tc in tool_calls_simple
+                    )
+                    simple_messages.append(
+                        ChatMessageSimple(
+                            message="",  # No text content when making tool calls
+                            token_count=total_tool_call_tokens,
+                            message_type=MessageType.ASSISTANT,
+                            tool_calls=tool_calls_simple,
+                            image_files=None,
+                        )
+                    )
+
+                    # Add TOOL_CALL_RESPONSE messages for each tool call in this turn
+                    for tool_call in turn_tool_calls:
+                        tool_name = tool_id_to_name_map.get(
+                            tool_call.tool_id, "unknown"
+                        )
+                        tool_response_message = (
+                            _build_tool_call_response_history_message(
+                                tool_name=tool_name,
+                                generated_images=tool_call.generated_images,
+                                tool_call_response=tool_call.tool_call_response,
+                            )
+                        )
+                        simple_messages.append(
+                            ChatMessageSimple(
+                                message=tool_response_message,
+                                token_count=(
+                                    token_counter(tool_response_message)
+                                    if tool_name == IMAGE_GENERATION_TOOL_NAME
+                                    else 20
+                                ),
+                                message_type=MessageType.TOOL_CALL_RESPONSE,
+                                tool_call_id=tool_call.tool_call_id,
+                                image_files=None,
+                            )
+                        )
+
+            # Add the assistant message itself (the final answer)
+            simple_messages.append(
+                ChatMessageSimple(
+                    message=chat_message.message,
+                    token_count=chat_message.token_count,
+                    message_type=MessageType.ASSISTANT,
+                    image_files=None,
+                )
+            )
+        else:
+            raise ValueError(
+                f"Invalid message type when constructing simple history: {chat_message.message_type}"
+            )
+
+    return ChatHistoryResult(
+        simple_messages=simple_messages,
+        all_injected_file_metadata=all_injected_file_metadata,
+    )
+
+
+def get_custom_agent_prompt(persona: Persona, chat_session: ChatSession) -> str | None:
+    """Get the custom agent prompt from persona or project instructions. If it's replacing the base system prompt,
+    it does not count as a custom agent prompt (logic exists later also to drop it in this case).
+
+    Chat Sessions in Projects that are using a custom agent will retain the custom agent prompt.
+    Priority: persona.system_prompt (if not default Agent) > chat_session.project.instructions
+
+    # NOTE: Logic elsewhere allows saving empty strings for potentially other purposes but for constructing the prompts
+    # we never want to return an empty string for a prompt so it's translated into an explicit None.
+
+    Args:
+        persona: The Persona object
+        chat_session: The ChatSession object
+
+    Returns:
+        The prompt to use for the custom Agent part of the prompt.
+    """
+    # If using a custom Agent, always respect its prompt, even if in a Project, and even if it's an empty custom prompt.
+    if persona.id != DEFAULT_PERSONA_ID:
+        # Logic exists later also to drop it in this case but this is strictly correct anyhow.
+        if persona.replace_base_system_prompt:
+            return None
+        return persona.system_prompt or None
+
+    # If in a project and using the default Agent, respect the project instructions.
+    if chat_session.project and chat_session.project.instructions:
+        return chat_session.project.instructions
+
+    return None
+
+
+def is_last_assistant_message_clarification(chat_history: list[ChatMessage]) -> bool:
+    """Check if the last assistant message in chat history was a clarification question.
+
+    This is used in the deep research flow to determine whether to skip the
+    clarification step when the user has already responded to a clarification.
+
+    Args:
+        chat_history: List of ChatMessage objects in chronological order
+
+    Returns:
+        True if the last assistant message has is_clarification=True, False otherwise
+    """
+    for message in reversed(chat_history):
+        if message.message_type == MessageType.ASSISTANT:
+            return message.is_clarification
+    return False
+
+
+def create_tool_call_failure_messages(
+    tool_calls: list[ToolCallKickoff], token_counter: Callable[[str], int]
+) -> list[ChatMessageSimple]:
+    """Create ChatMessageSimple objects for failed tool calls.
+
+    Creates messages using OpenAI parallel tool calling format:
+    1. An ASSISTANT message with tool_calls field containing all failed tool calls
+    2. A TOOL_CALL_RESPONSE failure message for each tool call
+
+    Args:
+        tool_calls: List of ToolCallKickoff objects representing the failed tool calls
+        token_counter: Function to count tokens in a message string
+
+    Returns:
+        List containing ChatMessageSimple objects: one assistant message with all tool calls
+        followed by a failure response for each tool call
+    """
+    if not tool_calls:
+        return []
+
+    # Create ToolCallSimple for each failed tool call
+    tool_calls_simple: list[ToolCallSimple] = []
+    for tool_call in tool_calls:
+        tool_call_token_count = token_counter(tool_call.to_msg_str())
+        tool_calls_simple.append(
+            ToolCallSimple(
+                tool_call_id=tool_call.tool_call_id,
+                tool_name=tool_call.tool_name,
+                tool_arguments=tool_call.tool_args,
+                token_count=tool_call_token_count,
+            )
+        )
+
+    total_token_count = sum(tc.token_count for tc in tool_calls_simple)
+
+    # Create ONE ASSISTANT message with all tool_calls (OpenAI format)
+    assistant_msg = ChatMessageSimple(
+        message="",  # No text content when making tool calls
+        token_count=total_token_count,
+        message_type=MessageType.ASSISTANT,
+        tool_calls=tool_calls_simple,
+        image_files=None,
+    )
+
+    messages: list[ChatMessageSimple] = [assistant_msg]
+
+    # Create a TOOL_CALL_RESPONSE failure message for each tool call
+    for tool_call in tool_calls:
+        failure_response_msg = ChatMessageSimple(
+            message=TOOL_CALL_FAILURE_PROMPT,
+            token_count=50,  # Tiny overestimate
+            message_type=MessageType.TOOL_CALL_RESPONSE,
+            tool_call_id=tool_call.tool_call_id,
+            image_files=None,
+        )
+        messages.append(failure_response_msg)
+
+    return messages

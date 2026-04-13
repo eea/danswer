@@ -3,11 +3,16 @@ from unittest.mock import MagicMock
 from unittest.mock import patch
 
 from onyx.connectors.google_drive.connector import GoogleDriveConnector
+from tests.daily.connectors.google_drive.consts_and_utils import _pick
 from tests.daily.connectors.google_drive.consts_and_utils import ADMIN_EMAIL
 from tests.daily.connectors.google_drive.consts_and_utils import ADMIN_FILE_IDS
 from tests.daily.connectors.google_drive.consts_and_utils import ADMIN_FOLDER_3_FILE_IDS
+from tests.daily.connectors.google_drive.consts_and_utils import ADMIN_MY_DRIVE_ID
 from tests.daily.connectors.google_drive.consts_and_utils import (
     assert_expected_docs_in_retrieved_docs,
+)
+from tests.daily.connectors.google_drive.consts_and_utils import (
+    assert_hierarchy_nodes_match_expected,
 )
 from tests.daily.connectors.google_drive.consts_and_utils import FOLDER_1_1_FILE_IDS
 from tests.daily.connectors.google_drive.consts_and_utils import FOLDER_1_1_URL
@@ -20,12 +25,39 @@ from tests.daily.connectors.google_drive.consts_and_utils import FOLDER_2_2_FILE
 from tests.daily.connectors.google_drive.consts_and_utils import FOLDER_2_2_URL
 from tests.daily.connectors.google_drive.consts_and_utils import FOLDER_2_FILE_IDS
 from tests.daily.connectors.google_drive.consts_and_utils import FOLDER_2_URL
+from tests.daily.connectors.google_drive.consts_and_utils import FOLDER_3_ID
 from tests.daily.connectors.google_drive.consts_and_utils import FOLDER_3_URL
-from tests.daily.connectors.google_drive.consts_and_utils import load_all_docs
+from tests.daily.connectors.google_drive.consts_and_utils import (
+    get_expected_hierarchy_for_shared_drives,
+)
+from tests.daily.connectors.google_drive.consts_and_utils import load_connector_outputs
+from tests.daily.connectors.google_drive.consts_and_utils import (
+    PERM_SYNC_DRIVE_ADMIN_AND_USER_1_A_ID,
+)
+from tests.daily.connectors.google_drive.consts_and_utils import (
+    PERM_SYNC_DRIVE_ADMIN_AND_USER_1_B_ID,
+)
+from tests.daily.connectors.google_drive.consts_and_utils import (
+    PERM_SYNC_DRIVE_ADMIN_ONLY_ID,
+)
+from tests.daily.connectors.google_drive.consts_and_utils import PILL_FOLDER_ID
+from tests.daily.connectors.google_drive.consts_and_utils import (
+    RESTRICTED_ACCESS_FOLDER_ID,
+)
 from tests.daily.connectors.google_drive.consts_and_utils import SECTIONS_FILE_IDS
+from tests.daily.connectors.google_drive.consts_and_utils import SECTIONS_FOLDER_ID
 from tests.daily.connectors.google_drive.consts_and_utils import SHARED_DRIVE_1_FILE_IDS
 from tests.daily.connectors.google_drive.consts_and_utils import SHARED_DRIVE_1_URL
 from tests.daily.connectors.google_drive.consts_and_utils import SHARED_DRIVE_2_FILE_IDS
+from tests.daily.connectors.google_drive.consts_and_utils import (
+    TEST_USER_1_EXTRA_DRIVE_1_ID,
+)
+from tests.daily.connectors.google_drive.consts_and_utils import (
+    TEST_USER_1_EXTRA_DRIVE_2_ID,
+)
+from tests.daily.connectors.google_drive.consts_and_utils import (
+    TEST_USER_1_EXTRA_FOLDER_ID,
+)
 
 
 @patch(
@@ -33,7 +65,7 @@ from tests.daily.connectors.google_drive.consts_and_utils import SHARED_DRIVE_2_
     return_value=None,
 )
 def test_include_all(
-    mock_get_api_key: MagicMock,
+    mock_get_api_key: MagicMock,  # noqa: ARG001
     google_drive_oauth_uploaded_connector_factory: Callable[..., GoogleDriveConnector],
 ) -> None:
     print("\n\nRunning test_include_all")
@@ -46,9 +78,8 @@ def test_include_all(
         my_drive_emails=None,
         shared_drive_urls=None,
     )
-    retrieved_docs = load_all_docs(connector)
+    output = load_connector_outputs(connector)
 
-    # Should get everything in shared and admin's My Drive with oauth
     expected_file_ids = (
         ADMIN_FILE_IDS
         + ADMIN_FOLDER_3_FILE_IDS
@@ -63,8 +94,33 @@ def test_include_all(
         + SECTIONS_FILE_IDS
     )
     assert_expected_docs_in_retrieved_docs(
-        retrieved_docs=retrieved_docs,
+        retrieved_docs=output.documents,
         expected_file_ids=expected_file_ids,
+    )
+
+    expected_nodes = get_expected_hierarchy_for_shared_drives(
+        include_drive_1=True,
+        include_drive_2=True,
+        include_restricted_folder=False,
+    )
+    expected_nodes.update(
+        _pick(
+            PERM_SYNC_DRIVE_ADMIN_ONLY_ID,
+            PERM_SYNC_DRIVE_ADMIN_AND_USER_1_A_ID,
+            PERM_SYNC_DRIVE_ADMIN_AND_USER_1_B_ID,
+            TEST_USER_1_EXTRA_DRIVE_1_ID,
+            TEST_USER_1_EXTRA_DRIVE_2_ID,
+            ADMIN_MY_DRIVE_ID,
+            PILL_FOLDER_ID,
+            RESTRICTED_ACCESS_FOLDER_ID,
+            TEST_USER_1_EXTRA_FOLDER_ID,
+            FOLDER_3_ID,
+        )
+    )
+    assert_hierarchy_nodes_match_expected(
+        retrieved_nodes=output.hierarchy_nodes,
+        expected_nodes=expected_nodes,
+        ignorable_node_ids={RESTRICTED_ACCESS_FOLDER_ID},
     )
 
 
@@ -73,7 +129,7 @@ def test_include_all(
     return_value=None,
 )
 def test_include_shared_drives_only(
-    mock_get_api_key: MagicMock,
+    mock_get_api_key: MagicMock,  # noqa: ARG001
     google_drive_oauth_uploaded_connector_factory: Callable[..., GoogleDriveConnector],
 ) -> None:
     print("\n\nRunning test_include_shared_drives_only")
@@ -86,9 +142,8 @@ def test_include_shared_drives_only(
         my_drive_emails=None,
         shared_drive_urls=None,
     )
-    retrieved_docs = load_all_docs(connector)
+    output = load_connector_outputs(connector)
 
-    # Should only get shared drives
     expected_file_ids = (
         SHARED_DRIVE_1_FILE_IDS
         + FOLDER_1_FILE_IDS
@@ -101,8 +156,28 @@ def test_include_shared_drives_only(
         + SECTIONS_FILE_IDS
     )
     assert_expected_docs_in_retrieved_docs(
-        retrieved_docs=retrieved_docs,
+        retrieved_docs=output.documents,
         expected_file_ids=expected_file_ids,
+    )
+
+    expected_nodes = get_expected_hierarchy_for_shared_drives(
+        include_drive_1=True,
+        include_drive_2=True,
+        include_restricted_folder=False,
+    )
+    expected_nodes.update(
+        _pick(
+            PERM_SYNC_DRIVE_ADMIN_ONLY_ID,
+            PERM_SYNC_DRIVE_ADMIN_AND_USER_1_A_ID,
+            PERM_SYNC_DRIVE_ADMIN_AND_USER_1_B_ID,
+            TEST_USER_1_EXTRA_DRIVE_1_ID,
+            TEST_USER_1_EXTRA_DRIVE_2_ID,
+            RESTRICTED_ACCESS_FOLDER_ID,
+        )
+    )
+    assert_hierarchy_nodes_match_expected(
+        retrieved_nodes=output.hierarchy_nodes,
+        expected_nodes=expected_nodes,
     )
 
 
@@ -111,7 +186,7 @@ def test_include_shared_drives_only(
     return_value=None,
 )
 def test_include_my_drives_only(
-    mock_get_api_key: MagicMock,
+    mock_get_api_key: MagicMock,  # noqa: ARG001
     google_drive_oauth_uploaded_connector_factory: Callable[..., GoogleDriveConnector],
 ) -> None:
     print("\n\nRunning test_include_my_drives_only")
@@ -124,13 +199,23 @@ def test_include_my_drives_only(
         my_drive_emails=None,
         shared_drive_urls=None,
     )
-    retrieved_docs = load_all_docs(connector)
+    output = load_connector_outputs(connector)
 
-    # Should only get primary_admins My Drive because we are impersonating them
     expected_file_ids = ADMIN_FILE_IDS + ADMIN_FOLDER_3_FILE_IDS
     assert_expected_docs_in_retrieved_docs(
-        retrieved_docs=retrieved_docs,
+        retrieved_docs=output.documents,
         expected_file_ids=expected_file_ids,
+    )
+
+    expected_nodes = _pick(
+        FOLDER_3_ID,
+        ADMIN_MY_DRIVE_ID,
+        PILL_FOLDER_ID,
+        TEST_USER_1_EXTRA_FOLDER_ID,
+    )
+    assert_hierarchy_nodes_match_expected(
+        retrieved_nodes=output.hierarchy_nodes,
+        expected_nodes=expected_nodes,
     )
 
 
@@ -139,7 +224,7 @@ def test_include_my_drives_only(
     return_value=None,
 )
 def test_drive_one_only(
-    mock_get_api_key: MagicMock,
+    mock_get_api_key: MagicMock,  # noqa: ARG001
     google_drive_oauth_uploaded_connector_factory: Callable[..., GoogleDriveConnector],
 ) -> None:
     print("\n\nRunning test_drive_one_only")
@@ -153,7 +238,7 @@ def test_drive_one_only(
         my_drive_emails=None,
         shared_drive_urls=",".join([str(url) for url in drive_urls]),
     )
-    retrieved_docs = load_all_docs(connector)
+    output = load_connector_outputs(connector)
 
     expected_file_ids = (
         SHARED_DRIVE_1_FILE_IDS
@@ -162,8 +247,19 @@ def test_drive_one_only(
         + FOLDER_1_2_FILE_IDS
     )
     assert_expected_docs_in_retrieved_docs(
-        retrieved_docs=retrieved_docs,
+        retrieved_docs=output.documents,
         expected_file_ids=expected_file_ids,
+    )
+
+    expected_nodes = get_expected_hierarchy_for_shared_drives(
+        include_drive_1=True,
+        include_drive_2=False,
+        include_restricted_folder=False,
+    )
+    assert_hierarchy_nodes_match_expected(
+        retrieved_nodes=output.hierarchy_nodes,
+        expected_nodes=expected_nodes,
+        ignorable_node_ids={RESTRICTED_ACCESS_FOLDER_ID},
     )
 
 
@@ -172,7 +268,7 @@ def test_drive_one_only(
     return_value=None,
 )
 def test_folder_and_shared_drive(
-    mock_get_api_key: MagicMock,
+    mock_get_api_key: MagicMock,  # noqa: ARG001
     google_drive_oauth_uploaded_connector_factory: Callable[..., GoogleDriveConnector],
 ) -> None:
     print("\n\nRunning test_folder_and_shared_drive")
@@ -187,7 +283,7 @@ def test_folder_and_shared_drive(
         my_drive_emails=None,
         shared_drive_urls=",".join([str(url) for url in drive_urls]),
     )
-    retrieved_docs = load_all_docs(connector)
+    output = load_connector_outputs(connector)
 
     expected_file_ids = (
         SHARED_DRIVE_1_FILE_IDS
@@ -199,8 +295,20 @@ def test_folder_and_shared_drive(
         + FOLDER_2_2_FILE_IDS
     )
     assert_expected_docs_in_retrieved_docs(
-        retrieved_docs=retrieved_docs,
+        retrieved_docs=output.documents,
         expected_file_ids=expected_file_ids,
+    )
+
+    expected_nodes = get_expected_hierarchy_for_shared_drives(
+        include_drive_1=True,
+        include_drive_2=True,
+        include_restricted_folder=False,
+    )
+    expected_nodes.pop(SECTIONS_FOLDER_ID, None)
+    assert_hierarchy_nodes_match_expected(
+        retrieved_nodes=output.hierarchy_nodes,
+        expected_nodes=expected_nodes,
+        ignorable_node_ids={RESTRICTED_ACCESS_FOLDER_ID},
     )
 
 
@@ -209,7 +317,7 @@ def test_folder_and_shared_drive(
     return_value=None,
 )
 def test_folders_only(
-    mock_get_api_key: MagicMock,
+    mock_get_api_key: MagicMock,  # noqa: ARG001
     google_drive_oauth_uploaded_connector_factory: Callable[..., GoogleDriveConnector],
 ) -> None:
     print("\n\nRunning test_folders_only")
@@ -219,7 +327,6 @@ def test_folders_only(
         FOLDER_2_2_URL,
         FOLDER_3_URL,
     ]
-    # This should get converted to a drive request and spit out a warning in the logs
     shared_drive_urls = [
         FOLDER_1_1_URL,
     ]
@@ -232,7 +339,7 @@ def test_folders_only(
         my_drive_emails=None,
         shared_drive_urls=",".join([str(url) for url in shared_drive_urls]),
     )
-    retrieved_docs = load_all_docs(connector)
+    output = load_connector_outputs(connector)
 
     expected_file_ids = (
         FOLDER_1_1_FILE_IDS
@@ -242,8 +349,20 @@ def test_folders_only(
         + ADMIN_FOLDER_3_FILE_IDS
     )
     assert_expected_docs_in_retrieved_docs(
-        retrieved_docs=retrieved_docs,
+        retrieved_docs=output.documents,
         expected_file_ids=expected_file_ids,
+    )
+
+    expected_nodes = get_expected_hierarchy_for_shared_drives(
+        include_drive_1=True,
+        include_drive_2=True,
+        include_restricted_folder=False,
+    )
+    expected_nodes.pop(SECTIONS_FOLDER_ID, None)
+    expected_nodes.update(_pick(ADMIN_MY_DRIVE_ID, FOLDER_3_ID))
+    assert_hierarchy_nodes_match_expected(
+        retrieved_nodes=output.hierarchy_nodes,
+        expected_nodes=expected_nodes,
     )
 
 
@@ -252,7 +371,7 @@ def test_folders_only(
     return_value=None,
 )
 def test_personal_folders_only(
-    mock_get_api_key: MagicMock,
+    mock_get_api_key: MagicMock,  # noqa: ARG001
     google_drive_oauth_uploaded_connector_factory: Callable[..., GoogleDriveConnector],
 ) -> None:
     print("\n\nRunning test_personal_folders_only")
@@ -268,10 +387,16 @@ def test_personal_folders_only(
         my_drive_emails=None,
         shared_drive_urls=None,
     )
-    retrieved_docs = load_all_docs(connector)
+    output = load_connector_outputs(connector)
 
     expected_file_ids = ADMIN_FOLDER_3_FILE_IDS
     assert_expected_docs_in_retrieved_docs(
-        retrieved_docs=retrieved_docs,
+        retrieved_docs=output.documents,
         expected_file_ids=expected_file_ids,
+    )
+
+    expected_nodes = _pick(FOLDER_3_ID, ADMIN_MY_DRIVE_ID)
+    assert_hierarchy_nodes_match_expected(
+        retrieved_nodes=output.hierarchy_nodes,
+        expected_nodes=expected_nodes,
     )

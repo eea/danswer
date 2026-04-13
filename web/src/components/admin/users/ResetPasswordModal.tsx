@@ -1,29 +1,24 @@
 import { useState } from "react";
-import { Modal } from "@/components/Modal";
+import Modal from "@/refresh-components/Modal";
 import Button from "@/refresh-components/buttons/Button";
 import { User } from "@/lib/types";
-import { PopupSpec } from "@/components/admin/connectors/Popup";
-import IconButton from "@/refresh-components/buttons/IconButton";
-import SvgRefreshCw from "@/icons/refresh-cw";
+import { toast } from "@/hooks/useToast";
 import Text from "@/refresh-components/texts/Text";
 import { LoadingAnimation } from "@/components/Loading";
-import SvgCopy from "@/icons/copy";
-import SvgCheck from "@/icons/check";
+import CopyIconButton from "@/refresh-components/buttons/CopyIconButton";
+import { SvgKey, SvgRefreshCw } from "@opal/icons";
 
-interface ResetPasswordModalProps {
+export interface ResetPasswordModalProps {
   user: User;
   onClose: () => void;
-  setPopup: (spec: PopupSpec) => void;
 }
 
-const ResetPasswordModal: React.FC<ResetPasswordModalProps> = ({
+export default function ResetPasswordModal({
   user,
   onClose,
-  setPopup,
-}) => {
+}: ResetPasswordModalProps) {
   const [newPassword, setNewPassword] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [isCopied, setIsCopied] = useState(false);
 
   const handleResetPassword = async () => {
     setIsLoading(true);
@@ -39,75 +34,63 @@ const ResetPasswordModal: React.FC<ResetPasswordModalProps> = ({
       if (response.ok) {
         const data = await response.json();
         setNewPassword(data.new_password);
-        setPopup({ message: "Password reset successfully", type: "success" });
+        toast.success("Password reset successfully");
       } else {
         const errorData = await response.json();
-        setPopup({
-          message: errorData.detail || "Failed to reset password",
-          type: "error",
-        });
+        toast.error(errorData.detail || "Failed to reset password");
       }
     } catch (error) {
-      setPopup({
-        message: "An error occurred while resetting the password",
-        type: "error",
-      });
+      toast.error("An error occurred while resetting the password");
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleCopyPassword = () => {
-    if (newPassword) {
-      navigator.clipboard.writeText(newPassword);
-      setPopup({ message: "Password copied to clipboard", type: "success" });
-      setIsCopied(true);
-      setTimeout(() => setIsCopied(false), 2000); // Reset after 2 seconds
-    }
-  };
-
   return (
-    <Modal onOutsideClick={onClose} width="rounded-lg w-full max-w-md">
-      <div className="p- text-neutral-900 dark:text-neutral-100">
-        <h2 className="text-2xl font-bold mb-4">Reset Password</h2>
-        <p className="mb-4">
-          Are you sure you want to reset the password for {user.email}?
-        </p>
-        {newPassword ? (
-          <div className="mb-4">
-            <p className="font-semibold">New Password:</p>
-            <div className="flex items-center bg-neutral-200 dark:bg-neutral-700 p-2 rounded">
-              <p data-testid="new-password" className="flex-grow">
-                {newPassword}
-              </p>
-              <IconButton
-                secondary
-                icon={isCopied ? SvgCheck : SvgCopy}
-                onClick={handleCopyPassword}
-              />
-            </div>
-            <Text text02>
-              Please securely communicate this password to the user.
-            </Text>
-          </div>
-        ) : (
-          <Button
-            onClick={handleResetPassword}
-            disabled={isLoading}
-            leftIcon={SvgRefreshCw}
-          >
-            {isLoading ? (
-              <Text>
-                <LoadingAnimation text="Resetting" />
+    <Modal open onOpenChange={onClose}>
+      <Modal.Content width="sm" height="sm">
+        <Modal.Header
+          icon={SvgKey}
+          title="Reset Password"
+          onClose={onClose}
+          description={
+            newPassword
+              ? undefined
+              : `Are you sure you want to reset the password for ${user.email}?`
+          }
+        />
+        <Modal.Body>
+          {newPassword ? (
+            <div>
+              <Text as="p">New Password:</Text>
+              <div className="flex items-center bg-background-tint-03 p-2 rounded gap-2">
+                <Text as="p" data-testid="new-password" className="flex-grow">
+                  {newPassword}
+                </Text>
+                <CopyIconButton getCopyText={() => newPassword} />
+              </div>
+              <Text as="p" text02>
+                Please securely communicate this password to the user.
               </Text>
-            ) : (
-              "Reset Password"
-            )}
-          </Button>
-        )}
-      </div>
+            </div>
+          ) : (
+            // TODO(@raunakab): migrate to opal Button once it supports ReactNode children
+            <Button
+              onClick={handleResetPassword}
+              disabled={isLoading}
+              leftIcon={SvgRefreshCw}
+            >
+              {isLoading ? (
+                <Text as="p">
+                  <LoadingAnimation text="Resetting" />
+                </Text>
+              ) : (
+                "Reset Password"
+              )}
+            </Button>
+          )}
+        </Modal.Body>
+      </Modal.Content>
     </Modal>
   );
-};
-
-export default ResetPasswordModal;
+}

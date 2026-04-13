@@ -1,15 +1,19 @@
 "use client";
 
-import { AdminPageTitle } from "@/components/admin/Title";
-import { QueryHistoryTable } from "./QueryHistoryTable";
-import { DatabaseIcon } from "@/components/icons/icons";
+import * as SettingsLayouts from "@/layouts/settings-layouts";
+import { QueryHistoryTable } from "@/app/ee/admin/performance/query-history/QueryHistoryTable";
+import { ADMIN_ROUTES } from "@/lib/admin-routes";
+
+const route = ADMIN_ROUTES.QUERY_HISTORY;
 
 export default function QueryHistoryPage() {
   return (
-    <main className="pt-4 mx-auto container">
-      <AdminPageTitle title="Query History" icon={<DatabaseIcon size={32} />} />
+    <SettingsLayouts.Root>
+      <SettingsLayouts.Header icon={route.icon} title={route.title} separator />
 
-      <QueryHistoryTable />
-    </main>
+      <SettingsLayouts.Body>
+        <QueryHistoryTable />
+      </SettingsLayouts.Body>
+    </SettingsLayouts.Root>
   );
 }

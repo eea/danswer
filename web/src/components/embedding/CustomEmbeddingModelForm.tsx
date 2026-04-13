@@ -7,7 +7,8 @@ import { Formik, Form } from "formik";
 import * as Yup from "yup";
 import { TextFormField, BooleanFormField } from "@/components/Field";
 import { Dispatch, SetStateAction } from "react";
-import Text from "@/components/ui/text";
+import { Text } from "@opal/components";
+import Spacer from "@/refresh-components/Spacer";
 import Button from "@/refresh-components/buttons/Button";
 import { EmbeddingDetails } from "@/app/admin/embeddings/EmbeddingModelSelectionForm";
 
@@ -59,10 +60,12 @@ export function CustomEmbeddingModelForm({
       >
         {({ isSubmitting, submitForm, errors }) => (
           <Form>
-            <Text className="text-xl text-text-900 font-bold mb-4">
-              Specify details for your {getFormattedProviderName(embeddingType)}{" "}
-              Provider&apos;s model
+            <Text as="p" font="heading-h3">
+              {`Specify details for your ${getFormattedProviderName(
+                embeddingType
+              )} Provider's model`}
             </Text>
+            <Spacer rem={1} />
             <TextFormField
               name="model_name"
               label="Model Name:"
@@ -70,7 +73,6 @@ export function CustomEmbeddingModelForm({
                 embeddingType
               )} model`}
               placeholder="e.g. 'all-MiniLM-L6-v2'"
-              autoCompleteDisabled={true}
             />
 
             <TextFormField
@@ -79,7 +81,6 @@ export function CustomEmbeddingModelForm({
               subtext="The dimension of the model's embeddings"
               placeholder="e.g. '1536'"
               type="number"
-              autoCompleteDisabled={true}
             />
 
             <BooleanFormField
@@ -93,16 +94,15 @@ export function CustomEmbeddingModelForm({
               name="query_prefix"
               label="Query Prefix:"
               subtext="Prefix for query embeddings"
-              autoCompleteDisabled={true}
             />
 
             <TextFormField
               name="passage_prefix"
               label="Passage Prefix:"
               subtext="Prefix for passage embeddings"
-              autoCompleteDisabled={true}
             />
 
+            {/* TODO(@raunakab): migrate to opal Button once className/iconClassName is resolved */}
             <Button
               type="submit"
               disabled={isSubmitting}

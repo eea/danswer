@@ -7,12 +7,16 @@ from onyx.connectors.models import ConnectorFailure
 from onyx.connectors.models import ConnectorStopSignal
 from onyx.connectors.models import DocumentFailure
 from onyx.db.models import SearchSettings
+from onyx.document_index.chunk_content_enrichment import (
+    generate_enriched_content_for_chunk_embedding,
+)
 from onyx.indexing.indexing_heartbeat import IndexingHeartbeatInterface
 from onyx.indexing.models import ChunkEmbedding
 from onyx.indexing.models import DocAwareChunk
 from onyx.indexing.models import IndexChunk
 from onyx.natural_language_processing.search_nlp_models import EmbeddingModel
 from onyx.utils.logger import setup_logger
+from onyx.utils.pydantic_util import shallow_model_dump
 from onyx.utils.timing import log_function_time
 from shared_configs.configs import INDEXING_MODEL_SERVER_HOST
 from shared_configs.configs import INDEXING_MODEL_SERVER_PORT
@@ -126,7 +130,7 @@ class DefaultIndexingEmbedder(IndexingEmbedder):
             if chunk.large_chunk_reference_ids:
                 large_chunks_present = True
             chunk_text = (
-                f"{chunk.title_prefix}{chunk.doc_summary}{chunk.content}{chunk.chunk_context}{chunk.metadata_suffix_semantic}"
+                generate_enriched_content_for_chunk_embedding(chunk)
             ) or chunk.source_document.get_title_for_document_index()
 
             if not chunk_text:
@@ -207,8 +211,8 @@ class DefaultIndexingEmbedder(IndexingEmbedder):
                     )[0]
                     title_embed_dict[title] = title_embedding
 
-            new_embedded_chunk = IndexChunk(
-                **chunk.model_dump(),
+            new_embedded_chunk = IndexChunk.model_construct(
+                **shallow_model_dump(chunk),
                 embeddings=ChunkEmbedding(
                     full_embedding=chunk_embeddings[0],
                     mini_chunk_embeddings=chunk_embeddings[1:],

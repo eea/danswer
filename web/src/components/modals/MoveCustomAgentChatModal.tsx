@@ -2,11 +2,10 @@
 
 import { useState } from "react";
 import ConfirmationModalLayout from "@/refresh-components/layouts/ConfirmationModalLayout";
-import Button from "@/refresh-components/buttons/Button";
+import { Button } from "@opal/components";
 import Checkbox from "@/refresh-components/inputs/Checkbox";
 import Text from "@/refresh-components/texts/Text";
-import SvgAlertCircle from "@/icons/alert-circle";
-
+import { SvgAlertCircle } from "@opal/icons";
 interface MoveCustomAgentChatModalProps {
   onCancel: () => void;
   onConfirm: (doNotShowAgain: boolean) => void;
@@ -24,13 +23,11 @@ export default function MoveCustomAgentChatModal({
       title="Move Custom Agent Chat"
       onClose={onCancel}
       submit={
-        <Button primary onClick={() => onConfirm(doNotShowAgain)}>
-          Confirm Move
-        </Button>
+        <Button onClick={() => onConfirm(doNotShowAgain)}>Confirm Move</Button>
       }
     >
       <div className="flex flex-col gap-4">
-        <Text text03>
+        <Text as="p" text03>
           This chat uses a <b>custom agent</b> and moving it to a <b>project</b>{" "}
           will not override the agent&apos;s prompt or knowledge configurations.
           This should only be used for organization purposes.

@@ -15,15 +15,18 @@ from sqlalchemy.orm import aliased
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm import Session
 
+from onyx.access.hierarchy_access import get_user_external_group_ids
 from onyx.auth.schemas import UserRole
 from onyx.configs.app_configs import CURATORS_CANNOT_VIEW_OR_EDIT_NON_OWNED_ASSISTANTS
-from onyx.configs.app_configs import DISABLE_AUTH
-from onyx.configs.chat_configs import CONTEXT_CHUNKS_ABOVE
-from onyx.configs.chat_configs import CONTEXT_CHUNKS_BELOW
+from onyx.configs.constants import DEFAULT_PERSONA_ID
 from onyx.configs.constants import NotificationType
-from onyx.context.search.enums import RecencyBiasSetting
 from onyx.db.constants import SLACK_BOT_PERSONA_PREFIX
+from onyx.db.document_access import get_accessible_documents_by_ids
+from onyx.db.models import ConnectorCredentialPair
+from onyx.db.models import Document
 from onyx.db.models import DocumentSet
+from onyx.db.models import FederatedConnector__DocumentSet
+from onyx.db.models import HierarchyNode
 from onyx.db.models import Persona
 from onyx.db.models import Persona__User
 from onyx.db.models import Persona__UserGroup
@@ -40,17 +43,25 @@ from onyx.server.features.persona.models import MinimalPersonaSnapshot
 from onyx.server.features.persona.models import PersonaSharedNotificationData
 from onyx.server.features.persona.models import PersonaSnapshot
 from onyx.server.features.persona.models import PersonaUpsertRequest
-from onyx.server.features.tool.models import should_expose_tool_to_fe
+from onyx.server.features.tool.tool_visibility import should_expose_tool_to_fe
 from onyx.utils.logger import setup_logger
 from onyx.utils.variable_functionality import fetch_versioned_implementation
 
 logger = setup_logger()
 
-DEFAULT_BEHAVIOR_PERSONA_ID = 0
 
-
-def get_default_behavior_persona(db_session: Session) -> Persona | None:
-    stmt = select(Persona).where(Persona.id == DEFAULT_BEHAVIOR_PERSONA_ID)
+def get_default_behavior_persona(
+    db_session: Session,
+    eager_load_for_tools: bool = False,
+) -> Persona | None:
+    stmt = select(Persona).where(Persona.id == DEFAULT_PERSONA_ID)
+    if eager_load_for_tools:
+        stmt = stmt.options(
+            selectinload(Persona.tools),
+            selectinload(Persona.document_sets),
+            selectinload(Persona.attached_documents),
+            selectinload(Persona.hierarchy_nodes),
+        )
     return db_session.scalars(stmt).first()
 
 
@@ -61,10 +72,9 @@ class PersonaLoadType(Enum):
 
 
 def _add_user_filters(
-    stmt: Select[tuple[Persona]], user: User | None, get_editable: bool = True
+    stmt: Select[tuple[Persona]], user: User, get_editable: bool = True
 ) -> Select[tuple[Persona]]:
-    # If user is None and auth is disabled, assume the user is an admin
-    if (user is None and DISABLE_AUTH) or (user and user.role == UserRole.ADMIN):
+    if user.role == UserRole.ADMIN:
         return stmt
 
     stmt = stmt.distinct()
@@ -97,8 +107,8 @@ def _add_user_filters(
     - if we are not editing, we return all Personas directly connected to the user
     """
 
-    # If user is None, this is an anonymous user and we should only show public Personas
-    if user is None:
+    # Anonymous users only see public Personas
+    if user.is_anonymous:
         where_clause = Persona.is_public == True  # noqa: E712
         return stmt.where(where_clause)
 
@@ -126,7 +136,7 @@ def _add_user_filters(
     else:
         # Group the public persona conditions
         public_condition = (Persona.is_public == True) & (  # noqa: E712
-            Persona.is_visible == True  # noqa: E712
+            Persona.is_listed == True  # noqa: E712
         )
 
         where_clause |= public_condition
@@ -138,7 +148,7 @@ def _add_user_filters(
 
 
 def fetch_persona_by_id_for_user(
-    db_session: Session, persona_id: int, user: User | None, get_editable: bool = True
+    db_session: Session, persona_id: int, user: User, get_editable: bool = True
 ) -> Persona:
     stmt = select(Persona).where(Persona.id == persona_id).distinct()
     stmt = _add_user_filters(stmt=stmt, user=user, get_editable=get_editable)
@@ -152,7 +162,7 @@ def fetch_persona_by_id_for_user(
 
 
 def get_best_persona_id_for_user(
-    db_session: Session, user: User | None, persona_id: int | None = None
+    db_session: Session, user: User, persona_id: int | None = None
 ) -> int | None:
     if persona_id is not None:
         stmt = select(Persona).where(Persona.id == persona_id).distinct()
@@ -179,8 +189,13 @@ def get_best_persona_id_for_user(
 def _get_persona_by_name(
     persona_name: str, user: User | None, db_session: Session
 ) -> Persona | None:
-    """Admins can see all, regular users can only fetch their own.
-    If user is None, assume the user is an admin or auth is disabled."""
+    """Fetch a persona by name with access control.
+
+    Access rules:
+    - user=None (system operations): can see all personas
+    - Admin users: can see all personas
+    - Non-admin users: can only see their own personas
+    """
     stmt = select(Persona).where(Persona.name == persona_name)
     if user and user.role != UserRole.ADMIN:
         stmt = stmt.where(Persona.user_id == user.id)
@@ -188,14 +203,29 @@ def _get_persona_by_name(
     return result
 
 
-def make_persona_private(
+def update_persona_access(
     persona_id: int,
     creator_user_id: UUID | None,
-    user_ids: list[UUID] | None,
-    group_ids: list[int] | None,
     db_session: Session,
+    is_public: bool | None = None,
+    user_ids: list[UUID] | None = None,
+    group_ids: list[int] | None = None,
 ) -> None:
+    """Updates the access settings for a persona including public status and user shares.
+
+    NOTE: Callers are responsible for committing."""
+
+    needs_sync = False
+    if is_public is not None:
+        needs_sync = True
+        persona = db_session.query(Persona).filter(Persona.id == persona_id).first()
+        if persona:
+            persona.is_public = is_public
+
+    # NOTE: For user-ids and group-ids, `None` means "leave unchanged", `[]` means "clear all shares",
+    # and a non-empty list means "replace with these shares".
     if user_ids is not None:
+        needs_sync = True
         db_session.query(Persona__User).filter(
             Persona__User.persona_id == persona_id
         ).delete(synchronize_session="fetch")
@@ -206,43 +236,47 @@ def make_persona_private(
                 create_notification(
                     user_id=user_uuid,
                     notif_type=NotificationType.PERSONA_SHARED,
+                    title="A new agent was shared with you!",
                     db_session=db_session,
                     additional_data=PersonaSharedNotificationData(
                         persona_id=persona_id,
                     ).model_dump(),
                 )
 
-        db_session.commit()
+    # MIT doesn't support group-based sharing, so we allow clearing (no-op since
+    # there shouldn't be any) but raise an error if trying to add actual groups.
+    if group_ids is not None:
+        needs_sync = True
+        db_session.query(Persona__UserGroup).filter(
+            Persona__UserGroup.persona_id == persona_id
+        ).delete(synchronize_session="fetch")
 
-    # May cause error if someone switches down to MIT from EE
-    if group_ids:
-        raise NotImplementedError("Onyx MIT does not support private Personas")
+        if group_ids:
+            raise NotImplementedError("Onyx MIT does not support group-based sharing")
+
+    # When sharing changes, user file ACLs need to be updated in the vector DB
+    if needs_sync:
+        mark_persona_user_files_for_sync(persona_id, db_session)
 
 
 def create_update_persona(
     persona_id: int | None,
     create_persona_request: PersonaUpsertRequest,
-    user: User | None,
+    user: User,
     db_session: Session,
 ) -> FullPersonaSnapshot:
     """Higher level function than upsert_persona, although either is valid to use."""
     # Permission to actually use these is checked later
 
     try:
-        # Default persona validation
-        if create_persona_request.is_default_persona:
-            if not create_persona_request.is_public:
-                raise ValueError("Cannot make a default persona non public")
-
-            if user:
-                # Curators can edit default personas, but not make them
-                if (
-                    user.role == UserRole.CURATOR
-                    or user.role == UserRole.GLOBAL_CURATOR
-                ):
-                    pass
-                elif user.role != UserRole.ADMIN:
-                    raise ValueError("Only admins can make a default persona")
+        # Featured persona validation
+        if create_persona_request.is_featured:
+            # Curators can edit featured personas, but not make them
+            # TODO this will be reworked soon with RBAC permissions feature
+            if user.role == UserRole.CURATOR or user.role == UserRole.GLOBAL_CURATOR:
+                pass
+            elif user.role != UserRole.ADMIN:
+                raise ValueError("Only admins can make a featured persona")
 
         # Convert incoming string UUIDs to UUID objects for DB operations
         converted_user_file_ids = None
@@ -263,39 +297,38 @@ def create_update_persona(
             document_set_ids=create_persona_request.document_set_ids,
             tool_ids=create_persona_request.tool_ids,
             is_public=create_persona_request.is_public,
-            recency_bias=create_persona_request.recency_bias,
             llm_model_provider_override=create_persona_request.llm_model_provider_override,
             llm_model_version_override=create_persona_request.llm_model_version_override,
             starter_messages=create_persona_request.starter_messages,
             system_prompt=create_persona_request.system_prompt,
             task_prompt=create_persona_request.task_prompt,
             datetime_aware=create_persona_request.datetime_aware,
-            icon_color=create_persona_request.icon_color,
-            icon_shape=create_persona_request.icon_shape,
+            replace_base_system_prompt=create_persona_request.replace_base_system_prompt,
             uploaded_image_id=create_persona_request.uploaded_image_id,
+            icon_name=create_persona_request.icon_name,
             display_priority=create_persona_request.display_priority,
             remove_image=create_persona_request.remove_image,
             search_start_date=create_persona_request.search_start_date,
             label_ids=create_persona_request.label_ids,
-            num_chunks=create_persona_request.num_chunks,
-            llm_relevance_filter=create_persona_request.llm_relevance_filter,
-            llm_filter_extraction=create_persona_request.llm_filter_extraction,
-            is_default_persona=create_persona_request.is_default_persona,
+            is_featured=create_persona_request.is_featured,
             user_file_ids=converted_user_file_ids,
+            commit=False,
+            hierarchy_node_ids=create_persona_request.hierarchy_node_ids,
+            document_ids=create_persona_request.document_ids,
         )
 
-        versioned_make_persona_private = fetch_versioned_implementation(
-            "onyx.db.persona", "make_persona_private"
+        versioned_update_persona_access = fetch_versioned_implementation(
+            "onyx.db.persona", "update_persona_access"
         )
 
-        # Privatize Persona
-        versioned_make_persona_private(
+        versioned_update_persona_access(
             persona_id=persona.id,
-            creator_user_id=user.id if user else None,
+            creator_user_id=user.id,
+            db_session=db_session,
             user_ids=create_persona_request.users,
             group_ids=create_persona_request.groups,
-            db_session=db_session,
         )
+        db_session.commit()
 
     except ValueError as e:
         logger.exception("Failed to create persona")
@@ -304,11 +337,14 @@ def create_update_persona(
     return FullPersonaSnapshot.from_model(persona)
 
 
-def update_persona_shared_users(
+def update_persona_shared(
     persona_id: int,
-    user_ids: list[UUID],
-    user: User | None,
+    user_ids: list[UUID] | None,
+    user: User,
     db_session: Session,
+    group_ids: list[int] | None = None,
+    is_public: bool | None = None,
+    label_ids: list[int] | None = None,
 ) -> None:
     """Simplified version of `create_update_persona` which only touches the
     accessibility rather than any of the logic (e.g. prompt, connected data sources,
@@ -317,33 +353,43 @@ def update_persona_shared_users(
         db_session=db_session, persona_id=persona_id, user=user, get_editable=True
     )
 
-    if persona.is_public:
-        raise HTTPException(status_code=400, detail="Cannot share public persona")
+    if user and user.role != UserRole.ADMIN and persona.user_id != user.id:
+        raise PermissionError("You don't have permission to modify this persona")
 
-    versioned_make_persona_private = fetch_versioned_implementation(
-        "onyx.db.persona", "make_persona_private"
+    versioned_update_persona_access = fetch_versioned_implementation(
+        "onyx.db.persona", "update_persona_access"
     )
-
-    # Privatize Persona
-    versioned_make_persona_private(
+    versioned_update_persona_access(
         persona_id=persona_id,
-        creator_user_id=user.id if user else None,
-        user_ids=user_ids,
-        group_ids=None,
+        creator_user_id=user.id,
         db_session=db_session,
+        is_public=is_public,
+        user_ids=user_ids,
+        group_ids=group_ids,
     )
+
+    if label_ids is not None:
+        labels = (
+            db_session.query(PersonaLabel).filter(PersonaLabel.id.in_(label_ids)).all()
+        )
+        if len(labels) != len(label_ids):
+            raise ValueError("Some label IDs were not found in the database")
+        persona.labels.clear()
+        persona.labels = labels
+
+    db_session.commit()
 
 
 def update_persona_public_status(
     persona_id: int,
     is_public: bool,
     db_session: Session,
-    user: User | None,
+    user: User,
 ) -> None:
     persona = fetch_persona_by_id_for_user(
         db_session=db_session, persona_id=persona_id, user=user, get_editable=True
     )
-    if user and user.role != UserRole.ADMIN and persona.user_id != user.id:
+    if user.role != UserRole.ADMIN and persona.user_id != user.id:
         raise ValueError("You don't have permission to modify this persona")
 
     persona.is_public = is_public
@@ -356,6 +402,17 @@ def _build_persona_filters(
     include_slack_bot_personas: bool,
     include_deleted: bool,
 ) -> Select[tuple[Persona]]:
+    """Filters which Personas are included in the query.
+
+    Args:
+        stmt: The base query to filter.
+        include_default: If True, includes builtin/default personas.
+        include_slack_bot_personas: If True, includes Slack bot personas.
+        include_deleted: If True, includes deleted personas.
+
+    Returns:
+        The modified query with the filters applied.
+    """
     if not include_default:
         stmt = stmt.where(Persona.builtin_persona.is_(False))
     if not include_slack_bot_personas:
@@ -366,7 +423,7 @@ def _build_persona_filters(
 
 
 def get_minimal_persona_snapshots_for_user(
-    user: User | None,
+    user: User,
     db_session: Session,
     get_editable: bool = True,
     include_default: bool = True,
@@ -381,7 +438,20 @@ def get_minimal_persona_snapshots_for_user(
     stmt = stmt.options(
         selectinload(Persona.tools),
         selectinload(Persona.labels),
-        selectinload(Persona.document_sets),
+        selectinload(Persona.document_sets).options(
+            selectinload(DocumentSet.connector_credential_pairs).selectinload(
+                ConnectorCredentialPair.connector
+            ),
+            selectinload(DocumentSet.users),
+            selectinload(DocumentSet.groups),
+            selectinload(DocumentSet.federated_connectors).selectinload(
+                FederatedConnector__DocumentSet.federated_connector
+            ),
+        ),
+        selectinload(Persona.hierarchy_nodes),
+        selectinload(Persona.attached_documents).selectinload(
+            Document.parent_hierarchy_node
+        ),
         selectinload(Persona.user),
     )
     results = db_session.scalars(stmt).all()
@@ -389,8 +459,7 @@ def get_minimal_persona_snapshots_for_user(
 
 
 def get_persona_snapshots_for_user(
-    # if user is `None` assume the user is an admin or auth is disabled
-    user: User | None,
+    user: User,
     db_session: Session,
     get_editable: bool = True,
     include_default: bool = True,
@@ -404,32 +473,302 @@ def get_persona_snapshots_for_user(
     )
     stmt = stmt.options(
         selectinload(Persona.tools),
+        selectinload(Persona.hierarchy_nodes),
+        selectinload(Persona.attached_documents).selectinload(
+            Document.parent_hierarchy_node
+        ),
         selectinload(Persona.labels),
-        selectinload(Persona.document_sets),
+        selectinload(Persona.document_sets).options(
+            selectinload(DocumentSet.connector_credential_pairs).selectinload(
+                ConnectorCredentialPair.connector
+            ),
+            selectinload(DocumentSet.users),
+            selectinload(DocumentSet.groups),
+            selectinload(DocumentSet.federated_connectors).selectinload(
+                FederatedConnector__DocumentSet.federated_connector
+            ),
+        ),
         selectinload(Persona.user),
+        selectinload(Persona.user_files),
+        selectinload(Persona.users),
+        selectinload(Persona.groups),
     )
 
     results = db_session.scalars(stmt).all()
     return [PersonaSnapshot.from_model(persona) for persona in results]
 
 
+def get_persona_count_for_user(
+    user: User,
+    db_session: Session,
+    get_editable: bool = True,
+    include_default: bool = True,
+    include_slack_bot_personas: bool = False,
+    include_deleted: bool = False,
+) -> int:
+    """Counts the total number of personas accessible to the user.
+
+    Args:
+        user: The user to filter personas for. If None and auth is disabled,
+            assumes the user is an admin. Otherwise, if None shows only public
+            personas.
+        db_session: Database session for executing queries.
+        get_editable: If True, only returns personas the user can edit.
+        include_default: If True, includes builtin/default personas.
+        include_slack_bot_personas: If True, includes Slack bot personas.
+        include_deleted: If True, includes deleted personas.
+
+    Returns:
+        Total count of personas matching the filters and user permissions.
+    """
+    stmt = _build_persona_base_query(
+        user=user,
+        get_editable=get_editable,
+        include_default=include_default,
+        include_slack_bot_personas=include_slack_bot_personas,
+        include_deleted=include_deleted,
+    )
+    # Convert to count query.
+    count_stmt = stmt.with_only_columns(func.count(func.distinct(Persona.id))).order_by(
+        None
+    )
+    return db_session.scalar(count_stmt) or 0
+
+
+def get_minimal_persona_snapshots_paginated(
+    user: User,
+    db_session: Session,
+    page_num: int,
+    page_size: int,
+    get_editable: bool = True,
+    include_default: bool = True,
+    include_slack_bot_personas: bool = False,
+    include_deleted: bool = False,
+) -> list[MinimalPersonaSnapshot]:
+    """Gets a single page of minimal persona snapshots with ordering.
+
+    Personas are ordered by display_priority (ASC, nulls last) then by ID (ASC
+    distance from 0).
+
+    Args:
+        user: The user to filter personas for. If None and auth is disabled,
+            assumes the user is an admin. Otherwise, if None shows only public
+            personas.
+        db_session: Database session for executing queries.
+        page_num: Zero-indexed page number (e.g., 0 for the first page).
+        page_size: Number of items per page.
+        get_editable: If True, only returns personas the user can edit.
+        include_default: If True, includes builtin/default personas.
+        include_slack_bot_personas: If True, includes Slack bot personas.
+        include_deleted: If True, includes deleted personas.
+
+    Returns:
+        List of MinimalPersonaSnapshot objects for the requested page, ordered
+        by display_priority (nulls last) then ID.
+    """
+    stmt = _get_paginated_persona_query(
+        user,
+        page_num,
+        page_size,
+        get_editable,
+        include_default,
+        include_slack_bot_personas,
+        include_deleted,
+    )
+    # Do eager loading of columns we know MinimalPersonaSnapshot.from_model will
+    # need.
+    stmt = stmt.options(
+        selectinload(Persona.tools),
+        selectinload(Persona.hierarchy_nodes),
+        selectinload(Persona.attached_documents).selectinload(
+            Document.parent_hierarchy_node
+        ),
+        selectinload(Persona.labels),
+        selectinload(Persona.document_sets).options(
+            selectinload(DocumentSet.connector_credential_pairs).selectinload(
+                ConnectorCredentialPair.connector
+            ),
+            selectinload(DocumentSet.users),
+            selectinload(DocumentSet.groups),
+            selectinload(DocumentSet.federated_connectors).selectinload(
+                FederatedConnector__DocumentSet.federated_connector
+            ),
+        ),
+        selectinload(Persona.user),
+    )
+
+    results = db_session.scalars(stmt).all()
+    return [MinimalPersonaSnapshot.from_model(persona) for persona in results]
+
+
+def get_persona_snapshots_paginated(
+    user: User,
+    db_session: Session,
+    page_num: int,
+    page_size: int,
+    get_editable: bool = True,
+    include_default: bool = True,
+    include_slack_bot_personas: bool = False,
+    include_deleted: bool = False,
+) -> list[PersonaSnapshot]:
+    """Gets a single page of persona snapshots (admin view) with ordering.
+
+    Personas are ordered by display_priority (ASC, nulls last) then by ID (ASC
+    distance from 0).
+
+    This function returns PersonaSnapshot objects which contain more detailed
+    information than MinimalPersonaSnapshot, used for admin views.
+
+    Args:
+        user: The user to filter personas for. If None and auth is disabled,
+            assumes the user is an admin. Otherwise, if None shows only public
+            personas.
+        db_session: Database session for executing queries.
+        page_num: Zero-indexed page number (e.g., 0 for the first page).
+        page_size: Number of items per page.
+        get_editable: If True, only returns personas the user can edit.
+        include_default: If True, includes builtin/default personas.
+        include_slack_bot_personas: If True, includes Slack bot personas.
+        include_deleted: If True, includes deleted personas.
+
+    Returns:
+        List of PersonaSnapshot objects for the requested page, ordered by
+        display_priority (nulls last) then ID.
+    """
+    stmt = _get_paginated_persona_query(
+        user,
+        page_num,
+        page_size,
+        get_editable,
+        include_default,
+        include_slack_bot_personas,
+        include_deleted,
+    )
+    # Do eager loading of columns we know PersonaSnapshot.from_model will need.
+    stmt = stmt.options(
+        selectinload(Persona.tools),
+        selectinload(Persona.hierarchy_nodes),
+        selectinload(Persona.attached_documents).selectinload(
+            Document.parent_hierarchy_node
+        ),
+        selectinload(Persona.labels),
+        selectinload(Persona.document_sets).options(
+            selectinload(DocumentSet.connector_credential_pairs).selectinload(
+                ConnectorCredentialPair.connector
+            ),
+            selectinload(DocumentSet.users),
+            selectinload(DocumentSet.groups),
+            selectinload(DocumentSet.federated_connectors).selectinload(
+                FederatedConnector__DocumentSet.federated_connector
+            ),
+        ),
+        selectinload(Persona.user),
+        selectinload(Persona.user_files),
+        selectinload(Persona.users),
+        selectinload(Persona.groups),
+    )
+
+    results = db_session.scalars(stmt).all()
+    return [PersonaSnapshot.from_model(persona) for persona in results]
+
+
+def _get_paginated_persona_query(
+    user: User,
+    page_num: int,
+    page_size: int,
+    get_editable: bool = True,
+    include_default: bool = True,
+    include_slack_bot_personas: bool = False,
+    include_deleted: bool = False,
+) -> Select[tuple[Persona]]:
+    """Builds a paginated query on personas ordered on display_priority and id.
+
+    Personas are ordered by display_priority (ASC, nulls last) then by ID (ASC
+    distance from 0) to match the frontend personaComparator() logic.
+
+    Args:
+        user: The user to filter personas for. If None and auth is disabled,
+            assumes the user is an admin. Otherwise, if None shows only public
+            personas.
+        page_num: Zero-indexed page number (e.g., 0 for the first page).
+        page_size: Number of items per page.
+        get_editable: If True, only returns personas the user can edit.
+        include_default: If True, includes builtin/default personas.
+        include_slack_bot_personas: If True, includes Slack bot personas.
+        include_deleted: If True, includes deleted personas.
+
+    Returns:
+        SQLAlchemy Select statement with all filters, ordering, and pagination
+        applied.
+    """
+    stmt = _build_persona_base_query(
+        user=user,
+        get_editable=get_editable,
+        include_default=include_default,
+        include_slack_bot_personas=include_slack_bot_personas,
+        include_deleted=include_deleted,
+    )
+    # Add the abs(id) expression to the SELECT list (required for DISTINCT +
+    # ORDER BY).
+    stmt = stmt.add_columns(func.abs(Persona.id).label("abs_id"))
+    # Apply ordering.
+    stmt = stmt.order_by(
+        Persona.display_priority.asc().nullslast(),
+        func.abs(Persona.id).asc(),
+    )
+    # Apply pagination.
+    stmt = stmt.offset(page_num * page_size).limit(page_size)
+    return stmt
+
+
+def _build_persona_base_query(
+    user: User,
+    get_editable: bool = True,
+    include_default: bool = True,
+    include_slack_bot_personas: bool = False,
+    include_deleted: bool = False,
+) -> Select[tuple[Persona]]:
+    """Builds a base persona query with all user and persona filters applied.
+
+    This helper constructs a filtered query that can then be customized for
+    counting, pagination, or full retrieval.
+
+    Args:
+        user: The user to filter personas for. If None and auth is disabled,
+            assumes the user is an admin. Otherwise, if None shows only public
+            personas.
+        get_editable: If True, only returns personas the user can edit.
+        include_default: If True, includes builtin/default personas.
+        include_slack_bot_personas: If True, includes Slack bot personas.
+        include_deleted: If True, includes deleted personas.
+
+    Returns:
+        SQLAlchemy Select statement with all filters applied.
+    """
+    stmt = select(Persona)
+    stmt = _add_user_filters(stmt, user, get_editable)
+    stmt = _build_persona_filters(
+        stmt, include_default, include_slack_bot_personas, include_deleted
+    )
+    return stmt
+
+
 def get_raw_personas_for_user(
-    user: User | None,
+    user: User,
     db_session: Session,
     get_editable: bool = True,
     include_default: bool = True,
     include_slack_bot_personas: bool = False,
     include_deleted: bool = False,
 ) -> Sequence[Persona]:
-    stmt = select(Persona)
-    stmt = _add_user_filters(stmt, user, get_editable)
-    stmt = _build_persona_filters(
-        stmt, include_default, include_slack_bot_personas, include_deleted
+    stmt = _build_persona_base_query(
+        user, get_editable, include_default, include_slack_bot_personas, include_deleted
     )
     return db_session.scalars(stmt).all()
 
 
 def get_personas(db_session: Session) -> Sequence[Persona]:
+    """WARNING: Unsafe, can fetch personas from all users."""
     stmt = select(Persona).distinct()
     stmt = stmt.where(not_(Persona.name.startswith(SLACK_BOT_PERSONA_PREFIX)))
     stmt = stmt.where(Persona.deleted.is_(False))
@@ -438,27 +777,32 @@ def get_personas(db_session: Session) -> Sequence[Persona]:
 
 def mark_persona_as_deleted(
     persona_id: int,
-    user: User | None,
+    user: User,
     db_session: Session,
 ) -> None:
     persona = get_persona_by_id(persona_id=persona_id, user=user, db_session=db_session)
     persona.deleted = True
+    affected_file_ids = [uf.id for uf in persona.user_files]
+    if affected_file_ids:
+        _mark_files_need_persona_sync(db_session, affected_file_ids)
     db_session.commit()
 
 
 def mark_persona_as_not_deleted(
     persona_id: int,
-    user: User | None,
+    user: User,
     db_session: Session,
 ) -> None:
     persona = get_persona_by_id(
         persona_id=persona_id, user=user, db_session=db_session, include_deleted=True
     )
-    if persona.deleted:
-        persona.deleted = False
-        db_session.commit()
-    else:
+    if not persona.deleted:
         raise ValueError(f"Persona with ID {persona_id} is not deleted.")
+    persona.deleted = False
+    affected_file_ids = [uf.id for uf in persona.user_files]
+    if affected_file_ids:
+        _mark_files_need_persona_sync(db_session, affected_file_ids)
+    db_session.commit()
 
 
 def mark_delete_persona_by_name(
@@ -474,29 +818,92 @@ def mark_delete_persona_by_name(
     db_session.commit()
 
 
-def update_all_personas_display_priority(
+def update_personas_display_priority(
     display_priority_map: dict[int, int],
     db_session: Session,
+    user: User,
+    commit_db_txn: bool = False,
 ) -> None:
-    """Updates the display priority of all lives Personas"""
-    personas = get_personas(db_session=db_session)
-    available_persona_ids = {persona.id for persona in personas}
-    if available_persona_ids != set(display_priority_map.keys()):
-        raise ValueError("Invalid persona IDs provided")
+    """Updates the display priorities of the specified Personas.
 
-    for persona in personas:
-        persona.display_priority = display_priority_map[persona.id]
-    db_session.commit()
+    Args:
+        display_priority_map: A map of persona IDs to intended display
+            priorities.
+        db_session: Database session for executing queries.
+        user: The user to filter personas for. If None and auth is disabled,
+            assumes the user is an admin. Otherwise, if None shows only public
+            personas.
+        commit_db_txn: If True, commits the database transaction after
+            updating the display priorities. Defaults to False.
+
+    Raises:
+        ValueError: The caller tried to update a persona for which the user does
+            not have access.
+    """
+    # No-op to save a query if it is not necessary.
+    if len(display_priority_map) == 0:
+        return
+
+    personas = get_raw_personas_for_user(
+        user,
+        db_session,
+        get_editable=False,
+        include_default=True,
+        include_slack_bot_personas=True,
+        include_deleted=True,
+    )
+    available_personas_map: dict[int, Persona] = {
+        persona.id: persona for persona in personas
+    }
+
+    for persona_id, priority in display_priority_map.items():
+        if persona_id not in available_personas_map:
+            raise ValueError(
+                f"Invalid persona ID provided: Persona with ID {persona_id} was not found for this user."
+            )
+
+        available_personas_map[persona_id].display_priority = priority
+
+    if commit_db_txn:
+        db_session.commit()
+
+
+def mark_persona_user_files_for_sync(
+    persona_id: int,
+    db_session: Session,
+) -> None:
+    """When persona sharing changes, mark all of its user files for sync
+    so that their ACLs get updated in the vector DB."""
+    persona = (
+        db_session.query(Persona)
+        .options(selectinload(Persona.user_files))
+        .filter(Persona.id == persona_id)
+        .first()
+    )
+    if not persona:
+        return
+    file_ids = [uf.id for uf in persona.user_files]
+    _mark_files_need_persona_sync(db_session, file_ids)
+
+
+def _mark_files_need_persona_sync(
+    db_session: Session,
+    user_file_ids: list[UUID],
+) -> None:
+    """Flag the given UserFile rows so the background sync task picks them up
+    and updates their persona metadata in the vector DB."""
+    if not user_file_ids:
+        return
+    db_session.query(UserFile).filter(UserFile.id.in_(user_file_ids)).update(
+        {UserFile.needs_persona_sync: True},
+        synchronize_session=False,
+    )
 
 
 def upsert_persona(
     user: User | None,
     name: str,
     description: str,
-    num_chunks: float,
-    llm_relevance_filter: bool,
-    llm_filter_extraction: bool,
-    recency_bias: RecencyBiasSetting,
     llm_model_provider_override: str | None,
     llm_model_version_override: str | None,
     starter_messages: list[StarterMessage] | None,
@@ -510,19 +917,19 @@ def upsert_persona(
     tool_ids: list[int] | None = None,
     persona_id: int | None = None,
     commit: bool = True,
-    icon_color: str | None = None,
-    icon_shape: int | None = None,
     uploaded_image_id: str | None = None,
+    icon_name: str | None = None,
     display_priority: int | None = None,
-    is_visible: bool = True,
+    is_listed: bool = True,
     remove_image: bool | None = None,
     search_start_date: datetime | None = None,
     builtin_persona: bool = False,
-    is_default_persona: bool | None = None,
+    is_featured: bool | None = None,
     label_ids: list[int] | None = None,
     user_file_ids: list[UUID] | None = None,
-    chunks_above: int = CONTEXT_CHUNKS_ABOVE,
-    chunks_below: int = CONTEXT_CHUNKS_BELOW,
+    hierarchy_node_ids: list[int] | None = None,
+    document_ids: list[str] | None = None,
+    replace_base_system_prompt: bool = False,
 ) -> Persona:
     """
     NOTE: This operation cannot update persona configuration options that
@@ -544,9 +951,10 @@ def upsert_persona(
                 f"Assistant with name '{name}' already exists. Please rename your assistant."
             )
 
-    if existing_persona:
+    if existing_persona and user:
         # this checks if the user has permission to edit the persona
         # will raise an Exception if the user does not have permission
+        # Skip check if user is None (system/admin operation)
         existing_persona = fetch_persona_by_id_for_user(
             db_session=db_session,
             persona_id=existing_persona.id,
@@ -586,6 +994,35 @@ def upsert_persona(
         labels = (
             db_session.query(PersonaLabel).filter(PersonaLabel.id.in_(label_ids)).all()
         )
+        if len(labels) != len(label_ids):
+            raise ValueError("Some label IDs were not found in the database")
+
+    # Fetch and attach hierarchy_nodes by IDs
+    hierarchy_nodes = None
+    if hierarchy_node_ids:
+        hierarchy_nodes = (
+            db_session.query(HierarchyNode)
+            .filter(HierarchyNode.id.in_(hierarchy_node_ids))
+            .all()
+        )
+        if not hierarchy_nodes and hierarchy_node_ids:
+            raise ValueError("hierarchy_nodes not found")
+
+    # Fetch and attach documents by IDs, filtering for access permissions
+    attached_documents = None
+    if document_ids is not None:
+        user_email = user.email if user else None
+        external_group_ids = (
+            get_user_external_group_ids(db_session, user) if user else []
+        )
+        attached_documents = get_accessible_documents_by_ids(
+            db_session=db_session,
+            document_ids=document_ids,
+            user_email=user_email,
+            external_group_ids=external_group_ids,
+        )
+        if not attached_documents and document_ids:
+            raise ValueError("documents not found or not accessible")
 
     # ensure all specified tools are valid
     if tools:
@@ -602,28 +1039,21 @@ def upsert_persona(
         # `default` and `built-in` properties can only be set when creating a persona.
         existing_persona.name = name
         existing_persona.description = description
-        existing_persona.num_chunks = num_chunks
-        existing_persona.chunks_above = chunks_above
-        existing_persona.chunks_below = chunks_below
-        existing_persona.llm_relevance_filter = llm_relevance_filter
-        existing_persona.llm_filter_extraction = llm_filter_extraction
-        existing_persona.recency_bias = recency_bias
         existing_persona.llm_model_provider_override = llm_model_provider_override
         existing_persona.llm_model_version_override = llm_model_version_override
         existing_persona.starter_messages = starter_messages
         existing_persona.deleted = False  # Un-delete if previously deleted
         existing_persona.is_public = is_public
-        existing_persona.icon_color = icon_color
-        existing_persona.icon_shape = icon_shape
         if remove_image or uploaded_image_id:
             existing_persona.uploaded_image_id = uploaded_image_id
-        existing_persona.is_visible = is_visible
+        existing_persona.icon_name = icon_name
+        existing_persona.is_listed = is_listed
         existing_persona.search_start_date = search_start_date
-        existing_persona.labels = labels or []
-        existing_persona.is_default_persona = (
-            is_default_persona
-            if is_default_persona is not None
-            else existing_persona.is_default_persona
+        if label_ids is not None:
+            existing_persona.labels.clear()
+            existing_persona.labels = labels or []
+        existing_persona.is_featured = (
+            is_featured if is_featured is not None else existing_persona.is_featured
         )
         # Update embedded prompt fields if provided
         if system_prompt is not None:
@@ -632,6 +1062,7 @@ def upsert_persona(
             existing_persona.task_prompt = task_prompt
         if datetime_aware is not None:
             existing_persona.datetime_aware = datetime_aware
+        existing_persona.replace_base_system_prompt = replace_base_system_prompt
 
         # Do not delete any associations manually added unless
         # a new updated list is provided
@@ -645,8 +1076,21 @@ def upsert_persona(
             existing_persona.tools = tools or []
 
         if user_file_ids is not None:
+            old_file_ids = {uf.id for uf in existing_persona.user_files}
+            new_file_ids = {uf.id for uf in (user_files or [])}
+            affected_file_ids = old_file_ids | new_file_ids
             existing_persona.user_files.clear()
             existing_persona.user_files = user_files or []
+            if affected_file_ids:
+                _mark_files_need_persona_sync(db_session, list(affected_file_ids))
+
+        if hierarchy_node_ids is not None:
+            existing_persona.hierarchy_nodes.clear()
+            existing_persona.hierarchy_nodes = hierarchy_nodes or []
+
+        if document_ids is not None:
+            existing_persona.attached_documents.clear()
+            existing_persona.attached_documents = attached_documents or []
 
         # We should only update display priority if it is not already set
         if existing_persona.display_priority is None:
@@ -662,34 +1106,30 @@ def upsert_persona(
             is_public=is_public,
             name=name,
             description=description,
-            num_chunks=num_chunks,
-            chunks_above=chunks_above,
-            chunks_below=chunks_below,
-            llm_relevance_filter=llm_relevance_filter,
-            llm_filter_extraction=llm_filter_extraction,
-            recency_bias=recency_bias,
             builtin_persona=builtin_persona,
             system_prompt=system_prompt or "",
             task_prompt=task_prompt or "",
             datetime_aware=(datetime_aware if datetime_aware is not None else True),
+            replace_base_system_prompt=replace_base_system_prompt,
             document_sets=document_sets or [],
             llm_model_provider_override=llm_model_provider_override,
             llm_model_version_override=llm_model_version_override,
             starter_messages=starter_messages,
             tools=tools or [],
-            icon_shape=icon_shape,
-            icon_color=icon_color,
             uploaded_image_id=uploaded_image_id,
+            icon_name=icon_name,
             display_priority=display_priority,
-            is_visible=is_visible,
+            is_listed=is_listed,
             search_start_date=search_start_date,
-            is_default_persona=(
-                is_default_persona if is_default_persona is not None else False
-            ),
+            is_featured=(is_featured if is_featured is not None else False),
             user_files=user_files or [],
             labels=labels or [],
+            hierarchy_nodes=hierarchy_nodes or [],
+            attached_documents=attached_documents or [],
         )
         db_session.add(new_persona)
+        if user_files:
+            _mark_files_need_persona_sync(db_session, [uf.id for uf in user_files])
         persona = new_persona
     if commit:
         db_session.commit()
@@ -726,34 +1166,31 @@ def delete_old_default_personas(
     db_session.commit()
 
 
-def update_persona_is_default(
+def update_persona_featured(
     persona_id: int,
-    is_default: bool,
+    is_featured: bool,
     db_session: Session,
-    user: User | None = None,
+    user: User,
 ) -> None:
     persona = fetch_persona_by_id_for_user(
         db_session=db_session, persona_id=persona_id, user=user, get_editable=True
     )
 
-    if not persona.is_public:
-        persona.is_public = True
-
-    persona.is_default_persona = is_default
+    persona.is_featured = is_featured
     db_session.commit()
 
 
 def update_persona_visibility(
     persona_id: int,
-    is_visible: bool,
+    is_listed: bool,
     db_session: Session,
-    user: User | None = None,
+    user: User,
 ) -> None:
     persona = fetch_persona_by_id_for_user(
         db_session=db_session, persona_id=persona_id, user=user, get_editable=True
     )
 
-    persona.is_visible = is_visible
+    persona.is_listed = is_listed
     db_session.commit()
 
 
@@ -772,7 +1209,6 @@ def validate_persona_tools(tools: list[Tool], db_session: Session) -> None:
 # a direct mapping indicating whether a user has access to a specific persona?
 def get_persona_by_id(
     persona_id: int,
-    # if user is `None` assume the user is an admin or auth is disabled
     user: User | None,
     db_session: Session,
     include_deleted: bool = False,
@@ -829,7 +1265,7 @@ def get_persona_by_id(
 def get_personas_by_ids(
     persona_ids: list[int], db_session: Session
 ) -> Sequence[Persona]:
-    """Unsafe, can fetch personas from all users"""
+    """WARNING: Unsafe, can fetch personas from all users."""
     if not persona_ids:
         return []
     personas = db_session.scalars(
@@ -911,13 +1347,15 @@ def update_default_assistant_configuration(
     db_session: Session,
     tool_ids: list[int] | None = None,
     system_prompt: str | None = None,
+    update_system_prompt: bool = False,
 ) -> Persona:
     """Update only tools and system_prompt for the default assistant.
 
     Args:
         db_session: Database session
         tool_ids: List of tool IDs to enable (if None, tools are not updated)
-        system_prompt: New system prompt (if None, system prompt is not updated)
+        system_prompt: New system prompt value (None means use default)
+        update_system_prompt: If True, update the system_prompt field (allows setting to None)
 
     Returns:
         Updated Persona object
@@ -930,8 +1368,8 @@ def update_default_assistant_configuration(
     if not persona:
         raise ValueError("Default assistant not found")
 
-    # Update system prompt if provided
-    if system_prompt is not None:
+    # Update system prompt if explicitly requested
+    if update_system_prompt:
         persona.system_prompt = system_prompt
 
     # Update tools if provided
@@ -960,7 +1398,7 @@ def update_default_assistant_configuration(
 
 
 def user_can_access_persona(
-    db_session: Session, persona_id: int, user: User | None, get_editable: bool = False
+    db_session: Session, persona_id: int, user: User, get_editable: bool = False
 ) -> bool:
     """Check if a user has access to a specific persona.
 

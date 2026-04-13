@@ -21,7 +21,7 @@ services:
     env_file:
       - .env_eval
     environment:
-      - AUTH_TYPE=disabled
+      - AUTH_TYPE=basic
       - POSTGRES_HOST=relational_db
       - VESPA_HOST=index
       - REDIS_HOST=cache
@@ -29,14 +29,13 @@ services:
       - MODEL_SERVER_PORT=${MODEL_SERVER_PORT:-}
       - ENV_SEED_CONFIGURATION=${ENV_SEED_CONFIGURATION:-}
       - ENABLE_PAID_ENTERPRISE_EDITION_FEATURES=True
+      # TODO(Nik): https://linear.app/onyx-app/issue/ENG-1/update-test-infra-to-use-test-license
+      - LICENSE_ENFORCEMENT_ENABLED=false
       # MinIO configuration
       - S3_ENDPOINT_URL=${S3_ENDPOINT_URL:-http://minio:9000}
       - S3_AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID:-minioadmin}
       - S3_AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY:-minioadmin}
       - S3_FILE_STORE_BUCKET_NAME=${S3_FILE_STORE_BUCKET_NAME:-}
-      # To enable the LLM for testing, update the value below
-      # NOTE: this is disabled by default since this is a high volume eval that can be costly
-      - DISABLE_GENERATIVE_AI=${DISABLE_GENERATIVE_AI:-true}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     logging:
@@ -59,8 +58,7 @@ services:
     env_file:
       - .env_eval
     environment:
-      - USE_LIGHTWEIGHT_BACKGROUND_WORKER=${USE_LIGHTWEIGHT_BACKGROUND_WORKER:-true}
-      - AUTH_TYPE=disabled
+      - AUTH_TYPE=basic
       - POSTGRES_HOST=relational_db
       - VESPA_HOST=index
       - REDIS_HOST=cache
@@ -69,6 +67,8 @@ services:
       - INDEXING_MODEL_SERVER_HOST=${INDEXING_MODEL_SERVER_HOST:-indexing_model_server}
       - ENV_SEED_CONFIGURATION=${ENV_SEED_CONFIGURATION:-}
       - ENABLE_PAID_ENTERPRISE_EDITION_FEATURES=True
+      # TODO(Nik): https://linear.app/onyx-app/issue/ENG-1/update-test-infra-to-use-test-license
+      - LICENSE_ENFORCEMENT_ENABLED=false
       # MinIO configuration
       - S3_ENDPOINT_URL=${S3_ENDPOINT_URL:-http://minio:9000}
       - S3_AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID:-minioadmin}
@@ -90,10 +90,7 @@ services:
       context: ../../web
       dockerfile: Dockerfile
       args:
-        - NEXT_PUBLIC_POSITIVE_PREDEFINED_FEEDBACK_OPTIONS=${NEXT_PUBLIC_POSITIVE_PREDEFINED_FEEDBACK_OPTIONS:-}
-        - NEXT_PUBLIC_NEGATIVE_PREDEFINED_FEEDBACK_OPTIONS=${NEXT_PUBLIC_NEGATIVE_PREDEFINED_FEEDBACK_OPTIONS:-}
         - NEXT_PUBLIC_DISABLE_LOGOUT=${NEXT_PUBLIC_DISABLE_LOGOUT:-}
-        - NEXT_PUBLIC_DEFAULT_SIDEBAR_OPEN=${NEXT_PUBLIC_DEFAULT_SIDEBAR_OPEN:-}
 
         # Enterprise Edition only
         - NEXT_PUBLIC_THEME=${NEXT_PUBLIC_THEME:-}
@@ -116,7 +113,7 @@ services:
       context: ../../backend
       dockerfile: Dockerfile.model_server
     command: >
-      /bin/sh -c "if [ \"${DISABLE_MODEL_SERVER}\" = \"True\" ] || [ \"${DISABLE_MODEL_SERVER}\" = \"true\" ]; then
+      /bin/sh -c "if [ \"${DISABLE_MODEL_SERVER:-}\" = \"True\" ] || [ \"${DISABLE_MODEL_SERVER:-}\" = \"true\" ]; then
         echo 'Skipping service...';
         exit 0;
       else
@@ -140,7 +137,7 @@ services:
       context: ../../backend
       dockerfile: Dockerfile.model_server
     command: >
-      /bin/sh -c "if [ \"${DISABLE_MODEL_SERVER}\" = \"True\" ] || [ \"${DISABLE_MODEL_SERVER}\" = \"true\" ]; then
+      /bin/sh -c "if [ \"${DISABLE_MODEL_SERVER:-}\" = \"True\" ] || [ \"${DISABLE_MODEL_SERVER:-}\" = \"true\" ]; then
         echo 'Skipping service...';
         exit 0;
       else
@@ -205,20 +202,18 @@ services:
     ports:
       - "${NGINX_PORT:-3000}:80" # allow for localhost:3000 usage, since that is the norm
     volumes:
-      - ../data/nginx:/etc/nginx/conf.d
+      - ../data/nginx:/nginx-templates:ro
     logging:
       driver: json-file
       options:
         max-size: "50m"
         max-file: "6"
-    # The specified script waits for the api_server to start up.
-    # Without this we've seen issues where nginx shows no error logs but
-    # does not recieve any traffic
-    # NOTE: we have to use dos2unix to remove Carriage Return chars from the file
-    # in order to make this work on both Unix-like systems and windows
     command: >
-      /bin/sh -c "dos2unix /etc/nginx/conf.d/run-nginx.sh 
-      && /etc/nginx/conf.d/run-nginx.sh app.conf.template"
+      /bin/sh -c "rm -f /etc/nginx/conf.d/default.conf
+      && cp -a /nginx-templates/. /etc/nginx/conf.d/
+      && sed 's/\r$//' /etc/nginx/conf.d/run-nginx.sh > /tmp/run-nginx.sh
+      && chmod +x /tmp/run-nginx.sh
+      && /tmp/run-nginx.sh app.conf.template"
 
   minio:
     image: minio/minio:RELEASE.2025-07-23T15-54-02Z-cpuv1
@@ -234,7 +229,7 @@ services:
       - minio_data:/data
     command: server /data --console-address ":9001"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: ["CMD", "mc", "ready", "local"]
       interval: 30s
       timeout: 20s
       retries: 3
@@ -265,5 +260,5 @@ volumes:
       type: none
       o: bind
       device: ${DANSWER_VESPA_DATA_DIR:-./vespa_data}
-  log_store:  # for logs that we don't want to lose on container restarts
+  log_store: # for logs that we don't want to lose on container restarts
   minio_data:

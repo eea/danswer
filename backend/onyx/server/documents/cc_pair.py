@@ -10,8 +10,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from onyx.auth.permissions import require_permission
 from onyx.auth.users import current_curator_or_admin_user
-from onyx.auth.users import current_user
 from onyx.background.celery.tasks.pruning.tasks import (
     try_creating_prune_generator_task,
 )
@@ -19,6 +19,7 @@ from onyx.background.celery.versioned_apps.client import app as client_app
 from onyx.background.indexing.models import IndexAttemptErrorPydantic
 from onyx.configs.constants import OnyxCeleryPriority
 from onyx.configs.constants import OnyxCeleryTask
+from onyx.configs.constants import PUBLIC_API_TAGS
 from onyx.connectors.exceptions import ValidationError
 from onyx.connectors.factory import validate_ccpair_for_user
 from onyx.db.connector import delete_connector
@@ -37,11 +38,15 @@ from onyx.db.engine.sql_engine import get_session
 from onyx.db.enums import AccessType
 from onyx.db.enums import ConnectorCredentialPairStatus
 from onyx.db.enums import IndexingStatus
+from onyx.db.enums import Permission
 from onyx.db.enums import PermissionSyncStatus
 from onyx.db.index_attempt import count_index_attempt_errors_for_cc_pair
 from onyx.db.index_attempt import count_index_attempts_for_cc_pair
 from onyx.db.index_attempt import get_index_attempt_errors_for_cc_pair
 from onyx.db.index_attempt import get_latest_index_attempt_for_cc_pair_id
+from onyx.db.index_attempt import (
+    get_latest_successful_index_attempt_for_cc_pair_id,
+)
 from onyx.db.index_attempt import get_paginated_index_attempts_for_cc_pair_id
 from onyx.db.indexing_coordination import IndexingCoordination
 from onyx.db.models import IndexAttempt
@@ -73,12 +78,12 @@ logger = setup_logger()
 router = APIRouter(prefix="/manage")
 
 
-@router.get("/admin/cc-pair/{cc_pair_id}/index-attempts")
+@router.get("/admin/cc-pair/{cc_pair_id}/index-attempts", tags=PUBLIC_API_TAGS)
 def get_cc_pair_index_attempts(
     cc_pair_id: int,
     page_num: int = Query(0, ge=0),
     page_size: int = Query(10, ge=1, le=1000),
-    user: User | None = Depends(current_curator_or_admin_user),
+    user: User = Depends(current_curator_or_admin_user),
     db_session: Session = Depends(get_session),
 ) -> PaginatedReturn[IndexAttemptSnapshot]:
     if user:
@@ -114,7 +119,7 @@ def get_cc_pair_permission_sync_attempts(
     cc_pair_id: int,
     page_num: int = Query(0, ge=0),
     page_size: int = Query(10, ge=1, le=1000),
-    user: User | None = Depends(current_curator_or_admin_user),
+    user: User = Depends(current_curator_or_admin_user),
     db_session: Session = Depends(get_session),
 ) -> PaginatedReturn[PermissionSyncAttemptSnapshot]:
     if user:
@@ -147,10 +152,10 @@ def get_cc_pair_permission_sync_attempts(
     )
 
 
-@router.get("/admin/cc-pair/{cc_pair_id}")
+@router.get("/admin/cc-pair/{cc_pair_id}", tags=PUBLIC_API_TAGS)
 def get_cc_pair_full_info(
     cc_pair_id: int,
-    user: User | None = Depends(current_curator_or_admin_user),
+    user: User = Depends(current_curator_or_admin_user),
     db_session: Session = Depends(get_session),
 ) -> CCPairFullInfo:
     tenant_id = get_current_tenant_id()
@@ -189,6 +194,11 @@ def get_cc_pair_full_info(
         only_finished=False,
     )
 
+    latest_successful_attempt = get_latest_successful_index_attempt_for_cc_pair_id(
+        db_session=db_session,
+        connector_credential_pair_id=cc_pair_id,
+    )
+
     # Get latest permission sync attempt for status
     latest_permission_sync_attempt = None
     if cc_pair.access_type == AccessType.SYNC:
@@ -206,6 +216,11 @@ def get_cc_pair_full_info(
             cc_pair_id=cc_pair_id,
         ),
         last_index_attempt=latest_attempt,
+        last_successful_index_time=(
+            latest_successful_attempt.time_started
+            if latest_successful_attempt
+            else None
+        ),
         latest_deletion_attempt=get_deletion_attempt_snapshot(
             connector_id=cc_pair.connector_id,
             credential_id=cc_pair.credential_id,
@@ -240,11 +255,11 @@ def get_cc_pair_full_info(
     )
 
 
-@router.put("/admin/cc-pair/{cc_pair_id}/status")
+@router.put("/admin/cc-pair/{cc_pair_id}/status", tags=PUBLIC_API_TAGS)
 def update_cc_pair_status(
     cc_pair_id: int,
     status_update_request: CCStatusUpdateRequest,
-    user: User | None = Depends(current_curator_or_admin_user),
+    user: User = Depends(current_curator_or_admin_user),
     db_session: Session = Depends(get_session),
 ) -> JSONResponse:
     """This method returns nearly immediately. It simply sets some signals and
@@ -328,7 +343,7 @@ def update_cc_pair_status(
 def update_cc_pair_name(
     cc_pair_id: int,
     new_name: str,
-    user: User | None = Depends(current_curator_or_admin_user),
+    user: User = Depends(current_curator_or_admin_user),
     db_session: Session = Depends(get_session),
 ) -> StatusResponse[int]:
     cc_pair = get_connector_credential_pair_from_id_for_user(
@@ -357,7 +372,7 @@ def update_cc_pair_name(
 def update_cc_pair_property(
     cc_pair_id: int,
     update_request: CCPropertyUpdateRequest,  # in seconds
-    user: User | None = Depends(current_curator_or_admin_user),
+    user: User = Depends(current_curator_or_admin_user),
     db_session: Session = Depends(get_session),
 ) -> StatusResponse[int]:
     cc_pair = get_connector_credential_pair_from_id_for_user(
@@ -414,7 +429,7 @@ def get_cc_pair_last_pruned(
     return cc_pair.last_pruned
 
 
-@router.post("/admin/cc-pair/{cc_pair_id}/prune")
+@router.post("/admin/cc-pair/{cc_pair_id}/prune", tags=PUBLIC_API_TAGS)
 def prune_cc_pair(
     cc_pair_id: int,
     user: User = Depends(current_curator_or_admin_user),
@@ -480,7 +495,7 @@ def get_docs_sync_status(
     return [DocumentSyncStatus.from_model(doc) for doc in all_docs_for_cc_pair]
 
 
-@router.get("/admin/cc-pair/{cc_pair_id}/errors")
+@router.get("/admin/cc-pair/{cc_pair_id}/errors", tags=PUBLIC_API_TAGS)
 def get_cc_pair_indexing_errors(
     cc_pair_id: int,
     include_resolved: bool = Query(False),
@@ -521,12 +536,14 @@ def get_cc_pair_indexing_errors(
     )
 
 
-@router.put("/connector/{connector_id}/credential/{credential_id}")
+@router.put(
+    "/connector/{connector_id}/credential/{credential_id}", tags=PUBLIC_API_TAGS
+)
 def associate_credential_to_connector(
     connector_id: int,
     credential_id: int,
     metadata: ConnectorCredentialPairMetadata,
-    user: User | None = Depends(current_curator_or_admin_user),
+    user: User = Depends(current_curator_or_admin_user),
     db_session: Session = Depends(get_session),
     tenant_id: str = Depends(get_current_tenant_id),
 ) -> StatusResponse[int]:
@@ -561,6 +578,7 @@ def associate_credential_to_connector(
             access_type=metadata.access_type,
             auto_sync_options=metadata.auto_sync_options,
             groups=metadata.groups,
+            processing_mode=metadata.processing_mode,
         )
 
         # trigger indexing immediately
@@ -571,8 +589,7 @@ def associate_credential_to_connector(
         )
 
         logger.info(
-            f"associate_credential_to_connector - running check_for_indexing: "
-            f"cc_pair={response.data}"
+            f"associate_credential_to_connector - running check_for_indexing: cc_pair={response.data}"
         )
 
         return response
@@ -600,11 +617,13 @@ def associate_credential_to_connector(
         raise HTTPException(status_code=500, detail="Unexpected error")
 
 
-@router.delete("/connector/{connector_id}/credential/{credential_id}")
+@router.delete(
+    "/connector/{connector_id}/credential/{credential_id}", tags=PUBLIC_API_TAGS
+)
 def dissociate_credential_from_connector(
     connector_id: int,
     credential_id: int,
-    user: User | None = Depends(current_user),
+    user: User = Depends(require_permission(Permission.BASIC_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> StatusResponse[int]:
     return remove_credential_from_connector(

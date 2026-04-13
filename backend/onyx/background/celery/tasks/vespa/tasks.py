@@ -49,7 +49,7 @@ from onyx.db.search_settings import get_active_search_settings
 from onyx.db.sync_record import cleanup_sync_records
 from onyx.db.sync_record import insert_sync_record
 from onyx.db.sync_record import update_sync_record_status
-from onyx.document_index.factory import get_default_document_index
+from onyx.document_index.factory import get_all_document_indices
 from onyx.document_index.interfaces import VespaDocumentFields
 from onyx.httpx.httpx_pool import HttpxPool
 from onyx.redis.redis_document_set import RedisDocumentSet
@@ -70,6 +70,8 @@ logger = setup_logger()
 
 # celery auto associates tasks created inside another task,
 # which bloats the result metadata considerably. trail=False prevents this.
+# TODO(andrei): Rename all these kinds of functions from *vespa* to a more
+# generic *document_index*.
 @shared_task(
     name=OnyxCeleryTask.CHECK_FOR_VESPA_SYNC_TASK,
     ignore_result=True,
@@ -197,8 +199,7 @@ def check_for_vespa_sync_task(self: Task, *, tenant_id: str) -> bool | None:
             lock_beat.release()
         else:
             task_logger.error(
-                "check_for_vespa_sync_task - Lock not owned on completion: "
-                f"tenant={tenant_id}"
+                f"check_for_vespa_sync_task - Lock not owned on completion: tenant={tenant_id}"
             )
             redis_lock_dump(lock_beat, r)
 
@@ -264,8 +265,7 @@ def try_generate_document_set_sync_tasks(
     #     return 0
 
     task_logger.info(
-        f"RedisDocumentSet.generate_tasks finished. "
-        f"document_set={document_set.id} tasks_generated={tasks_generated}"
+        f"RedisDocumentSet.generate_tasks finished. document_set={document_set.id} tasks_generated={tasks_generated}"
     )
 
     # create before setting fence to avoid race condition where the monitoring
@@ -340,8 +340,7 @@ def try_generate_user_group_sync_tasks(
     #     return 0
 
     task_logger.info(
-        f"RedisUserGroup.generate_tasks finished. "
-        f"usergroup={usergroup.id} tasks_generated={tasks_generated}"
+        f"RedisUserGroup.generate_tasks finished. usergroup={usergroup.id} tasks_generated={tasks_generated}"
     )
 
     # create before setting fence to avoid race condition where the monitoring
@@ -396,8 +395,7 @@ def monitor_document_set_taskset(
 
     count = cast(int, r.scard(rds.taskset_key))
     task_logger.info(
-        f"Document set sync progress: document_set={document_set_id} "
-        f"remaining={count} initial={initial_count}"
+        f"Document set sync progress: document_set={document_set_id} remaining={count} initial={initial_count}"
     )
     if count > 0:
         update_sync_record_status(
@@ -442,9 +440,7 @@ def monitor_document_set_taskset(
             )
         except Exception:
             task_logger.exception(
-                "update_sync_record_status exceptioned. "
-                f"document_set_id={document_set_id} "
-                "Resetting document set regardless."
+                f"update_sync_record_status exceptioned. document_set_id={document_set_id} Resetting document set regardless."
             )
 
     rds.reset()
@@ -465,21 +461,23 @@ def vespa_metadata_sync_task(self: Task, document_id: str, *, tenant_id: str) ->
     try:
         with get_session_with_current_tenant() as db_session:
             active_search_settings = get_active_search_settings(db_session)
-            doc_index = get_default_document_index(
+            # This flow is for updates so we get all indices.
+            document_indices = get_all_document_indices(
                 search_settings=active_search_settings.primary,
                 secondary_search_settings=active_search_settings.secondary,
                 httpx_client=HttpxPool.get("vespa"),
             )
 
-            retry_index = RetryDocumentIndex(doc_index)
+            retry_document_indices: list[RetryDocumentIndex] = [
+                RetryDocumentIndex(document_index)
+                for document_index in document_indices
+            ]
 
             doc = get_document(document_id, db_session)
             if not doc:
                 elapsed = time.monotonic() - start
                 task_logger.info(
-                    f"doc={document_id} "
-                    f"action=no_operation "
-                    f"elapsed={elapsed:.2f}"
+                    f"doc={document_id} action=no_operation elapsed={elapsed:.2f}"
                 )
                 completion_status = OnyxCeleryTaskCompletionStatus.SKIPPED
             else:
@@ -500,26 +498,25 @@ def vespa_metadata_sync_task(self: Task, document_id: str, *, tenant_id: str) ->
                     # aggregated_boost_factor=doc.aggregated_boost_factor,
                 )
 
-                # update Vespa. OK if doc doesn't exist. Raises exception otherwise.
-                chunks_affected = retry_index.update_single(
-                    document_id,
-                    tenant_id=tenant_id,
-                    chunk_count=doc.chunk_count,
-                    fields=fields,
-                    user_fields=None,
-                )
+                for retry_document_index in retry_document_indices:
+                    # TODO(andrei): Previously there was a comment here saying
+                    # it was ok if a doc did not exist in the document index. I
+                    # don't agree with that claim, so keep an eye on this task
+                    # to see if this raises.
+                    retry_document_index.update_single(
+                        document_id,
+                        tenant_id=tenant_id,
+                        chunk_count=doc.chunk_count,
+                        fields=fields,
+                        user_fields=None,
+                    )
 
                 # update db last. Worst case = we crash right before this and
                 # the sync might repeat again later
                 mark_document_as_synced(document_id, db_session)
 
                 elapsed = time.monotonic() - start
-                task_logger.info(
-                    f"doc={document_id} "
-                    f"action=sync "
-                    f"chunks={chunks_affected} "
-                    f"elapsed={elapsed:.2f}"
-                )
+                task_logger.info(f"doc={document_id} action=sync elapsed={elapsed:.2f}")
                 completion_status = OnyxCeleryTaskCompletionStatus.SUCCEEDED
     except SoftTimeLimitExceeded:
         task_logger.info(f"SoftTimeLimitExceeded exception. doc={document_id}")
@@ -542,9 +539,7 @@ def vespa_metadata_sync_task(self: Task, document_id: str, *, tenant_id: str) ->
             if isinstance(e, httpx.HTTPStatusError):
                 if e.response.status_code == HTTPStatus.BAD_REQUEST:
                     task_logger.exception(
-                        f"Non-retryable HTTPStatusError: "
-                        f"doc={document_id} "
-                        f"status={e.response.status_code}"
+                        f"Non-retryable HTTPStatusError: doc={document_id} status={e.response.status_code}"
                     )
                 completion_status = (
                     OnyxCeleryTaskCompletionStatus.NON_RETRYABLE_EXCEPTION

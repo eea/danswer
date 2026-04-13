@@ -1,35 +1,84 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
-import {
-  Popover,
-  PopoverContent,
-  PopoverMenu,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import { getDisplayNameForModel, LlmDescriptor, LlmManager } from "@/lib/hooks";
-import { structureValue } from "@/lib/llm/utils";
-import { getProviderIcon } from "@/app/admin/configuration/llm/utils";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import Popover from "@/refresh-components/Popover";
+import { LlmDescriptor, LlmManager } from "@/lib/hooks";
+import { structureValue } from "@/lib/llmConfig/utils";
+import { getModelIcon } from "@/lib/llmConfig";
+import { AGGREGATOR_PROVIDERS } from "@/lib/llmConfig/svc";
+
 import { Slider } from "@/components/ui/slider";
-import { useUser } from "@/components/user/UserProvider";
-import SvgRefreshCw from "@/icons/refresh-cw";
-import SelectButton from "@/refresh-components/buttons/SelectButton";
-import LineItem from "@/refresh-components/buttons/LineItem";
+import { useUser } from "@/providers/UserProvider";
 import Text from "@/refresh-components/texts/Text";
-import SimpleLoader from "@/refresh-components/loaders/SimpleLoader";
+import { SvgRefreshCw } from "@opal/icons";
+import { OpenButton } from "@opal/components";
+import { LLMOption, LLMOptionGroup } from "./interfaces";
+import ModelListContent from "./ModelListContent";
 
 export interface LLMPopoverProps {
   llmManager: LlmManager;
-  requiresImageGeneration?: boolean;
-  folded?: boolean;
+  requiresImageInput?: boolean;
+  foldable?: boolean;
   onSelect?: (value: string) => void;
   currentModelName?: string;
   disabled?: boolean;
 }
 
+export { buildLlmOptions } from "./llmUtils";
+
+export function groupLlmOptions(
+  filteredOptions: LLMOption[]
+): LLMOptionGroup[] {
+  const groups = new Map<string, Omit<LLMOptionGroup, "key">>();
+
+  filteredOptions.forEach((option) => {
+    const provider = option.provider.toLowerCase();
+    const isAggregator = AGGREGATOR_PROVIDERS.has(provider);
+    const groupKey =
+      isAggregator && option.vendor
+        ? `${provider}/${option.vendor.toLowerCase()}`
+        : provider;
+
+    if (!groups.has(groupKey)) {
+      let displayName: string;
+
+      if (isAggregator && option.vendor) {
+        const vendorDisplayName =
+          option.vendor.charAt(0).toUpperCase() + option.vendor.slice(1);
+        displayName = `${option.providerDisplayName}/${vendorDisplayName}`;
+      } else {
+        displayName = option.providerDisplayName;
+      }
+
+      groups.set(groupKey, {
+        displayName,
+        options: [],
+        Icon: getModelIcon(provider),
+      });
+    }
+
+    groups.get(groupKey)!.options.push(option);
+  });
+
+  const sortedKeys = Array.from(groups.keys()).sort((a, b) =>
+    groups.get(a)!.displayName.localeCompare(groups.get(b)!.displayName)
+  );
+
+  return sortedKeys.map((key) => {
+    const group = groups.get(key)!;
+    return {
+      key,
+      displayName: group.displayName,
+      options: group.options,
+      Icon: group.Icon,
+    };
+  });
+}
+
 export default function LLMPopover({
   llmManager,
-  folded,
+  requiresImageInput,
+  foldable,
   onSelect,
   currentModelName,
   disabled = false,
@@ -39,6 +88,7 @@ export default function LLMPopover({
 
   const [open, setOpen] = useState(false);
   const { user } = useUser();
+
   const [localTemperature, setLocalTemperature] = useState(
     llmManager.temperature ?? 0.5
   );
@@ -47,15 +97,16 @@ export default function LLMPopover({
     setLocalTemperature(llmManager.temperature ?? 0.5);
   }, [llmManager.temperature]);
 
-  // Use useCallback to prevent function recreation
-  const handleTemperatureChange = useCallback((value: number[]) => {
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+
+  const handleGlobalTemperatureChange = useCallback((value: number[]) => {
     const value_0 = value[0];
     if (value_0 !== undefined) {
       setLocalTemperature(value_0);
     }
   }, []);
 
-  const handleTemperatureChangeComplete = useCallback(
+  const handleGlobalTemperatureCommit = useCallback(
     (value: number[]) => {
       const value_0 = value[0];
       if (value_0 !== undefined) {
@@ -65,105 +116,105 @@ export default function LLMPopover({
     [llmManager]
   );
 
-  const llmOptionsToChooseFrom = useMemo(() => {
-    if (!llmProviders) {
-      return [];
+  const isSelected = useCallback(
+    (option: LLMOption) =>
+      option.modelName === llmManager.currentLlm.modelName &&
+      option.provider === llmManager.currentLlm.provider,
+    [llmManager.currentLlm.modelName, llmManager.currentLlm.provider]
+  );
+
+  const handleSelectModel = useCallback(
+    (option: LLMOption) => {
+      llmManager.updateCurrentLlm({
+        modelName: option.modelName,
+        provider: option.provider,
+        name: option.name,
+      } as LlmDescriptor);
+      onSelect?.(
+        structureValue(option.name, option.provider, option.modelName)
+      );
+      setOpen(false);
+    },
+    [llmManager, onSelect]
+  );
+
+  const currentLlmDisplayName = useMemo(() => {
+    // Only use currentModelName if it's a non-empty string
+    const currentModel =
+      currentModelName && currentModelName.trim()
+        ? currentModelName
+        : llmManager.currentLlm.modelName;
+    if (!llmProviders) return currentModel;
+
+    for (const provider of llmProviders) {
+      const config = provider.model_configurations.find(
+        (m) => m.name === currentModel
+      );
+      if (config) {
+        return config.display_name || config.name;
+      }
     }
+    return currentModel;
+  }, [llmProviders, currentModelName, llmManager.currentLlm.modelName]);
 
-    const options = llmProviders.flatMap((llmProvider) =>
-      llmProvider.model_configurations
-        .filter(
-          (modelConfiguration) =>
-            modelConfiguration.is_visible ||
-            modelConfiguration.name === currentModelName
-        )
-        .map((modelConfiguration) => ({
-          name: llmProvider.name,
-          provider: llmProvider.provider,
-          modelName: modelConfiguration.name,
-          icon: getProviderIcon(llmProvider.provider, modelConfiguration.name),
-        }))
-    );
-
-    return options;
-  }, [llmProviders, currentModelName]);
+  const temperatureFooter = user?.preferences?.temperature_override_enabled ? (
+    <>
+      <div className="border-t border-border-02 mx-2" />
+      <div className="flex flex-col w-full py-2 gap-2">
+        <Slider
+          value={[localTemperature]}
+          max={llmManager.maxTemperature}
+          min={0}
+          step={0.01}
+          onValueChange={handleGlobalTemperatureChange}
+          onValueCommit={handleGlobalTemperatureCommit}
+          className="w-full"
+        />
+        <div className="flex flex-row items-center justify-between">
+          <Text secondaryBody text03>
+            Temperature (creativity)
+          </Text>
+          <Text secondaryBody text03>
+            {localTemperature.toFixed(1)}
+          </Text>
+        </div>
+      </div>
+    </>
+  ) : undefined;
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild disabled={disabled}>
-        <div data-testid="llm-popover-trigger">
-          <SelectButton
-            leftIcon={
-              folded
+      <div data-testid="llm-popover-trigger">
+        <Popover.Trigger asChild disabled={disabled}>
+          <OpenButton
+            disabled={disabled}
+            icon={
+              foldable
                 ? SvgRefreshCw
-                : getProviderIcon(
+                : getModelIcon(
                     llmManager.currentLlm.provider,
                     llmManager.currentLlm.modelName
                   )
             }
-            onClick={() => setOpen(true)}
-            transient={open}
-            folded={folded}
-            rightChevronIcon
-            disabled={disabled}
-            className={disabled ? "bg-transparent" : ""}
+            foldable={foldable}
           >
-            {getDisplayNameForModel(llmManager.currentLlm.modelName)}
-          </SelectButton>
-        </div>
-      </PopoverTrigger>
-      <PopoverContent side="bottom" align="start">
-        <PopoverMenu
-          medium
-          footer={
-            user?.preferences?.temperature_override_enabled ? (
-              <div className="flex flex-col w-full py-3 px-2 gap-2">
-                <Slider
-                  value={[localTemperature]}
-                  max={llmManager.maxTemperature}
-                  min={0}
-                  step={0.01}
-                  onValueChange={handleTemperatureChange}
-                  onValueCommit={handleTemperatureChangeComplete}
-                  className="w-full"
-                />
-                <div className="flex flex-row items-center justify-between">
-                  <Text secondaryBody>Temperature (creativity)</Text>
-                  <Text secondaryBody>{localTemperature.toFixed(1)}</Text>
-                </div>
-              </div>
-            ) : undefined
-          }
-        >
-          {isLoadingProviders
-            ? [
-                <LineItem key="loading" icon={SimpleLoader}>
-                  Loading models...
-                </LineItem>,
-              ]
-            : llmOptionsToChooseFrom.map(
-                ({ modelName, provider, name, icon }, index) => {
-                  return (
-                    <LineItem
-                      key={index}
-                      icon={({ className }) => icon({ size: 16, className })}
-                      onClick={() => {
-                        llmManager.updateCurrentLlm({
-                          modelName,
-                          provider,
-                          name,
-                        } as LlmDescriptor);
-                        onSelect?.(structureValue(name, provider, modelName));
-                        setOpen(false);
-                      }}
-                    >
-                      {getDisplayNameForModel(modelName)}
-                    </LineItem>
-                  );
-                }
-              )}
-        </PopoverMenu>
-      </PopoverContent>
+            {currentLlmDisplayName}
+          </OpenButton>
+        </Popover.Trigger>
+      </div>
+
+      <Popover.Content side="top" align="end" width="xl">
+        <ModelListContent
+          llmProviders={llmProviders}
+          currentModelName={currentModelName}
+          requiresImageInput={requiresImageInput}
+          isLoading={isLoadingProviders}
+          onSelect={handleSelectModel}
+          isSelected={isSelected}
+          scrollContainerRef={scrollContainerRef}
+          footer={temperatureFooter}
+        />
+      </Popover.Content>
     </Popover>
   );
 }

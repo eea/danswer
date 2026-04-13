@@ -3,20 +3,33 @@
 from datetime import datetime
 from typing import Any
 
+import httpx
+
 from onyx.configs.constants import DocumentSource
-from onyx.context.search.enums import LLMEvaluationType
-from onyx.context.search.enums import SearchType
-from onyx.context.search.models import IndexFilters
-from onyx.context.search.models import RetrievalDetails
 from onyx.mcp_server.api import mcp_server
-from onyx.mcp_server.utils import get_api_server_url
 from onyx.mcp_server.utils import get_http_client
 from onyx.mcp_server.utils import get_indexed_sources
 from onyx.mcp_server.utils import require_access_token
-from onyx.server.query_and_chat.models import DocumentSearchRequest
 from onyx.utils.logger import setup_logger
+from onyx.utils.variable_functionality import build_api_server_url_for_http_requests
+from onyx.utils.variable_functionality import global_version
 
 logger = setup_logger()
+
+
+def _extract_error_detail(response: httpx.Response) -> str:
+    """Extract a human-readable error message from a failed backend response.
+
+    The backend returns OnyxError responses as
+    ``{"error_code": "...", "detail": "..."}``.
+    """
+    try:
+        body = response.json()
+        if detail := body.get("detail"):
+            return str(detail)
+    except Exception:
+        pass
+    return f"Request failed with status {response.status_code}"
 
 
 @mcp_server.tool()
@@ -30,6 +43,14 @@ async def search_indexed_documents(
     Search the user's knowledge base indexed in Onyx.
     Use this tool for information that is not public knowledge and specific to the user,
     their team, their work, or their organization/company.
+
+    Note: In CE mode, this tool uses the chat endpoint internally which invokes an LLM
+    on every call, consuming tokens and adding latency.
+    Additionally, CE callers receive a truncated snippet (blurb) instead of a full document chunk,
+    but this should still be sufficient for most use cases. CE mode functionality should be swapped
+    when a dedicated CE search endpoint is implemented.
+
+    In EE mode, the dedicated search endpoint is used instead.
 
     To find a list of available sources, use the `indexed_sources` resource.
     Returns chunks of text as search results with snippets, scores, and metadata.
@@ -55,8 +76,7 @@ async def search_indexed_documents(
             time_cutoff_dt = datetime.fromisoformat(time_cutoff.replace("Z", "+00:00"))
         except ValueError as e:
             logger.warning(
-                f"Onyx MCP Server: Invalid time_cutoff format '{time_cutoff}': {e}. "
-                "Continuing without time filter."
+                f"Onyx MCP Server: Invalid time_cutoff format '{time_cutoff}': {e}. Continuing without time filter."
             )
             # Continue with no time_cutoff instead of returning an error
             time_cutoff_dt = None
@@ -107,44 +127,88 @@ async def search_indexed_documents(
                     f"Onyx MCP Server: Invalid source type '{src}' - will be ignored by server"
                 )
 
-    search_request = DocumentSearchRequest(
-        message=query,
-        search_type=SearchType.SEMANTIC,
-        retrieval_options=RetrievalDetails(
-            filters=IndexFilters(
-                source_type=source_type_enums,
-                time_cutoff=time_cutoff_dt,
-                access_control_list=None,  # Server handles ACL using the access token
-            ),
-            enable_auto_detect_filters=False,
-            offset=0,
-            limit=limit,
-        ),
-        evaluation_type=LLMEvaluationType.SKIP,
-    )
+    # Build filters dict only with non-None values
+    filters: dict[str, Any] | None = None
+    if source_type_enums or time_cutoff_dt:
+        filters = {}
+        if source_type_enums:
+            filters["source_type"] = [src.value for src in source_type_enums]
+        if time_cutoff_dt:
+            filters["time_cutoff"] = time_cutoff_dt.isoformat()
 
-    # Call the API server
+    is_ee = global_version.is_ee_version()
+    base_url = build_api_server_url_for_http_requests(respect_env_override_if_set=True)
+    auth_headers = {"Authorization": f"Bearer {access_token.token}"}
+
+    search_request: dict[str, Any]
+    if is_ee:
+        # EE: use the dedicated search endpoint (no LLM invocation)
+        search_request = {
+            "search_query": query,
+            "filters": filters,
+            "num_docs_fed_to_llm_selection": limit,
+            "run_query_expansion": False,
+            "include_content": True,
+            "stream": False,
+        }
+        endpoint = f"{base_url}/search/send-search-message"
+        error_key = "error"
+        docs_key = "search_docs"
+        content_field = "content"
+    else:
+        # CE: fall back to the chat endpoint (invokes LLM, consumes tokens)
+        search_request = {
+            "message": query,
+            "stream": False,
+            "chat_session_info": {},
+        }
+        if filters:
+            search_request["internal_search_filters"] = filters
+        endpoint = f"{base_url}/chat/send-chat-message"
+        error_key = "error_msg"
+        docs_key = "top_documents"
+        content_field = "blurb"
+
     try:
         response = await get_http_client().post(
-            f"{get_api_server_url()}/query/document-search",
-            json=search_request.model_dump(mode="json"),
-            headers={"Authorization": f"Bearer {access_token.token}"},
+            endpoint,
+            json=search_request,
+            headers=auth_headers,
         )
-        response.raise_for_status()
+        if not response.is_success:
+            error_detail = _extract_error_detail(response)
+            return {
+                "documents": [],
+                "total_results": 0,
+                "query": query,
+                "error": error_detail,
+            }
         result = response.json()
 
-        # Return simplified format for MCP clients
-        fields_to_return = [
-            "semantic_identifier",
-            "content",
-            "source_type",
-            "link",
-            "score",
-        ]
+        # Check for error in response
+        if result.get(error_key):
+            return {
+                "documents": [],
+                "total_results": 0,
+                "query": query,
+                "error": result.get(error_key),
+            }
+
         documents = [
-            {key: doc.get(key) for key in fields_to_return}
-            for doc in result.get("top_documents", [])
+            {
+                "semantic_identifier": doc.get("semantic_identifier"),
+                "content": doc.get(content_field),
+                "source_type": doc.get("source_type"),
+                "link": doc.get("link"),
+                "score": doc.get("score"),
+            }
+            for doc in result.get(docs_key, [])
         ]
+
+        # NOTE: search depth is controlled by the backend persona defaults, not `limit`.
+        # `limit` only caps the returned list; fewer results may be returned if the
+        # backend retrieves fewer documents than requested.
+        documents = documents[:limit]
 
         logger.info(
             f"Onyx MCP Server: Internal search returned {len(documents)} results"
@@ -190,11 +254,17 @@ async def search_web(
     try:
         request_payload = {"queries": [query], "max_results": limit}
         response = await get_http_client().post(
-            f"{get_api_server_url()}/web-search/search-lite",
+            f"{build_api_server_url_for_http_requests(respect_env_override_if_set=True)}/web-search/search-lite",
             json=request_payload,
             headers={"Authorization": f"Bearer {access_token.token}"},
         )
-        response.raise_for_status()
+        if not response.is_success:
+            error_detail = _extract_error_detail(response)
+            return {
+                "error": error_detail,
+                "results": [],
+                "query": query,
+            }
         response_payload = response.json()
         results = response_payload.get("results", [])
         return {
@@ -236,11 +306,16 @@ async def open_urls(
 
     try:
         response = await get_http_client().post(
-            f"{get_api_server_url()}/web-search/open-urls",
+            f"{build_api_server_url_for_http_requests(respect_env_override_if_set=True)}/web-search/open-urls",
             json={"urls": urls},
             headers={"Authorization": f"Bearer {access_token.token}"},
         )
-        response.raise_for_status()
+        if not response.is_success:
+            error_detail = _extract_error_detail(response)
+            return {
+                "error": error_detail,
+                "results": [],
+            }
         response_payload = response.json()
         results = response_payload.get("results", [])
         return {

@@ -1,17 +1,26 @@
+from onyx.cache.factory import get_cache_backend
+from onyx.configs.app_configs import DEFAULT_USER_FILE_MAX_UPLOAD_SIZE_MB
 from onyx.configs.app_configs import DISABLE_USER_KNOWLEDGE
+from onyx.configs.app_configs import DISABLE_VECTOR_DB
+from onyx.configs.app_configs import ENABLE_OPENSEARCH_INDEXING_FOR_ONYX
+from onyx.configs.app_configs import MAX_ALLOWED_UPLOAD_SIZE_MB
 from onyx.configs.app_configs import ONYX_QUERY_HISTORY_TYPE
 from onyx.configs.app_configs import SHOW_EXTRA_CONNECTORS
 from onyx.configs.constants import KV_SETTINGS_KEY
 from onyx.configs.constants import OnyxRedisLocks
 from onyx.key_value_store.factory import get_kv_store
 from onyx.key_value_store.interface import KvKeyNotFoundError
-from onyx.redis.redis_pool import get_redis_client
+from onyx.server.settings.models import (
+    DEFAULT_FILE_TOKEN_COUNT_THRESHOLD_K_NO_VECTOR_DB,
+)
+from onyx.server.settings.models import DEFAULT_FILE_TOKEN_COUNT_THRESHOLD_K_VECTOR_DB
 from onyx.server.settings.models import Settings
 from onyx.utils.logger import setup_logger
-from shared_configs.configs import MULTI_TENANT
-from shared_configs.contextvars import get_current_tenant_id
 
 logger = setup_logger()
+
+# TTL for settings keys - 30 days
+SETTINGS_TTL = 30 * 24 * 60 * 60
 
 
 def load_settings() -> Settings:
@@ -29,43 +38,66 @@ def load_settings() -> Settings:
         logger.error(f"Error loading settings from KV store: {str(e)}")
         settings = Settings()
 
-    tenant_id = get_current_tenant_id() if MULTI_TENANT else None
-    redis_client = get_redis_client(tenant_id=tenant_id)
+    cache = get_cache_backend()
 
     try:
-        value = redis_client.get(OnyxRedisLocks.ANONYMOUS_USER_ENABLED)
+        value = cache.get(OnyxRedisLocks.ANONYMOUS_USER_ENABLED)
         if value is not None:
-            assert isinstance(value, bytes)
             anonymous_user_enabled = int(value.decode("utf-8")) == 1
         else:
-            # Default to False
             anonymous_user_enabled = False
-            # Optionally store the default back to Redis
-            redis_client.set(OnyxRedisLocks.ANONYMOUS_USER_ENABLED, "0")
+            cache.set(OnyxRedisLocks.ANONYMOUS_USER_ENABLED, "0", ex=SETTINGS_TTL)
     except Exception as e:
-        # Log the error and reset to default
-        logger.error(f"Error loading anonymous user setting from Redis: {str(e)}")
+        logger.error(f"Error loading anonymous user setting from cache: {str(e)}")
         anonymous_user_enabled = False
 
     settings.anonymous_user_enabled = anonymous_user_enabled
     settings.query_history_type = ONYX_QUERY_HISTORY_TYPE
 
-    # Override user knowledge setting if disabled via environment variable
     if DISABLE_USER_KNOWLEDGE:
         settings.user_knowledge_enabled = False
 
     settings.show_extra_connectors = SHOW_EXTRA_CONNECTORS
+    settings.opensearch_indexing_enabled = ENABLE_OPENSEARCH_INDEXING_FOR_ONYX
+
+    # Resolve context-aware defaults for token threshold.
+    # None = admin hasn't set a value yet → use context-aware default.
+    # 0 = admin explicitly chose "no limit" → preserve as-is.
+    if settings.file_token_count_threshold_k is None:
+        settings.file_token_count_threshold_k = (
+            DEFAULT_FILE_TOKEN_COUNT_THRESHOLD_K_NO_VECTOR_DB
+            if DISABLE_VECTOR_DB
+            else DEFAULT_FILE_TOKEN_COUNT_THRESHOLD_K_VECTOR_DB
+        )
+
+    # Upload size: 0 and None are treated as "unset" (not "no limit") →
+    # fall back to min(configured default, hard ceiling).
+    if not settings.user_file_max_upload_size_mb:
+        settings.user_file_max_upload_size_mb = min(
+            DEFAULT_USER_FILE_MAX_UPLOAD_SIZE_MB,
+            MAX_ALLOWED_UPLOAD_SIZE_MB,
+        )
+
+    # Clamp to env ceiling so stale KV values are capped even if the
+    # operator lowered MAX_ALLOWED_UPLOAD_SIZE_MB after a higher value
+    # was already saved (api.py only guards new writes).
+    if (
+        settings.user_file_max_upload_size_mb > 0
+        and settings.user_file_max_upload_size_mb > MAX_ALLOWED_UPLOAD_SIZE_MB
+    ):
+        settings.user_file_max_upload_size_mb = MAX_ALLOWED_UPLOAD_SIZE_MB
+
     return settings
 
 
 def store_settings(settings: Settings) -> None:
-    tenant_id = get_current_tenant_id() if MULTI_TENANT else None
-    redis_client = get_redis_client(tenant_id=tenant_id)
+    cache = get_cache_backend()
 
     if settings.anonymous_user_enabled is not None:
-        redis_client.set(
+        cache.set(
             OnyxRedisLocks.ANONYMOUS_USER_ENABLED,
             "1" if settings.anonymous_user_enabled else "0",
+            ex=SETTINGS_TTL,
         )
 
     get_kv_store().store(KV_SETTINGS_KEY, settings.model_dump())

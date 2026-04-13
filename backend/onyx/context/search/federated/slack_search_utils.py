@@ -4,20 +4,24 @@ import re
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
-from enum import Enum
 from typing import Any
 
-from langchain_core.messages import HumanMessage
 from pydantic import ValidationError
 
 from onyx.configs.app_configs import MAX_SLACK_QUERY_EXPANSIONS
-from onyx.context.search.models import SearchQuery
+from onyx.context.search.federated.models import ChannelMetadata
+from onyx.context.search.federated.models import DirectThreadFetch
+from onyx.context.search.models import ChunkIndexRequest
 from onyx.federated_connectors.slack.models import SlackEntities
 from onyx.llm.interfaces import LLM
-from onyx.llm.utils import message_to_string
+from onyx.llm.models import UserMessage
+from onyx.llm.utils import llm_response_to_string
+from onyx.natural_language_processing.english_stopwords import ENGLISH_STOPWORDS_SET
 from onyx.onyxbot.slack.models import ChannelType
 from onyx.prompts.federated_search import SLACK_DATE_EXTRACTION_PROMPT
 from onyx.prompts.federated_search import SLACK_QUERY_EXPANSION_PROMPT
+from onyx.tracing.llm_utils import llm_generation_span
+from onyx.tracing.llm_utils import record_llm_response
 from onyx.utils.logger import setup_logger
 
 logger = setup_logger()
@@ -34,35 +38,25 @@ WORD_PUNCTUATION = ".,!?;:\"'#"
 
 RECENCY_KEYWORDS = ["recent", "latest", "newest", "last"]
 
-
-class ChannelTypeString(str, Enum):
-    """String representations of Slack channel types."""
-
-    IM = "im"
-    MPIM = "mpim"
-    PRIVATE_CHANNEL = "private_channel"
-    PUBLIC_CHANNEL = "public_channel"
-
-
 # All Slack channel types for fetching metadata
 ALL_CHANNEL_TYPES = [
-    ChannelTypeString.PUBLIC_CHANNEL.value,
-    ChannelTypeString.IM.value,
-    ChannelTypeString.MPIM.value,
-    ChannelTypeString.PRIVATE_CHANNEL.value,
+    ChannelType.PUBLIC_CHANNEL.value,
+    ChannelType.IM.value,
+    ChannelType.MPIM.value,
+    ChannelType.PRIVATE_CHANNEL.value,
 ]
 
 # Map Slack API scopes to their corresponding channel types
 # This is used for graceful degradation when scopes are missing
 SCOPE_TO_CHANNEL_TYPE_MAP = {
-    "mpim:read": ChannelTypeString.MPIM.value,
-    "mpim:history": ChannelTypeString.MPIM.value,
-    "im:read": ChannelTypeString.IM.value,
-    "im:history": ChannelTypeString.IM.value,
-    "groups:read": ChannelTypeString.PRIVATE_CHANNEL.value,
-    "groups:history": ChannelTypeString.PRIVATE_CHANNEL.value,
-    "channels:read": ChannelTypeString.PUBLIC_CHANNEL.value,
-    "channels:history": ChannelTypeString.PUBLIC_CHANNEL.value,
+    "mpim:read": ChannelType.MPIM.value,
+    "mpim:history": ChannelType.MPIM.value,
+    "im:read": ChannelType.IM.value,
+    "im:history": ChannelType.IM.value,
+    "groups:read": ChannelType.PRIVATE_CHANNEL.value,
+    "groups:history": ChannelType.PRIVATE_CHANNEL.value,
+    "channels:read": ChannelType.PUBLIC_CHANNEL.value,
+    "channels:history": ChannelType.PUBLIC_CHANNEL.value,
 }
 
 
@@ -123,7 +117,7 @@ def is_recency_query(query: str) -> bool:
     if not has_recency_keyword:
         return False
 
-    # Get combined stop words (NLTK + Slack-specific)
+    # Get combined stop words (English + Slack-specific)
     all_stop_words = _get_combined_stop_words()
 
     # Extract content words (excluding stop words)
@@ -201,9 +195,15 @@ def extract_date_range_from_query(
 
     try:
         prompt = SLACK_DATE_EXTRACTION_PROMPT.format(query=query)
-        response = message_to_string(
-            llm.invoke_langchain([HumanMessage(content=prompt)])
-        )
+        prompt_msg = UserMessage(content=prompt)
+
+        # Call LLM with Braintrust tracing
+        with llm_generation_span(
+            llm=llm, flow="slack_date_extraction", input_messages=[prompt_msg]
+        ) as span_generation:
+            llm_response = llm.invoke(prompt_msg)
+            record_llm_response(span_generation, llm_response)
+            response = llm_response_to_string(llm_response)
 
         response_clean = _parse_llm_code_block_response(response)
 
@@ -219,8 +219,7 @@ def extract_date_range_from_query(
             days_back = data.get("days_back")
             if days_back is None:
                 logger.debug(
-                    f"LLM date extraction returned null for query: '{query}', "
-                    f"using default: {default_search_days} days"
+                    f"LLM date extraction returned null for query: '{query}', using default: {default_search_days} days"
                 )
                 return default_search_days
 
@@ -334,7 +333,7 @@ def build_channel_query_filter(
 def get_channel_type(
     channel_info: dict[str, Any] | None = None,
     channel_id: str | None = None,
-    channel_metadata: dict[str, dict[str, Any]] | None = None,
+    channel_metadata: dict[str, ChannelMetadata] | None = None,
 ) -> ChannelType:
     """
     Determine channel type from channel info dict or by looking up channel_id.
@@ -361,11 +360,11 @@ def get_channel_type(
         ch_meta = channel_metadata.get(channel_id)
         if ch_meta:
             type_str = ch_meta.get("type")
-            if type_str == ChannelTypeString.IM.value:
+            if type_str == ChannelType.IM.value:
                 return ChannelType.IM
-            elif type_str == ChannelTypeString.MPIM.value:
+            elif type_str == ChannelType.MPIM.value:
                 return ChannelType.MPIM
-            elif type_str == ChannelTypeString.PRIVATE_CHANNEL.value:
+            elif type_str == ChannelType.PRIVATE_CHANNEL.value:
                 return ChannelType.PRIVATE_CHANNEL
             return ChannelType.PUBLIC_CHANNEL
 
@@ -411,8 +410,8 @@ def extract_channel_references_from_query(query_text: str) -> set[str]:
     channel_patterns = [
         r"\bin\s+(?:the\s+)?([a-z0-9_-]+)\s+(?:slack\s+)?channels?\b",  # "in the office channel"
         r"\bfrom\s+(?:the\s+)?([a-z0-9_-]+)\s+(?:slack\s+)?channels?\b",  # "from the office channel"
-        r"\bin\s+#([a-z0-9_-]+)\b",  # "in #office"
-        r"\bfrom\s+#([a-z0-9_-]+)\b",  # "from #office"
+        r"\bin[:\s]*#([a-z0-9_-]+)\b",  # "in #office" or "in:#office"
+        r"\bfrom[:\s]*#([a-z0-9_-]+)\b",  # "from #office" or "from:#office"
     ]
 
     for pattern in channel_patterns:
@@ -500,7 +499,7 @@ def build_channel_override_query(channel_references: set[str], time_filter: str)
     return f"__CHANNEL_OVERRIDE__ {channel_filter}{time_filter}"
 
 
-# Slack-specific stop words (in addition to standard NLTK stop words)
+# Slack-specific stop words (in addition to standard English stop words)
 # These include Slack-specific terms and temporal/recency keywords
 SLACK_SPECIFIC_STOP_WORDS = frozenset(
     RECENCY_KEYWORDS
@@ -520,27 +519,16 @@ SLACK_SPECIFIC_STOP_WORDS = frozenset(
 )
 
 
-def _get_combined_stop_words() -> set[str]:
-    """Get combined NLTK + Slack-specific stop words.
+def _get_combined_stop_words() -> frozenset[str]:
+    """Get combined English + Slack-specific stop words.
 
-    Returns a set of stop words for filtering content words.
-    Falls back to just Slack-specific stop words if NLTK is unavailable.
+    Returns a frozenset of stop words for filtering content words.
 
     Note: Currently only supports English stop words. Non-English queries
     may have suboptimal content word extraction. Future enhancement could
     detect query language and load appropriate stop words.
     """
-    try:
-        from nltk.corpus import stopwords  # type: ignore
-
-        # TODO: Support multiple languages - currently hardcoded to English
-        # Could detect language or allow configuration
-        nltk_stop_words = set(stopwords.words("english"))
-    except Exception:
-        # Fallback if NLTK not available
-        nltk_stop_words = set()
-
-    return nltk_stop_words | SLACK_SPECIFIC_STOP_WORDS
+    return ENGLISH_STOPWORDS_SET | SLACK_SPECIFIC_STOP_WORDS
 
 
 def extract_content_words_from_recency_query(
@@ -548,7 +536,7 @@ def extract_content_words_from_recency_query(
 ) -> list[str]:
     """Extract meaningful content words from a recency query.
 
-    Filters out NLTK stop words, Slack-specific terms, channel references, and proper nouns.
+    Filters out English stop words, Slack-specific terms, channel references, and proper nouns.
 
     Args:
         query_text: The user's query text
@@ -557,7 +545,7 @@ def extract_content_words_from_recency_query(
     Returns:
         List of content words (up to MAX_CONTENT_WORDS)
     """
-    # Get combined stop words (NLTK + Slack-specific)
+    # Get combined stop words (English + Slack-specific)
     all_stop_words = _get_combined_stop_words()
 
     words = query_text.split()
@@ -579,6 +567,23 @@ def extract_content_words_from_recency_query(
     return content_words_filtered[:MAX_CONTENT_WORDS]
 
 
+def _is_valid_keyword_query(line: str) -> bool:
+    """Check if a line looks like a valid keyword query vs explanatory text.
+
+    Returns False for lines that appear to be LLM explanations rather than keywords.
+    """
+    # Reject lines that start with parentheses (explanatory notes)
+    if line.startswith("("):
+        return False
+
+    # Reject lines that are too long (likely sentences, not keywords)
+    # Keywords should be short - reject if > 50 chars or > 6 words
+    if len(line) > 50 or len(line.split()) > 6:
+        return False
+
+    return True
+
+
 def expand_query_with_llm(query_text: str, llm: LLM) -> list[str]:
     """Use LLM to expand query into multiple search variations.
 
@@ -589,28 +594,42 @@ def expand_query_with_llm(query_text: str, llm: LLM) -> list[str]:
     Returns:
         List of rephrased query strings (up to MAX_SLACK_QUERY_EXPANSIONS)
     """
-    prompt = SLACK_QUERY_EXPANSION_PROMPT.format(
-        query=query_text, max_queries=MAX_SLACK_QUERY_EXPANSIONS
+    prompt = UserMessage(
+        content=SLACK_QUERY_EXPANSION_PROMPT.format(
+            query=query_text, max_queries=MAX_SLACK_QUERY_EXPANSIONS
+        )
     )
 
     try:
-        response = message_to_string(
-            llm.invoke_langchain([HumanMessage(content=prompt)])
-        )
+        # Call LLM with Braintrust tracing
+        with llm_generation_span(
+            llm=llm, flow="slack_query_expansion", input_messages=[prompt]
+        ) as span_generation:
+            llm_response = llm.invoke(prompt)
+            record_llm_response(span_generation, llm_response)
+            response = llm_response_to_string(llm_response)
 
         response_clean = _parse_llm_code_block_response(response)
 
         # Split into lines and filter out empty lines
-        rephrased_queries = [
+        raw_queries = [
             line.strip() for line in response_clean.split("\n") if line.strip()
         ]
+
+        # Filter out lines that look like explanatory text rather than keywords
+        rephrased_queries = [q for q in raw_queries if _is_valid_keyword_query(q)]
+
+        # Log if we filtered out garbage
+        if len(raw_queries) != len(rephrased_queries):
+            filtered_out = set(raw_queries) - set(rephrased_queries)
+            logger.warning(f"Filtered out non-keyword LLM responses: {filtered_out}")
 
         # If no queries generated, use empty query
         if not rephrased_queries:
             logger.debug("No content keywords extracted from query expansion")
             return [""]
 
-        logger.info(
+        logger.debug(
             f"Expanded query into {len(rephrased_queries)} queries: {rephrased_queries}"
         )
         return rephrased_queries[:MAX_SLACK_QUERY_EXPANSIONS]
@@ -620,12 +639,38 @@ def expand_query_with_llm(query_text: str, llm: LLM) -> list[str]:
         return [query_text]
 
 
+SLACK_URL_PATTERN = re.compile(
+    r"https?://[a-z0-9-]+\.slack\.com/archives/([A-Z0-9]+)/p(\d{16})"
+)
+
+
+def extract_slack_message_urls(
+    query_text: str,
+) -> list[tuple[str, str]]:
+    """Extract Slack message URLs from query text.
+
+    Parses URLs like:
+      https://onyx-company.slack.com/archives/C097NBWMY8Y/p1775491616524769
+
+    Returns list of (channel_id, thread_ts) tuples.
+    The 16-digit timestamp is converted to Slack ts format (with dot).
+    """
+    results = []
+    for match in SLACK_URL_PATTERN.finditer(query_text):
+        channel_id = match.group(1)
+        raw_ts = match.group(2)
+        # Convert p1775491616524769 -> 1775491616.524769
+        thread_ts = f"{raw_ts[:10]}.{raw_ts[10:]}"
+        results.append((channel_id, thread_ts))
+    return results
+
+
 def build_slack_queries(
-    query: SearchQuery,
+    query: ChunkIndexRequest,
     llm: LLM,
     entities: dict[str, Any] | None = None,
     available_channels: list[str] | None = None,
-) -> list[str]:
+) -> list[str | DirectThreadFetch]:
     """Build Slack query strings with date filtering and query expansion."""
     default_search_days = 30
     if entities:
@@ -636,7 +681,9 @@ def build_slack_queries(
             logger.warning(f"Invalid entities in build_slack_queries: {e}")
 
     days_back = extract_date_range_from_query(
-        query.original_query or query.query, llm, default_search_days
+        query=query.query,
+        llm=llm,
+        default_search_days=default_search_days,
     )
 
     # get time filter
@@ -648,10 +695,17 @@ def build_slack_queries(
             cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_back)
             time_filter = f" after:{cutoff_date.strftime('%Y-%m-%d')}"
 
-    original_query_text = query.original_query or query.query
+    # Check for Slack message URLs — if found, add direct fetch requests
+    url_fetches: list[DirectThreadFetch] = []
+    slack_urls = extract_slack_message_urls(query.query)
+    for channel_id, thread_ts in slack_urls:
+        url_fetches.append(
+            DirectThreadFetch(channel_id=channel_id, thread_ts=thread_ts)
+        )
+        logger.info(f"Detected Slack URL: channel={channel_id}, ts={thread_ts}")
 
     # ALWAYS extract channel references from the query (not just for recency queries)
-    channel_references = extract_channel_references_from_query(original_query_text)
+    channel_references = extract_channel_references_from_query(query.query)
 
     # Validate channel references against available channels and entity config
     # This will raise ValueError if channels are invalid
@@ -666,25 +720,28 @@ def build_slack_queries(
 
             # If valid channels detected, use ONLY those channels with NO keywords
             # Return query with ONLY time filter + channel filter (no keywords)
-            return [build_channel_override_query(channel_references, time_filter)]
+            return url_fetches + [
+                build_channel_override_query(channel_references, time_filter)
+            ]
         except ValueError as e:
             # If validation fails, log the error and continue with normal flow
             logger.warning(f"Channel reference validation failed: {e}")
             channel_references = set()
 
     # use llm to generate slack queries (use original query to use same keywords as the user)
-    if is_recency_query(original_query_text):
+    if is_recency_query(query.query):
         # For recency queries, extract content words (excluding channel names and stop words)
         content_words = extract_content_words_from_recency_query(
-            original_query_text, channel_references
+            query.query, channel_references
         )
         rephrased_queries = [" ".join(content_words)] if content_words else [""]
     else:
         # For other queries, use LLM to expand into multiple variations
-        rephrased_queries = expand_query_with_llm(original_query_text, llm)
+        rephrased_queries = expand_query_with_llm(query.query, llm)
 
     # Build final query strings with time filters
-    return [
+    search_queries = [
         rephrased_query.strip() + time_filter
         for rephrased_query in rephrased_queries[:MAX_SLACK_QUERY_EXPANSIONS]
     ]
+    return url_fetches + search_queries

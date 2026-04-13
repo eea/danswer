@@ -13,6 +13,10 @@ have a contract or agreement with DanswerAI, you are not permitted to use the En
 Edition features outside of personal development or testing purposes. Please reach out to \
 founders@onyx.app for more information. Please visit https://github.com/onyx-dot-app/onyx"
 
+# Build argument for Craft support (disabled by default)
+# Use --build-arg ENABLE_CRAFT=true to include Node.js and opencode CLI
+ARG ENABLE_CRAFT=false
+
 # DO_NOT_TRACK is used to disable telemetry for Unstructured
 ENV DANSWER_RUNNING_IN_DOCKER="true" \
     DO_NOT_TRACK="true" \
@@ -52,7 +56,11 @@ RUN apt-get update && \
         pkg-config \
         procps \
         tini \
-        gcc && \
+        libjemalloc2 \
+        gcc \
+        nano \
+        vim \
+        && \
     rm -rf /var/lib/apt/lists/* && \
     apt-get clean
 
@@ -65,6 +73,25 @@ RUN mkdir -p ~/.cache/ms-playwright/ffmpeg-1009 \
  && unzip /tmp/chromium-linux.zip -d ~/.cache/ms-playwright/chromium-1097 \
  && touch ~/.cache/ms-playwright/chromium-1097/INSTALLATION_COMPLETE \
  && rm -f /tmp/ffmpeg-linux.zip /tmp/chromium-linux.zip /tmp/chromium-linux.zip.part.*
+
+# Conditionally install Node.js 20 for Craft (required for Next.js)
+# Only installed when ENABLE_CRAFT=true
+RUN if [ "$ENABLE_CRAFT" = "true" ]; then \
+        echo "Installing Node.js 20 for Craft support..." && \
+        curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+        apt-get install -y nodejs && \
+        rm -rf /var/lib/apt/lists/*; \
+    fi
+
+# Conditionally install opencode CLI for Craft agent functionality
+# Only installed when ENABLE_CRAFT=true
+# TODO: download a specific, versioned release of the opencode CLI
+RUN if [ "$ENABLE_CRAFT" = "true" ]; then \
+        echo "Installing opencode CLI for Craft support..." && \
+        curl -fsSL https://opencode.ai/install | bash; \
+    fi
+ENV PATH="/root/.opencode/bin:${PATH}"
+
 
 # Install Python dependencies
 # Remove py which is pulled in by retry, py is not needed and is a CVE
@@ -106,8 +133,8 @@ RUN uv pip install --system --no-cache-dir --upgrade \
 # Pre-download all models/data in single layer and cleanup Python cache
 # NLTK data for read-only filesystems, tokenizers, and tiktoken encodings
 RUN python -c "import nltk; \
-nltk.download('stopwords', download_dir='/usr/share/nltk_data', quiet=True); \
-nltk.download('punkt_tab', download_dir='/usr/share/nltk_data', quiet=True);" && \
+    nltk.download('stopwords', download_dir='/usr/share/nltk_data', quiet=True); \
+    nltk.download('punkt_tab', download_dir='/usr/share/nltk_data', quiet=True);" && \
 python -c "from tokenizers import Tokenizer; \
 Tokenizer.from_pretrained('nomic-ai/nomic-embed-text-v1')" && \
 python -c "import tiktoken; \
@@ -116,6 +143,7 @@ chown -R onyx:onyx /usr/share/nltk_data /usr/share/huggingface /usr/share/tiktok
 find /usr/local/lib/python3.11 -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true && \
 find /usr/local/lib/python3.11 -type f -name '*.pyc' -delete 2>/dev/null || true && \
 find /usr/local/lib/python3.11 -type f -name '*.pyo' -delete 2>/dev/null || true
+
 # nltk.download('wordnet', quiet=True); introduce this back if lemmatization is needed
 
 USER onyx
@@ -135,12 +163,27 @@ COPY --chown=onyx:onyx ./alembic_tenants /app/alembic_tenants
 COPY --chown=onyx:onyx ./alembic.ini /app/alembic.ini
 COPY supervisord.conf /usr/etc/supervisord.conf
 COPY --chown=onyx:onyx ./static /app/static
+COPY --chown=onyx:onyx ./keys /app/keys
 
 # Escape hatch scripts
 COPY --chown=onyx:onyx ./scripts/debugging /app/scripts/debugging
 COPY --chown=onyx:onyx ./scripts/force_delete_connector_by_id.py /app/scripts/force_delete_connector_by_id.py
 COPY --chown=onyx:onyx ./scripts/supervisord_entrypoint.sh /app/scripts/supervisord_entrypoint.sh
-RUN chmod +x /app/scripts/supervisord_entrypoint.sh
+COPY --chown=onyx:onyx ./scripts/setup_craft_templates.sh /app/scripts/setup_craft_templates.sh
+COPY --chown=onyx:onyx ./scripts/reencrypt_secrets.py /app/scripts/reencrypt_secrets.py
+RUN chmod +x /app/scripts/supervisord_entrypoint.sh /app/scripts/setup_craft_templates.sh
+
+# Run Craft template setup at build time when ENABLE_CRAFT=true
+# This pre-bakes demo data, Python venv, and npm dependencies into the image
+RUN if [ "$ENABLE_CRAFT" = "true" ]; then \
+        echo "Running Craft template setup at build time..." && \
+        ENABLE_CRAFT=true /app/scripts/setup_craft_templates.sh; \
+    fi
+
+# Set Craft template paths to the in-image locations
+# These match the paths where setup_craft_templates.sh creates the templates
+ENV OUTPUTS_TEMPLATE_PATH=/app/onyx/server/features/build/sandbox/kubernetes/docker/templates/outputs
+ENV VENV_TEMPLATE_PATH=/app/onyx/server/features/build/sandbox/kubernetes/docker/templates/venv
 
 # Put logo in assets
 COPY --chown=onyx:onyx ./assets /app/assets
@@ -150,6 +193,13 @@ ENV PYTHONPATH=/app
 # Default ONYX_VERSION, typically overriden during builds by GitHub Actions.
 ARG ONYX_VERSION=0.0.0-dev
 ENV ONYX_VERSION=${ONYX_VERSION}
+
+# Use jemalloc instead of glibc malloc to reduce memory fragmentation
+# in long-running Python processes (API server, Celery workers).
+# The soname is architecture-independent; the dynamic linker resolves
+# the correct path from standard library directories.
+# Placed after all RUN steps so build-time processes are unaffected.
+ENV LD_PRELOAD=libjemalloc.so.2
 
 # Default command which does nothing
 # This container is used by api server and background which specify their own CMD

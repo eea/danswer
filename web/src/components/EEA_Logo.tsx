@@ -1,9 +1,9 @@
 "use client";
 
 import { useContext } from "react";
-import { SettingsContext } from "./settings/SettingsProvider";
+import { SettingsContext } from "@/providers/SettingsProvider";
 import Image from "next/image";
-import { defaultTailwindCSS, IconProps } from "./icons/icons";
+import { defaultTailwindCSS, IconProps } from "@/components/icons/icons";
 import { SiZeromq } from "react-icons/si";
 import { HeaderTitle } from "@/components/header/HeaderTitle";
 

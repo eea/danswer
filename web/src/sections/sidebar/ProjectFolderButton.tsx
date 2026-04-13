@@ -1,42 +1,36 @@
 "use client";
 
 import React, { useState, memo } from "react";
-import {
-  Project,
-  useProjectsContext,
-} from "@/app/chat/projects/ProjectsContext";
+import { Project, useProjectsContext } from "@/providers/ProjectsContext";
 import { useDroppable } from "@dnd-kit/core";
 import LineItem from "@/refresh-components/buttons/LineItem";
-import SvgFolder from "@/icons/folder";
-import SvgEdit from "@/icons/edit";
-import {
-  Popover,
-  PopoverContent,
-  PopoverMenu,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import SvgTrash from "@/icons/trash";
+import Popover, { PopoverMenu } from "@/refresh-components/Popover";
 import ConfirmationModalLayout from "@/refresh-components/layouts/ConfirmationModalLayout";
-import Button from "@/refresh-components/buttons/Button";
 import ChatButton from "@/sections/sidebar/ChatButton";
 import { useAppRouter } from "@/hooks/appNavigation";
 import { cn, noProp } from "@/lib/utils";
 import { DRAG_TYPES } from "./constants";
-import SidebarTab from "@/refresh-components/buttons/SidebarTab";
+import { SidebarTab } from "@opal/components";
 import IconButton from "@/refresh-components/buttons/IconButton";
-import SvgMoreHorizontal from "@/icons/more-horizontal";
-import { PopoverAnchor } from "@radix-ui/react-popover";
+import Truncated from "@/refresh-components/texts/Truncated";
+import { Button } from "@opal/components";
 import ButtonRenaming from "@/refresh-components/buttons/ButtonRenaming";
-import { SvgProps } from "@/icons";
+import type { IconProps } from "@opal/types";
 import useAppFocus from "@/hooks/useAppFocus";
-import SvgFolderOpen from "@/icons/folder-open";
-import SvgFolderPartialOpen from "@/icons/folder-partial-open";
+import {
+  SvgEdit,
+  SvgFolder,
+  SvgFolderOpen,
+  SvgFolderPartialOpen,
+  SvgMoreHorizontal,
+  SvgTrash,
+} from "@opal/icons";
 
-interface ProjectFolderProps {
+export interface ProjectFolderButtonProps {
   project: Project;
 }
 
-function ProjectFolderButtonInner({ project }: ProjectFolderProps) {
+const ProjectFolderButton = memo(({ project }: ProjectFolderButtonProps) => {
   const route = useAppRouter();
   const [open, setOpen] = useState(false);
   const [deleteConfirmationModalOpen, setDeleteConfirmationModalOpen] =
@@ -58,7 +52,7 @@ function ProjectFolderButtonInner({ project }: ProjectFolderProps) {
     },
   });
 
-  function getFolderIcon(): React.FunctionComponent<SvgProps> {
+  function getFolderIcon(): React.FunctionComponent<IconProps> {
     if (open) {
       return SvgFolderOpen;
     } else {
@@ -124,7 +118,7 @@ function ProjectFolderButtonInner({ project }: ProjectFolderProps) {
           onClose={() => setDeleteConfirmationModalOpen(false)}
           submit={
             <Button
-              danger
+              variant="danger"
               onClick={() => {
                 setDeleteConfirmationModalOpen(false);
                 deleteProject(project.id);
@@ -141,27 +135,28 @@ function ProjectFolderButtonInner({ project }: ProjectFolderProps) {
 
       {/* Project Folder */}
       <Popover onOpenChange={setPopoverOpen}>
-        <PopoverAnchor>
+        <Popover.Anchor>
           <SidebarTab
-            leftIcon={() => (
-              <IconButton
-                onHover={handleIconHover}
+            icon={() => (
+              <Button
+                onMouseEnter={() => handleIconHover(true)}
+                onMouseLeave={() => handleIconHover(false)}
                 icon={getFolderIcon()}
-                internal
+                prominence="tertiary"
+                size="sm"
                 onClick={noProp(handleIconClick)}
               />
             )}
-            active={
-              typeof activeSidebar === "object" &&
-              activeSidebar.type === "project" &&
-              activeSidebar.id === String(project.id)
+            selected={
+              activeSidebar.isProject() &&
+              activeSidebar.getId() === String(project.id)
             }
             onClick={noProp(handleTextClick)}
-            focused={isEditing}
             rightChildren={
               <>
-                <PopoverTrigger asChild onClick={noProp()}>
+                <Popover.Trigger asChild onClick={noProp()}>
                   <div>
+                    {/* TODO(@raunakab): migrate to opal Button once className/iconClassName is resolved */}
                     <IconButton
                       icon={SvgMoreHorizontal}
                       className={cn(
@@ -172,11 +167,11 @@ function ProjectFolderButtonInner({ project }: ProjectFolderProps) {
                       internal
                     />
                   </div>
-                </PopoverTrigger>
+                </Popover.Trigger>
 
-                <PopoverContent side="right" align="end">
+                <Popover.Content side="right" align="end" width="md">
                   <PopoverMenu>{popoverItems}</PopoverMenu>
-                </PopoverContent>
+                </Popover.Content>
               </>
             }
           >
@@ -187,10 +182,10 @@ function ProjectFolderButtonInner({ project }: ProjectFolderProps) {
                 onClose={() => setIsEditing(false)}
               />
             ) : (
-              project.name
+              <Truncated text03>{project.name}</Truncated>
             )}
           </SidebarTab>
-        </PopoverAnchor>
+        </Popover.Anchor>
       </Popover>
 
       {/* Project Chat-Sessions */}
@@ -205,7 +200,7 @@ function ProjectFolderButtonInner({ project }: ProjectFolderProps) {
         ))}
     </div>
   );
-}
+});
+ProjectFolderButton.displayName = "ProjectFolderButton";
 
-const ProjectFolderButton = memo(ProjectFolderButtonInner);
 export default ProjectFolderButton;

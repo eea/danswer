@@ -1,15 +1,17 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import {
+  AuthType,
   SERVER_SIDE_ONLY__PAID_ENTERPRISE_FEATURES_ENABLED,
   SERVER_SIDE_ONLY__AUTH_TYPE,
 } from "./lib/constants";
 
-// Authentication cookie name (matches backend: FASTAPI_USERS_AUTH_COOKIE_NAME)
+// Authentication cookie names (matches backend constants)
 const FASTAPI_USERS_AUTH_COOKIE_NAME = "fastapiusersauth";
+const ANONYMOUS_USER_COOKIE_NAME = "onyx_anonymous_user";
 
 // Protected route prefixes (require authentication)
-const PROTECTED_ROUTES = ["/chat", "/admin", "/assistants", "/connector"];
+const PROTECTED_ROUTES = ["/app", "/admin", "/agents", "/connector"];
 
 // Public route prefixes (no authentication required)
 const PUBLIC_ROUTES = ["/auth", "/anonymous", "/_next", "/api"];
@@ -19,9 +21,9 @@ const PUBLIC_ROUTES = ["/auth", "/anonymous", "/_next", "/api"];
 export const config = {
   matcher: [
     // Auth-protected routes (for middleware auth check)
-    "/chat/:path*",
+    "/app/:path*",
     "/admin/:path*",
-    "/assistants/:path*",
+    "/agents/:path*",
     "/connector/:path*",
 
     // Enterprise Edition routes (for /ee rewriting)
@@ -29,10 +31,10 @@ export const config = {
     "/admin/groups/:path*",
     "/admin/performance/usage/:path*",
     "/admin/performance/query-history/:path*",
-    "/admin/whitelabeling/:path*",
+    "/admin/theme/:path*",
     "/admin/performance/custom-analytics/:path*",
     "/admin/standard-answer/:path*",
-    "/assistants/stats/:path*",
+    "/agents/stats/:path*",
 
     // Cloud only
     "/admin/billing/:path*",
@@ -44,11 +46,10 @@ const EE_ROUTES = [
   "/admin/groups",
   "/admin/performance/usage",
   "/admin/performance/query-history",
-  "/admin/whitelabeling",
+  "/admin/theme",
   "/admin/performance/custom-analytics",
   "/admin/standard-answer",
-  "/assistants/stats",
-  "/admin/billing",
+  "/agents/stats",
 ];
 
 export async function proxy(request: NextRequest) {
@@ -56,26 +57,24 @@ export async function proxy(request: NextRequest) {
 
   // Auth Check: Fast-fail at edge if no cookie (defense in depth)
   // Note: Layouts still do full verification (token validity, roles, etc.)
-  // Skip auth checks entirely if auth is disabled
-  if (SERVER_SIDE_ONLY__AUTH_TYPE !== "disabled") {
-    const isProtectedRoute = PROTECTED_ROUTES.some((route) =>
-      pathname.startsWith(route)
-    );
-    const isPublicRoute = PUBLIC_ROUTES.some((route) =>
-      pathname.startsWith(route)
-    );
+  const isProtectedRoute = PROTECTED_ROUTES.some((route) =>
+    pathname.startsWith(route)
+  );
+  const isPublicRoute = PUBLIC_ROUTES.some((route) =>
+    pathname.startsWith(route)
+  );
 
-    if (isProtectedRoute && !isPublicRoute) {
-      const authCookie = request.cookies.get(FASTAPI_USERS_AUTH_COOKIE_NAME);
+  if (isProtectedRoute && !isPublicRoute) {
+    const authCookie = request.cookies.get(FASTAPI_USERS_AUTH_COOKIE_NAME);
+    const anonymousCookie = request.cookies.get(ANONYMOUS_USER_COOKIE_NAME);
 
-      if (!authCookie) {
-        const loginUrl = new URL("/auth/login", request.url);
-        // Preserve full URL including query params and hash for deep linking
-        const fullPath =
-          pathname + request.nextUrl.search + request.nextUrl.hash;
-        loginUrl.searchParams.set("next", fullPath);
-        return NextResponse.redirect(loginUrl);
-      }
+    // Allow access if user has either a regular auth cookie or anonymous user cookie
+    if (!authCookie && !anonymousCookie) {
+      const loginUrl = new URL("/auth/login", request.url);
+      // Preserve full URL including query params and hash for deep linking
+      const fullPath = pathname + request.nextUrl.search + request.nextUrl.hash;
+      loginUrl.searchParams.set("next", fullPath);
+      return NextResponse.redirect(loginUrl);
     }
   }
 

@@ -5,25 +5,39 @@ from fastapi import Depends
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from onyx.auth.users import current_admin_user
-from onyx.auth.users import current_user
+from onyx import __version__ as onyx_version
+from onyx.auth.permissions import require_permission
 from onyx.auth.users import is_user_admin
+from onyx.configs.app_configs import DEFAULT_USER_FILE_MAX_UPLOAD_SIZE_MB
+from onyx.configs.app_configs import DISABLE_VECTOR_DB
+from onyx.configs.app_configs import MAX_ALLOWED_UPLOAD_SIZE_MB
 from onyx.configs.constants import KV_REINDEX_KEY
 from onyx.configs.constants import NotificationType
 from onyx.db.engine.sql_engine import get_session
+from onyx.db.enums import Permission
 from onyx.db.models import User
-from onyx.db.notification import create_notification
 from onyx.db.notification import dismiss_all_notifications
 from onyx.db.notification import get_notifications
 from onyx.db.notification import update_notification_last_shown
+from onyx.error_handling.error_codes import OnyxErrorCode
+from onyx.error_handling.exceptions import OnyxError
 from onyx.key_value_store.factory import get_kv_store
 from onyx.key_value_store.interface import KvKeyNotFoundError
+from onyx.server.features.build.utils import is_onyx_craft_enabled
+from onyx.server.settings.models import (
+    DEFAULT_FILE_TOKEN_COUNT_THRESHOLD_K_NO_VECTOR_DB,
+)
+from onyx.server.settings.models import DEFAULT_FILE_TOKEN_COUNT_THRESHOLD_K_VECTOR_DB
 from onyx.server.settings.models import Notification
 from onyx.server.settings.models import Settings
 from onyx.server.settings.models import UserSettings
 from onyx.server.settings.store import load_settings
 from onyx.server.settings.store import store_settings
 from onyx.utils.logger import setup_logger
+from onyx.utils.variable_functionality import (
+    fetch_versioned_implementation_with_fallback,
+)
+from shared_configs.configs import MULTI_TENANT
 
 logger = setup_logger()
 
@@ -33,14 +47,29 @@ basic_router = APIRouter(prefix="/settings")
 
 @admin_router.put("")
 def admin_put_settings(
-    settings: Settings, _: User | None = Depends(current_admin_user)
+    settings: Settings,
+    _: User = Depends(require_permission(Permission.FULL_ADMIN_PANEL_ACCESS)),
 ) -> None:
+    if (
+        settings.user_file_max_upload_size_mb is not None
+        and settings.user_file_max_upload_size_mb > 0
+        and settings.user_file_max_upload_size_mb > MAX_ALLOWED_UPLOAD_SIZE_MB
+    ):
+        raise OnyxError(
+            OnyxErrorCode.INVALID_INPUT,
+            f"File upload size limit cannot exceed {MAX_ALLOWED_UPLOAD_SIZE_MB} MB",
+        )
     store_settings(settings)
+
+
+def apply_license_status_to_settings(settings: Settings) -> Settings:
+    """MIT version: no-op, returns settings unchanged."""
+    return settings
 
 
 @basic_router.get("")
 def fetch_settings(
-    user: User | None = Depends(current_user),
+    user: User = Depends(require_permission(Permission.BASIC_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> UserSettings:
     """Settings and notifications are stuffed into this single endpoint to reduce number of
@@ -54,16 +83,38 @@ def fetch_settings(
     except KvKeyNotFoundError:
         needs_reindexing = False
 
+    apply_fn = fetch_versioned_implementation_with_fallback(
+        "onyx.server.settings.api",
+        "apply_license_status_to_settings",
+        apply_license_status_to_settings,
+    )
+    general_settings = apply_fn(general_settings)
+
+    # Check if Onyx Craft is enabled for this user (used for server-side redirects)
+    onyx_craft_enabled_for_user = is_onyx_craft_enabled(user) if user else False
+
     return UserSettings(
         **general_settings.model_dump(),
         notifications=settings_notifications,
         needs_reindexing=needs_reindexing,
+        onyx_craft_enabled=onyx_craft_enabled_for_user,
+        vector_db_enabled=not DISABLE_VECTOR_DB,
+        hooks_enabled=not MULTI_TENANT,
+        version=onyx_version,
+        max_allowed_upload_size_mb=MAX_ALLOWED_UPLOAD_SIZE_MB,
+        default_user_file_max_upload_size_mb=min(
+            DEFAULT_USER_FILE_MAX_UPLOAD_SIZE_MB,
+            MAX_ALLOWED_UPLOAD_SIZE_MB,
+        ),
+        default_file_token_count_threshold_k=(
+            DEFAULT_FILE_TOKEN_COUNT_THRESHOLD_K_NO_VECTOR_DB
+            if DISABLE_VECTOR_DB
+            else DEFAULT_FILE_TOKEN_COUNT_THRESHOLD_K_VECTOR_DB
+        ),
     )
 
 
-def get_settings_notifications(
-    user: User | None, db_session: Session
-) -> list[Notification]:
+def get_settings_notifications(user: User, db_session: Session) -> list[Notification]:
     """Get notifications for settings page, including product gating and reindex notifications"""
     # Check for product gating notification
     product_notif = get_notifications(
@@ -74,8 +125,7 @@ def get_settings_notifications(
     notifications = [Notification.from_model(product_notif[0])] if product_notif else []
 
     # Only show reindex notifications to admins
-    is_admin = is_user_admin(user)
-    if not is_admin:
+    if not is_user_admin(user):
         return notifications
 
     # Check if reindexing is needed
@@ -99,20 +149,10 @@ def get_settings_notifications(
             user=user, notif_type=NotificationType.REINDEX, db_session=db_session
         )
 
-        if not reindex_notifs:
-            notif = create_notification(
-                user_id=user.id if user else None,
-                notif_type=NotificationType.REINDEX,
-                db_session=db_session,
-            )
-            db_session.flush()
-            db_session.commit()
-
-            notifications.append(Notification.from_model(notif))
-            return notifications
-
         if len(reindex_notifs) > 1:
             logger.error("User has multiple reindex notifications")
+        elif not reindex_notifs:
+            return notifications
 
         reindex_notif = reindex_notifs[0]
         update_notification_last_shown(

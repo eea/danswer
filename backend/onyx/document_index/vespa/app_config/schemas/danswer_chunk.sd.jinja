@@ -181,6 +181,11 @@ schema {{ schema_name }} {
             rank: filter
             attribute: fast-search
         }
+        field personas type array<int> {
+            indexing: summary | attribute
+            rank: filter
+            attribute: fast-search
+        }
     }
 
     # If using different tokenization settings, the fieldset has to be removed, and the field must
@@ -273,6 +278,7 @@ schema {{ schema_name }} {
                 # Boost based on aggregated boost calculation
                 * aggregated_chunk_boost
             }
+            # Target hits for hybrid retrieval should be at least this value.
             rerank-count: 1000
         }
 
@@ -341,6 +347,7 @@ schema {{ schema_name }} {
                 # Boost based on aggregated boost calculation
                 * aggregated_chunk_boost
             }
+            # Target hits for hybrid retrieval should be at least this value.
             rerank-count: 1000
         }
 

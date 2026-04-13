@@ -67,6 +67,8 @@ def _create_test_connector_credential_pair(
     )
     db_session.add(credential)
     db_session.flush()
+    # Expire the credential so it reloads from DB with SensitiveValue wrapper
+    db_session.expire(credential)
 
     cc_pair = ConnectorCredentialPair(
         connector_id=connector.id,
@@ -91,7 +93,6 @@ def _cleanup_global_external_group_sync_attempts(db_session: Session) -> None:
 
 
 class TestExternalGroupPermissionSyncAttempt:
-
     def test_create_external_group_sync_attempt_with_cc_pair(
         self, db_session: Session
     ) -> None:

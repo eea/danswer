@@ -1,3 +1,4 @@
+import { authErrorRedirect } from "@/app/auth/libSS";
 import { getDomain } from "@/lib/redirectSS";
 import { buildUrl } from "@/lib/utilsSS";
 import { NextRequest, NextResponse } from "next/server";
@@ -7,9 +8,13 @@ export const GET = async (request: NextRequest) => {
   // which adds back a redirect to the main app.
   const url = new URL(buildUrl("/auth/oauth/callback"));
   url.search = request.nextUrl.search;
+  const cookieHeader = request.headers.get("cookie") || "";
 
   // Set 'redirect' to 'manual' to prevent automatic redirection
-  const response = await fetch(url.toString(), { redirect: "manual" });
+  const response = await fetch(url.toString(), {
+    redirect: "manual",
+    headers: cookieHeader ? { cookie: cookieHeader } : undefined,
+  });
   const setCookieHeader = response.headers.get("set-cookie");
 
   if (response.status === 401) {
@@ -19,7 +24,7 @@ export const GET = async (request: NextRequest) => {
   }
 
   if (!setCookieHeader) {
-    return NextResponse.redirect(new URL("/auth/error", getDomain(request)));
+    return authErrorRedirect(request, response);
   }
 
   // Get the redirect URL from the backend's 'Location' header, or default to '/'

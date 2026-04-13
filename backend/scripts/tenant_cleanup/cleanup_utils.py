@@ -7,6 +7,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+class TenantNotFoundInControlPlaneError(Exception):
+    """Exception raised when tenant/table is not found in control plane."""
+
+
 @dataclass
 class ControlPlaneConfig:
     """Configuration for connecting to the control plane database."""
@@ -114,10 +118,7 @@ def execute_control_plane_query(
     psql_flags = "-t" if tuple_only else ""
 
     # Build the SSH command with proper escaping
-    full_cmd = (
-        f"ssh -i {pem_file_location} ec2-user@{bastion_host} "
-        f'"psql {db_url} {psql_flags} -c \\"{query}\\""'
-    )
+    full_cmd = f'ssh -i {pem_file_location} ec2-user@{bastion_host} "psql {db_url} {psql_flags} -c \\"{query}\\""'
 
     result = subprocess.run(
         full_cmd,
@@ -136,6 +137,9 @@ def get_tenant_status(tenant_id: str) -> str | None:
 
     Returns:
         Tenant status string (e.g., 'GATED_ACCESS', 'ACTIVE') or None if not found
+
+    Raises:
+        TenantNotFoundInControlPlaneError: If the tenant table/relation does not exist
     """
     print(f"Fetching tenant status for tenant: {tenant_id}")
 
@@ -152,15 +156,18 @@ def get_tenant_status(tenant_id: str) -> str | None:
             return status
         else:
             print("⚠ Tenant not found in control plane")
-            return None
-
+            raise TenantNotFoundInControlPlaneError(
+                f"Tenant {tenant_id} not found in control plane database"
+            )
+    except TenantNotFoundInControlPlaneError:
+        # Re-raise without wrapping
+        raise
     except subprocess.CalledProcessError as e:
+        error_msg = e.stderr if e.stderr else str(e)
         print(
-            f"✗ Failed to get tenant status for {tenant_id}: {e}",
+            f"✗ Failed to get tenant status for {tenant_id}: {error_msg}",
             file=sys.stderr,
         )
-        if e.stderr:
-            print(f"  Error details: {e.stderr}", file=sys.stderr)
         return None
 
 

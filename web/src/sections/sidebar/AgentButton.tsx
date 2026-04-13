@@ -1,19 +1,16 @@
 "use client";
 
 import React, { memo } from "react";
-import { MinimalPersonaSnapshot } from "@/app/admin/assistants/interfaces";
-import { useAgentsContext } from "@/refresh-components/contexts/AgentsContext";
-import { useAppRouter } from "@/hooks/appNavigation";
-import SvgPin from "@/icons/pin";
+import { MinimalPersonaSnapshot } from "@/app/admin/agents/interfaces";
+import { usePinnedAgents, useCurrentAgent } from "@/hooks/useAgents";
 import { cn, noProp } from "@/lib/utils";
-import SidebarTab from "@/refresh-components/buttons/SidebarTab";
+import { SidebarTab } from "@opal/components";
 import IconButton from "@/refresh-components/buttons/IconButton";
-import { getAgentIcon } from "@/sections/sidebar/utils";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import SvgX from "@/icons/x";
-import useAppFocus from "@/hooks/useAppFocus";
-import useIsMounted from "@/hooks/useIsMounted";
+import useOnMount from "@/hooks/useOnMount";
+import AgentAvatar from "@/refresh-components/avatars/AgentAvatar";
+import { SvgPin, SvgX } from "@opal/icons";
 
 interface SortableItemProps {
   id: number;
@@ -21,7 +18,7 @@ interface SortableItemProps {
 }
 
 function SortableItem({ id, children }: SortableItemProps) {
-  const isMounted = useIsMounted();
+  const isMounted = useOnMount();
   const { attributes, listeners, setNodeRef, transform, isDragging } =
     useSortable({ id });
 
@@ -45,38 +42,45 @@ function SortableItem({ id, children }: SortableItemProps) {
   );
 }
 
-interface AgentButtonProps {
+export interface AgentButtonProps {
   agent: MinimalPersonaSnapshot;
 }
 
-function AgentButtonInner({ agent }: AgentButtonProps) {
-  const route = useAppRouter();
-  const activeSidebarTab = useAppFocus();
-  const { pinnedAgents, togglePinnedAgent } = useAgentsContext();
-  const pinned = pinnedAgents.some(
-    (pinnedAgent) => pinnedAgent.id === agent.id
-  );
+const AgentButton = memo(({ agent }: AgentButtonProps) => {
+  const currentAgent = useCurrentAgent();
+  const { pinnedAgents, togglePinnedAgent } = usePinnedAgents();
+  const isActuallyPinned = pinnedAgents.some((a) => a.id === agent.id);
+  const isCurrentAgent = currentAgent?.id === agent.id;
+
+  const handleClick = async () => {
+    if (!isActuallyPinned) {
+      await togglePinnedAgent(agent, true);
+    }
+  };
 
   return (
     <SortableItem id={agent.id}>
       <div className="flex flex-col w-full h-full">
         <SidebarTab
           key={agent.id}
-          leftIcon={getAgentIcon(agent)}
-          onClick={() => route({ agentId: agent.id })}
-          active={
-            typeof activeSidebarTab === "object" &&
-            activeSidebarTab.type === "agent" &&
-            activeSidebarTab.id === String(agent.id)
-          }
+          icon={() => <AgentAvatar agent={agent} />}
+          href={`/app?agentId=${agent.id}`}
+          onClick={handleClick}
+          selected={isCurrentAgent}
           rightChildren={
-            <IconButton
-              icon={pinned ? SvgX : SvgPin}
-              internal
-              onClick={noProp(() => togglePinnedAgent(agent, !pinned))}
-              className={cn("hidden group-hover/SidebarTab:flex")}
-              tooltip={pinned ? "Unpin Agent" : "Pin Agent"}
-            />
+            // Hide unpin button for current agent since auto-pin would immediately re-pin
+            isCurrentAgent ? null : (
+              // TODO(@raunakab): migrate to opal Button once className/iconClassName is resolved
+              <IconButton
+                icon={
+                  SvgX /* We only show the unpin button for pinned agents */
+                }
+                internal
+                onClick={noProp(() => togglePinnedAgent(agent, false))}
+                className={cn("hidden group-hover/SidebarTab:flex")}
+                tooltip={"Unpin Agent"}
+              />
+            )
           }
         >
           {agent.name}
@@ -84,7 +88,7 @@ function AgentButtonInner({ agent }: AgentButtonProps) {
       </div>
     </SortableItem>
   );
-}
+});
+AgentButton.displayName = "AgentButton";
 
-const AgentButton = memo(AgentButtonInner);
 export default AgentButton;

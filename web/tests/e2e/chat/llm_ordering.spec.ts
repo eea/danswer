@@ -1,43 +1,76 @@
-import { test, expect } from "@chromatic-com/playwright";
-import { loginAs } from "../utils/auth";
-import { verifyCurrentModel } from "../utils/chatActions";
-import { ensureImageGenerationEnabled } from "../utils/assistantUtils";
+import { test, expect } from "@playwright/test";
+import { loginAs } from "@tests/e2e/utils/auth";
+import { verifyCurrentModel } from "@tests/e2e/utils/chatActions";
+import { ensureImageGenerationEnabled } from "@tests/e2e/utils/agentUtils";
+import { OnyxApiClient } from "@tests/e2e/utils/onyxApiClient";
 
-test("Non-image-generation model visibility in chat input bar", async ({
-  page,
-}) => {
-  // Setup: Clear cookies and log in as admin
-  await page.context().clearCookies();
-  await loginAs(page, "admin");
+test.describe("LLM Ordering", () => {
+  let imageGenConfigId: string | null = null;
 
-  // Ensure Image Generation is enabled in default assistant
-  await ensureImageGenerationEnabled(page);
+  test.beforeEach(async ({ page }) => {
+    await page.context().clearCookies();
+    await loginAs(page, "admin");
 
-  // Navigate to the chat page
-  await page.goto("http://localhost:3000/chat");
-  await page.waitForSelector("#onyx-chat-input-textarea", { timeout: 10000 });
+    const apiClient = new OnyxApiClient(page.request);
 
-  const testModelDisplayName = "GPT 4o Mini";
+    // Create image generation config so the checkbox appears
+    try {
+      imageGenConfigId = await apiClient.createImageGenerationConfig(
+        `test-image-gen-${Date.now()}`
+      );
+    } catch (error) {
+      console.warn(`Failed to create image generation config: ${error}`);
+    }
+  });
 
-  // Open the LLM popover by clicking the model selector button
-  const llmPopoverTrigger = page.locator('[data-testid="llm-popover-trigger"]');
-  await llmPopoverTrigger.click();
+  test.afterEach(async ({ page }) => {
+    const apiClient = new OnyxApiClient(page.request);
 
-  // Wait for the popover to open
-  await page.waitForSelector('[role="dialog"]', { timeout: 5000 });
+    if (imageGenConfigId !== null) {
+      try {
+        await apiClient.deleteImageGenerationConfig(imageGenConfigId);
+        imageGenConfigId = null;
+      } catch (error) {
+        console.warn(`Failed to delete image gen config: ${error}`);
+      }
+    }
+  });
 
-  // Verify that the non-vision model appears in the list
-  // The model name is displayed via getDisplayNameForModel, so we search for text containing the model name
-  // Use .first() since there might be multiple providers with the same model
-  const modelButton = page
-    .locator('[role="dialog"]')
-    .locator("button")
-    .filter({ hasText: testModelDisplayName })
-    .first();
+  test("Non-image-generation model visibility in chat input bar", async ({
+    page,
+  }) => {
+    await ensureImageGenerationEnabled(page);
 
-  await expect(modelButton).toBeVisible();
+    await page.goto("/app");
+    await page.waitForSelector("#onyx-chat-input-textarea", { timeout: 10000 });
 
-  // Optionally, select the model to verify it works
-  await modelButton.click();
-  await verifyCurrentModel(page, testModelDisplayName);
+    const trigger = page.getByTestId("model-selector").locator("button").last();
+    const originalTriggerText = (await trigger.textContent())?.trim() ?? "";
+
+    await trigger.click();
+    await page.waitForSelector('[role="dialog"]', { timeout: 5000 });
+
+    const dialog = page.locator('[role="dialog"]');
+    const allModelItems = dialog.locator("[data-selected]");
+    await expect(allModelItems.first()).toBeVisible({ timeout: 5000 });
+
+    const count = await allModelItems.count();
+    expect(count).toBeGreaterThan(0);
+
+    // Pick the first non-selected model so the trigger text changes after click
+    const nonSelectedItem = dialog.locator('[data-selected="false"]').first();
+    const hasNonSelected = (await nonSelectedItem.count()) > 0;
+    const targetItem = hasNonSelected ? nonSelectedItem : allModelItems.first();
+
+    await expect(targetItem).toBeVisible();
+    await targetItem.click();
+
+    // Verify the popover closed and the trigger updated
+    await expect(dialog).toBeHidden();
+
+    if (hasNonSelected) {
+      const updatedTriggerText = (await trigger.textContent())?.trim() ?? "";
+      expect(updatedTriggerText).not.toBe(originalTriggerText);
+    }
+  });
 });

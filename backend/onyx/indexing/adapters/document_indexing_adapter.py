@@ -19,10 +19,13 @@ from onyx.db.document import update_docs_updated_at__no_commit
 from onyx.db.document_set import fetch_document_sets_for_documents
 from onyx.indexing.indexing_pipeline import DocumentBatchPrepareContext
 from onyx.indexing.indexing_pipeline import index_doc_batch_prepare
-from onyx.indexing.models import BuildMetadataAwareChunksResult
+from onyx.indexing.models import ChunkEnrichmentContext
+from onyx.indexing.models import DocAwareChunk
 from onyx.indexing.models import DocMetadataAwareIndexChunk
 from onyx.indexing.models import IndexChunk
 from onyx.indexing.models import UpdatableChunkData
+from onyx.redis.redis_hierarchy import get_ancestors_from_raw_id
+from onyx.redis.redis_pool import get_redis_client
 from onyx.utils.logger import setup_logger
 
 logger = setup_logger()
@@ -83,14 +86,21 @@ class DocumentIndexingBatchAdapter:
         ) as transaction:
             yield transaction
 
-    def build_metadata_aware_chunks(
+    def prepare_enrichment(
         self,
-        chunks_with_embeddings: list[IndexChunk],
-        chunk_content_scores: list[float],
-        tenant_id: str,
         context: DocumentBatchPrepareContext,
-    ) -> BuildMetadataAwareChunksResult:
-        """Enrich chunks with access, document sets, boosts and token counts."""
+        tenant_id: str,
+        chunks: list[DocAwareChunk],
+    ) -> "DocumentChunkEnricher":
+        """Do all DB lookups once and return a per-chunk enricher."""
+        updatable_ids = [doc.id for doc in context.updatable_docs]
+
+        doc_id_to_new_chunk_cnt: dict[str, int] = {
+            doc_id: 0 for doc_id in updatable_ids
+        }
+        for chunk in chunks:
+            if chunk.source_document.id in doc_id_to_new_chunk_cnt:
+                doc_id_to_new_chunk_cnt[chunk.source_document.id] += 1
 
         no_access = DocumentAccess.build(
             user_emails=[],
@@ -100,70 +110,71 @@ class DocumentIndexingBatchAdapter:
             is_public=False,
         )
 
-        updatable_ids = [doc.id for doc in context.updatable_docs]
-
-        doc_id_to_access_info = get_access_for_documents(
-            document_ids=updatable_ids, db_session=self.db_session
-        )
-        doc_id_to_document_set = {
-            document_id: document_sets
-            for document_id, document_sets in fetch_document_sets_for_documents(
+        return DocumentChunkEnricher(
+            doc_id_to_access_info=get_access_for_documents(
                 document_ids=updatable_ids, db_session=self.db_session
-            )
-        }
+            ),
+            doc_id_to_document_set={
+                document_id: document_sets
+                for document_id, document_sets in fetch_document_sets_for_documents(
+                    document_ids=updatable_ids, db_session=self.db_session
+                )
+            },
+            doc_id_to_ancestor_ids=self._get_ancestor_ids_for_documents(
+                context.updatable_docs, tenant_id
+            ),
+            id_to_boost_map=context.id_to_boost_map,
+            doc_id_to_previous_chunk_cnt={
+                document_id: chunk_count
+                for document_id, chunk_count in fetch_chunk_counts_for_documents(
+                    document_ids=updatable_ids,
+                    db_session=self.db_session,
+                )
+            },
+            doc_id_to_new_chunk_cnt=dict(doc_id_to_new_chunk_cnt),
+            no_access=no_access,
+            tenant_id=tenant_id,
+        )
 
-        doc_id_to_previous_chunk_cnt: dict[str, int] = {
-            document_id: chunk_count
-            for document_id, chunk_count in fetch_chunk_counts_for_documents(
-                document_ids=updatable_ids,
+    def _get_ancestor_ids_for_documents(
+        self,
+        documents: list[Document],
+        tenant_id: str,
+    ) -> dict[str, list[int]]:
+        """
+        Get ancestor hierarchy node IDs for a batch of documents.
+
+        Uses Redis cache for fast lookups - no DB calls are made unless
+        there's a cache miss. Documents provide parent_hierarchy_raw_node_id
+        directly from the connector.
+
+        Returns a mapping from document_id to list of ancestor node IDs.
+        """
+        if not documents:
+            return {}
+
+        redis_client = get_redis_client(tenant_id=tenant_id)
+        result: dict[str, list[int]] = {}
+
+        for doc in documents:
+            # Use parent_hierarchy_raw_node_id directly from the document
+            # If None, get_ancestors_from_raw_id will return just the SOURCE node
+            ancestors = get_ancestors_from_raw_id(
+                redis_client=redis_client,
+                source=doc.source,
+                parent_hierarchy_raw_node_id=doc.parent_hierarchy_raw_node_id,
                 db_session=self.db_session,
             )
-        }
+            result[doc.id] = ancestors
 
-        doc_id_to_new_chunk_cnt: dict[str, int] = {
-            document_id: len(
-                [
-                    chunk
-                    for chunk in chunks_with_embeddings
-                    if chunk.source_document.id == document_id
-                ]
-            )
-            for document_id in updatable_ids
-        }
-
-        access_aware_chunks = [
-            DocMetadataAwareIndexChunk.from_index_chunk(
-                index_chunk=chunk,
-                access=doc_id_to_access_info.get(chunk.source_document.id, no_access),
-                document_sets=set(
-                    doc_id_to_document_set.get(chunk.source_document.id, [])
-                ),
-                user_project=[],
-                boost=(
-                    context.id_to_boost_map[chunk.source_document.id]
-                    if chunk.source_document.id in context.id_to_boost_map
-                    else DEFAULT_BOOST
-                ),
-                tenant_id=tenant_id,
-                aggregated_chunk_boost_factor=chunk_content_scores[chunk_num],
-            )
-            for chunk_num, chunk in enumerate(chunks_with_embeddings)
-        ]
-
-        return BuildMetadataAwareChunksResult(
-            chunks=access_aware_chunks,
-            doc_id_to_previous_chunk_cnt=doc_id_to_previous_chunk_cnt,
-            doc_id_to_new_chunk_cnt=doc_id_to_new_chunk_cnt,
-            user_file_id_to_raw_text={},
-            user_file_id_to_token_count={},
-        )
+        return result
 
     def post_index(
         self,
         context: DocumentBatchPrepareContext,
         updatable_chunk_data: list[UpdatableChunkData],
         filtered_documents: list[Document],
-        result: BuildMetadataAwareChunksResult,
+        enrichment: ChunkEnrichmentContext,
     ) -> None:
         """Finalize DB updates, store plaintext, and mark docs as indexed."""
         updatable_ids = [doc.id for doc in context.updatable_docs]
@@ -187,7 +198,7 @@ class DocumentIndexingBatchAdapter:
 
         update_docs_chunk_count__no_commit(
             document_ids=updatable_ids,
-            doc_id_to_chunk_count=result.doc_id_to_new_chunk_cnt,
+            doc_id_to_chunk_count=enrichment.doc_id_to_new_chunk_cnt,
             db_session=self.db_session,
         )
 
@@ -209,3 +220,52 @@ class DocumentIndexingBatchAdapter:
         )
 
         self.db_session.commit()
+
+
+class DocumentChunkEnricher:
+    """Pre-computed metadata for per-chunk enrichment of connector documents."""
+
+    def __init__(
+        self,
+        doc_id_to_access_info: dict[str, DocumentAccess],
+        doc_id_to_document_set: dict[str, list[str]],
+        doc_id_to_ancestor_ids: dict[str, list[int]],
+        id_to_boost_map: dict[str, int],
+        doc_id_to_previous_chunk_cnt: dict[str, int],
+        doc_id_to_new_chunk_cnt: dict[str, int],
+        no_access: DocumentAccess,
+        tenant_id: str,
+    ) -> None:
+        self._doc_id_to_access_info = doc_id_to_access_info
+        self._doc_id_to_document_set = doc_id_to_document_set
+        self._doc_id_to_ancestor_ids = doc_id_to_ancestor_ids
+        self._id_to_boost_map = id_to_boost_map
+        self._no_access = no_access
+        self._tenant_id = tenant_id
+        self.doc_id_to_previous_chunk_cnt = doc_id_to_previous_chunk_cnt
+        self.doc_id_to_new_chunk_cnt = doc_id_to_new_chunk_cnt
+
+    def enrich_chunk(
+        self, chunk: IndexChunk, score: float
+    ) -> DocMetadataAwareIndexChunk:
+        return DocMetadataAwareIndexChunk.from_index_chunk(
+            index_chunk=chunk,
+            access=self._doc_id_to_access_info.get(
+                chunk.source_document.id, self._no_access
+            ),
+            document_sets=set(
+                self._doc_id_to_document_set.get(chunk.source_document.id, [])
+            ),
+            user_project=[],
+            personas=[],
+            boost=(
+                self._id_to_boost_map[chunk.source_document.id]
+                if chunk.source_document.id in self._id_to_boost_map
+                else DEFAULT_BOOST
+            ),
+            tenant_id=self._tenant_id,
+            aggregated_chunk_boost_factor=score,
+            ancestor_hierarchy_node_ids=self._doc_id_to_ancestor_ids[
+                chunk.source_document.id
+            ],
+        )

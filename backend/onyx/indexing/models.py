@@ -12,6 +12,7 @@ from onyx.connectors.models import Document
 from onyx.db.enums import EmbeddingPrecision
 from onyx.db.enums import SwitchoverType
 from onyx.utils.logger import setup_logger
+from onyx.utils.pydantic_util import shallow_model_dump
 from shared_configs.enums import EmbeddingProvider
 from shared_configs.model_server_models import Embedding
 
@@ -40,6 +41,8 @@ class BaseChunk(BaseModel):
     source_links: dict[int, str] | None
     image_file_id: str | None
     # True if this Chunk's start is not at the start of a Section
+    # TODO(andrei): This is deprecated as of the OpenSearch migration. Remove.
+    # Do not use.
     section_continuation: bool
 
 
@@ -110,8 +113,13 @@ class DocMetadataAwareIndexChunk(IndexChunk):
     access: "DocumentAccess"
     document_sets: set[str]
     user_project: list[int]
+    personas: list[int]
     boost: int
     aggregated_chunk_boost_factor: float
+    # Full ancestor path from root hierarchy node to document's parent.
+    # Stored as an integer array in OpenSearch for hierarchy-based filtering.
+    # Empty list means no hierarchy info (document excluded from hierarchy searches).
+    ancestor_hierarchy_node_ids: list[int]
 
     @classmethod
     def from_index_chunk(
@@ -120,19 +128,22 @@ class DocMetadataAwareIndexChunk(IndexChunk):
         access: "DocumentAccess",
         document_sets: set[str],
         user_project: list[int],
+        personas: list[int],
         boost: int,
         aggregated_chunk_boost_factor: float,
         tenant_id: str,
+        ancestor_hierarchy_node_ids: list[int] | None = None,
     ) -> "DocMetadataAwareIndexChunk":
-        index_chunk_data = index_chunk.model_dump()
-        return cls(
-            **index_chunk_data,
+        return cls.model_construct(
+            **shallow_model_dump(index_chunk),
             access=access,
             document_sets=document_sets,
             user_project=user_project,
+            personas=personas,
             boost=boost,
             aggregated_chunk_boost_factor=aggregated_chunk_boost_factor,
             tenant_id=tenant_id,
+            ancestor_hierarchy_node_ids=ancestor_hierarchy_node_ids or [],
         )
 
 
@@ -154,6 +165,13 @@ class EmbeddingModelDetail(BaseModel):
         cls,
         search_settings: "SearchSettings",
     ) -> "EmbeddingModelDetail":
+        api_key = None
+        if (
+            search_settings.cloud_provider is not None
+            and search_settings.cloud_provider.api_key is not None
+        ):
+            api_key = search_settings.cloud_provider.api_key.get_value(apply_mask=True)
+
         return cls(
             id=search_settings.id,
             model_name=search_settings.model_name,
@@ -161,7 +179,7 @@ class EmbeddingModelDetail(BaseModel):
             query_prefix=search_settings.query_prefix,
             passage_prefix=search_settings.passage_prefix,
             provider_type=search_settings.provider_type,
-            api_key=search_settings.api_key,
+            api_key=api_key,
             api_url=search_settings.api_url,
         )
 
@@ -217,12 +235,16 @@ class UpdatableChunkData(BaseModel):
     boost_score: float
 
 
-class BuildMetadataAwareChunksResult(BaseModel):
-    chunks: list[DocMetadataAwareIndexChunk]
+class ChunkEnrichmentContext(Protocol):
+    """Returned by prepare_enrichment. Holds pre-computed metadata lookups
+    and provides per-chunk enrichment."""
+
     doc_id_to_previous_chunk_cnt: dict[str, int]
     doc_id_to_new_chunk_cnt: dict[str, int]
-    user_file_id_to_raw_text: dict[str, str]
-    user_file_id_to_token_count: dict[str, int | None]
+
+    def enrich_chunk(
+        self, chunk: IndexChunk, score: float
+    ) -> DocMetadataAwareIndexChunk: ...
 
 
 class IndexingBatchAdapter(Protocol):
@@ -236,18 +258,24 @@ class IndexingBatchAdapter(Protocol):
     ) -> Generator[TransactionalContext, None, None]:
         """Provide a transaction/row-lock context for critical updates."""
 
-    def build_metadata_aware_chunks(
+    def prepare_enrichment(
         self,
-        chunks_with_embeddings: list[IndexChunk],
-        chunk_content_scores: list[float],
-        tenant_id: str,
         context: "DocumentBatchPrepareContext",
-    ) -> BuildMetadataAwareChunksResult: ...
+        tenant_id: str,
+        chunks: list[DocAwareChunk],
+    ) -> ChunkEnrichmentContext:
+        """Prepare per-chunk enrichment data (access, document sets, boost, etc.).
+
+        Precondition: ``chunks`` have already been through the embedding step
+        (i.e. they are ``IndexChunk`` instances with populated embeddings,
+        passed here as the base ``DocAwareChunk`` type).
+        """
+        ...
 
     def post_index(
         self,
         context: "DocumentBatchPrepareContext",
         updatable_chunk_data: list[UpdatableChunkData],
         filtered_documents: list[Document],
-        result: BuildMetadataAwareChunksResult,
+        enrichment: ChunkEnrichmentContext,
     ) -> None: ...

@@ -13,7 +13,7 @@ from sqlalchemy.orm import aliased
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm import Session
 
-from onyx.configs.app_configs import DISABLE_AUTH
+from onyx.configs.app_configs import DISABLE_VECTOR_DB
 from onyx.db.connector_credential_pair import get_cc_pair_groups_for_ids
 from onyx.db.connector_credential_pair import get_connector_credential_pairs
 from onyx.db.enums import AccessType
@@ -37,11 +37,8 @@ from onyx.utils.variable_functionality import fetch_versioned_implementation
 logger = setup_logger()
 
 
-def _add_user_filters(
-    stmt: Select, user: User | None, get_editable: bool = True
-) -> Select:
-    # If user is None and auth is disabled, assume the user is an admin
-    if (user is None and DISABLE_AUTH) or (user and user.role == UserRole.ADMIN):
+def _add_user_filters(stmt: Select, user: User, get_editable: bool = True) -> Select:
+    if user.role == UserRole.ADMIN:
         return stmt
 
     stmt = stmt.distinct()
@@ -66,8 +63,8 @@ def _add_user_filters(
     for (as well as public DocumentSets)
     """
 
-    # If user is None, this is an anonymous user and we should only show public DocumentSets
-    if user is None:
+    # Anonymous users only see public DocumentSets
+    if user.is_anonymous:
         where_clause = DocumentSetDBModel.is_public == True  # noqa: E712
         return stmt.where(where_clause)
 
@@ -123,7 +120,7 @@ def delete_document_set_privacy__no_commit(
 def get_document_set_by_id_for_user(
     db_session: Session,
     document_set_id: int,
-    user: User | None,
+    user: User,
     get_editable: bool = True,
 ) -> DocumentSetDBModel | None:
     stmt = (
@@ -174,10 +171,10 @@ def get_document_sets_by_ids(
 
 
 def make_doc_set_private(
-    document_set_id: int,
+    document_set_id: int,  # noqa: ARG001
     user_ids: list[UUID] | None,
     group_ids: list[int] | None,
-    db_session: Session,
+    db_session: Session,  # noqa: ARG001
 ) -> None:
     # May cause error if someone switches down to MIT from EE
     if user_ids or group_ids:
@@ -218,8 +215,7 @@ def _check_if_cc_pairs_are_owned_by_groups(
         for cc_pair in cc_pairs:
             if cc_pair.access_type == AccessType.PRIVATE:
                 raise ValueError(
-                    f"Connector Credential Pair with ID: '{cc_pair.id}'"
-                    " is not owned by the specified groups"
+                    f"Connector Credential Pair with ID: '{cc_pair.id}' is not owned by the specified groups"
                 )
 
 
@@ -250,6 +246,7 @@ def insert_document_set(
             description=document_set_creation_request.description,
             user_id=user_id,
             is_public=document_set_creation_request.is_public,
+            is_up_to_date=DISABLE_VECTOR_DB,
             time_last_modified_by_user=func.now(),
         )
         db_session.add(new_document_set_row)
@@ -301,7 +298,7 @@ def insert_document_set(
 def update_document_set(
     db_session: Session,
     document_set_update_request: DocumentSetUpdateRequest,
-    user: User | None = None,
+    user: User,
 ) -> tuple[DocumentSetDBModel, list[DocumentSet__ConnectorCredentialPair]]:
     """If successful, this sets document_set_row.is_up_to_date = False.
     That will be processed via Celery in check_for_vespa_sync_task
@@ -335,12 +332,12 @@ def update_document_set(
             )
         if not document_set_row.is_up_to_date:
             raise ValueError(
-                "Cannot update document set while it is syncing. Please wait "
-                "for it to finish syncing, and then try again."
+                "Cannot update document set while it is syncing. Please wait for it to finish syncing, and then try again."
             )
 
         document_set_row.description = document_set_update_request.description
-        document_set_row.is_up_to_date = False
+        if not DISABLE_VECTOR_DB:
+            document_set_row.is_up_to_date = False
         document_set_row.is_public = document_set_update_request.is_public
         document_set_row.time_last_modified_by_user = func.now()
         versioned_private_doc_set_fn = fetch_versioned_implementation(
@@ -424,7 +421,7 @@ def delete_document_set(
 def mark_document_set_as_to_be_deleted(
     db_session: Session,
     document_set_id: int,
-    user: User | None = None,
+    user: User,
 ) -> None:
     """Cleans up all document_set -> cc_pair relationships and marks the document set
     as needing an update. The actual document set row will be deleted by the background
@@ -444,8 +441,7 @@ def mark_document_set_as_to_be_deleted(
             raise ValueError(error_msg)
         if not document_set_row.is_up_to_date:
             raise ValueError(
-                "Cannot delete document set while it is syncing. Please wait "
-                "for it to finish syncing, and then try again."
+                "Cannot delete document set while it is syncing. Please wait for it to finish syncing, and then try again."
             )
 
         # delete all relationships to CC pairs
@@ -495,7 +491,9 @@ def delete_document_set_cc_pair_relationship__no_commit(
 
 
 def fetch_document_sets(
-    user_id: UUID | None, db_session: Session, include_outdated: bool = False
+    user_id: UUID | None,  # noqa: ARG001
+    db_session: Session,
+    include_outdated: bool = False,
 ) -> list[tuple[DocumentSetDBModel, list[ConnectorCredentialPair]]]:
     """Return is a list where each element contains a tuple of:
     1. The document set itself
@@ -550,16 +548,25 @@ def fetch_document_sets(
 
 def fetch_all_document_sets_for_user(
     db_session: Session,
-    user: User | None,
+    user: User,
     get_editable: bool = True,
 ) -> Sequence[DocumentSetDBModel]:
     stmt = (
         select(DocumentSetDBModel)
         .distinct()
-        .options(selectinload(DocumentSetDBModel.federated_connectors))
+        .options(
+            selectinload(DocumentSetDBModel.connector_credential_pairs).selectinload(
+                ConnectorCredentialPair.connector
+            ),
+            selectinload(DocumentSetDBModel.users),
+            selectinload(DocumentSetDBModel.groups),
+            selectinload(DocumentSetDBModel.federated_connectors).selectinload(
+                FederatedConnector__DocumentSet.federated_connector
+            ),
+        )
     )
     stmt = _add_user_filters(stmt, user, get_editable=get_editable)
-    return db_session.scalars(stmt).all()
+    return db_session.scalars(stmt).unique().all()
 
 
 def fetch_documents_for_document_set_paginated(
@@ -746,8 +753,7 @@ def fetch_document_sets_for_documents(
 def get_or_create_document_set_by_name(
     db_session: Session,
     document_set_name: str,
-    document_set_description: str = "Default Persona created Document-Set, "
-    "please update description",
+    document_set_description: str = "Default Persona created Document-Set, please update description",
 ) -> DocumentSetDBModel:
     """This is used by the default personas which need to attach to document sets
     on server startup"""

@@ -2,10 +2,9 @@ import contextvars
 import threading
 import uuid
 from enum import Enum
-from typing import cast
+from typing import Any
 
 import requests
-from sqlalchemy.orm import Session
 
 from onyx.configs.app_configs import DISABLE_TELEMETRY
 from onyx.configs.app_configs import ENTERPRISE_EDITION_ENABLED
@@ -13,16 +12,20 @@ from onyx.configs.constants import KV_CUSTOMER_UUID_KEY
 from onyx.configs.constants import KV_INSTANCE_DOMAIN_KEY
 from onyx.configs.constants import MilestoneRecordType
 from onyx.db.engine.sql_engine import get_session_with_current_tenant
-from onyx.db.milestone import create_milestone_if_not_exists
 from onyx.db.models import User
 from onyx.key_value_store.factory import get_kv_store
 from onyx.key_value_store.interface import KvKeyNotFoundError
+from onyx.key_value_store.interface import unwrap_str
+from onyx.utils.logger import setup_logger
 from onyx.utils.variable_functionality import (
     fetch_versioned_implementation_with_fallback,
 )
 from onyx.utils.variable_functionality import noop_fallback
 from shared_configs.configs import MULTI_TENANT
 from shared_configs.contextvars import get_current_tenant_id
+
+logger = setup_logger()
+
 
 _DANSWER_TELEMETRY_ENDPOINT = "https://telemetry.onyx.app/anonymous_telemetry"
 _CACHED_UUID: str | None = None
@@ -61,10 +64,10 @@ def get_or_generate_uuid() -> str:
     kv_store = get_kv_store()
 
     try:
-        _CACHED_UUID = cast(str, kv_store.load(KV_CUSTOMER_UUID_KEY))
+        _CACHED_UUID = unwrap_str(kv_store.load(KV_CUSTOMER_UUID_KEY))
     except KvKeyNotFoundError:
         _CACHED_UUID = str(uuid.uuid4())
-        kv_store.store(KV_CUSTOMER_UUID_KEY, _CACHED_UUID, encrypt=True)
+        kv_store.store(KV_CUSTOMER_UUID_KEY, {"value": _CACHED_UUID}, encrypt=True)
 
     return _CACHED_UUID
 
@@ -78,14 +81,16 @@ def _get_or_generate_instance_domain() -> str | None:  #
     kv_store = get_kv_store()
 
     try:
-        _CACHED_INSTANCE_DOMAIN = cast(str, kv_store.load(KV_INSTANCE_DOMAIN_KEY))
+        _CACHED_INSTANCE_DOMAIN = unwrap_str(kv_store.load(KV_INSTANCE_DOMAIN_KEY))
     except KvKeyNotFoundError:
         with get_session_with_current_tenant() as db_session:
             first_user = db_session.query(User).first()
             if first_user:
                 _CACHED_INSTANCE_DOMAIN = first_user.email.split("@")[-1]
                 kv_store.store(
-                    KV_INSTANCE_DOMAIN_KEY, _CACHED_INSTANCE_DOMAIN, encrypt=True
+                    KV_INSTANCE_DOMAIN_KEY,
+                    {"value": _CACHED_INSTANCE_DOMAIN},
+                    encrypt=True,
                 )
 
     return _CACHED_INSTANCE_DOMAIN
@@ -145,12 +150,21 @@ def optional_telemetry(
 
 
 def mt_cloud_telemetry(
+    tenant_id: str,
     distinct_id: str,
     event: MilestoneRecordType,
-    properties: dict | None = None,
+    properties: dict[str, Any] | None = None,
 ) -> None:
     if not MULTI_TENANT:
         return
+
+    # Automatically include tenant_id in properties
+    all_properties = {**properties} if properties else {}
+    if properties and "tenant_id" in properties:
+        logger.warning(
+            f"tenant_id already in properties: {properties}. Overwriting with new value {tenant_id}."
+        )
+    all_properties["tenant_id"] = tenant_id
 
     # MIT version should not need to include any Posthog code
     # This is only for Onyx MT Cloud, this code should also never be hit, no reason for any orgs to
@@ -159,20 +173,46 @@ def mt_cloud_telemetry(
         module="onyx.utils.telemetry",
         attribute="event_telemetry",
         fallback=noop_fallback,
-    )(distinct_id, event, properties)
+    )(distinct_id, event, all_properties)
 
 
-def create_milestone_and_report(
-    user: User | None,
+def mt_cloud_identify(
     distinct_id: str,
-    event_type: MilestoneRecordType,
-    properties: dict | None,
-    db_session: Session,
+    properties: dict[str, Any] | None = None,
 ) -> None:
-    _, is_new = create_milestone_if_not_exists(user, event_type, db_session)
-    if is_new:
-        mt_cloud_telemetry(
-            distinct_id=distinct_id,
-            event=event_type,
-            properties=properties,
-        )
+    """Create/update a PostHog person profile (Cloud only)."""
+    if not MULTI_TENANT:
+        return
+
+    fetch_versioned_implementation_with_fallback(
+        module="onyx.utils.telemetry",
+        attribute="identify_user",
+        fallback=noop_fallback,
+    )(distinct_id, properties)
+
+
+def mt_cloud_alias(
+    distinct_id: str,
+    anonymous_id: str,
+) -> None:
+    """Link an anonymous distinct_id to an identified user (Cloud only)."""
+    if not MULTI_TENANT:
+        return
+
+    fetch_versioned_implementation_with_fallback(
+        module="onyx.utils.posthog_client",
+        attribute="alias_user",
+        fallback=noop_fallback,
+    )(distinct_id, anonymous_id)
+
+
+def mt_cloud_get_anon_id(request: Any) -> str | None:
+    """Extract the anonymous distinct_id from the app PostHog cookie (Cloud only)."""
+    if not MULTI_TENANT or not request:
+        return None
+
+    return fetch_versioned_implementation_with_fallback(
+        module="onyx.utils.posthog_client",
+        attribute="get_anon_id_from_request",
+        fallback=noop_fallback,
+    )(request)

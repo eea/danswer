@@ -1,6 +1,9 @@
-import { useState, useEffect, useCallback } from "react";
-import { getUserOAuthTokenStatus, initiateOAuthFlow } from "@/lib/oauth/api";
+import { useCallback, useEffect, useRef } from "react";
+import useSWR from "swr";
+import { errorHandlingFetcher, skipRetryOnAuthError } from "@/lib/fetcher";
+import { initiateOAuthFlow } from "@/lib/oauth/api";
 import { OAuthTokenStatus, ToolSnapshot } from "@/lib/tools/interfaces";
+import { SWR_KEYS } from "@/lib/swr-keys";
 
 export interface ToolAuthStatus {
   // whether or not the user has EVER auth'd
@@ -9,30 +12,39 @@ export interface ToolAuthStatus {
   isTokenExpired: boolean;
 }
 
-export function useToolOAuthStatus(assistantId?: number) {
-  const [oauthTokenStatuses, setOauthTokenStatuses] = useState<
-    OAuthTokenStatus[]
-  >([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const fetchOAuthStatus = useCallback(async () => {
-    try {
-      setLoading(true);
-      setError(null);
-      const statuses = await getUserOAuthTokenStatus();
-      setOauthTokenStatuses(statuses);
-    } catch (err) {
-      console.error("Error fetching OAuth token statuses:", err);
-      setError(err instanceof Error ? err.message : "An error occurred");
-    } finally {
-      setLoading(false);
+export function useToolOAuthStatus(agentId?: number) {
+  const {
+    data: oauthTokenStatuses = [],
+    isLoading: loading,
+    error: swrError,
+    mutate,
+  } = useSWR<OAuthTokenStatus[]>(
+    SWR_KEYS.oauthTokenStatus,
+    errorHandlingFetcher,
+    {
+      revalidateOnFocus: false,
+      dedupingInterval: 60_000,
+      onErrorRetry: skipRetryOnAuthError,
+      onError: (err) =>
+        console.error("[useToolOAuthStatus] fetch failed:", err),
     }
-  }, []);
+  );
 
+  const error: string | null = swrError
+    ? swrError instanceof Error
+      ? swrError.message
+      : "An error occurred"
+    : null;
+
+  // Re-validate when the active agent changes so the UI reflects fresh token
+  // state for the new agent's tools without waiting for the dedup interval.
+  const prevAgentIdRef = useRef(agentId);
   useEffect(() => {
-    fetchOAuthStatus();
-  }, [assistantId, fetchOAuthStatus]);
+    if (prevAgentIdRef.current !== agentId) {
+      prevAgentIdRef.current = agentId;
+      mutate();
+    }
+  }, [agentId, mutate]);
 
   /**
    * Get OAuth status for a specific tool
@@ -98,6 +110,6 @@ export function useToolOAuthStatus(assistantId?: number) {
     getToolAuthStatus,
     authenticateTool,
     getToolsNeedingAuth,
-    refetch: fetchOAuthStatus,
+    refetch: () => mutate(),
   };
 }

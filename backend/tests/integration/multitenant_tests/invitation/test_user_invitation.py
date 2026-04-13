@@ -5,10 +5,10 @@ from tests.integration.common_utils.managers.user import UserManager
 from tests.integration.common_utils.test_models import DATestUser
 
 INVITED_BASIC_USER = "basic_user"
-INVITED_BASIC_USER_EMAIL = "basic_user@test.com"
+INVITED_BASIC_USER_EMAIL = "basic_user@example.com"
 
 
-def test_admin_can_invite_users(reset_multitenant: None) -> None:
+def test_admin_can_invite_users(reset_multitenant: None) -> None:  # noqa: ARG001
     """Test that an admin can invite both registered and non-registered users."""
     # Create first user (admin)
     unique = uuid4().hex
@@ -21,7 +21,7 @@ def test_admin_can_invite_users(reset_multitenant: None) -> None:
 
     # Admin user invites the previously registered and non-registered user
     UserManager.invite_user(invited_user.email, admin_user)
-    UserManager.invite_user(f"{INVITED_BASIC_USER}+{unique}@test.com", admin_user)
+    UserManager.invite_user(f"{INVITED_BASIC_USER}_{unique}@example.com", admin_user)
 
     # Verify users are in the invited users list
     invited_users = UserManager.get_invited_users(admin_user)
@@ -30,7 +30,9 @@ def test_admin_can_invite_users(reset_multitenant: None) -> None:
     ], f"User {invited_user.email} not found in invited users list"
 
 
-def test_non_registered_user_gets_basic_role(reset_multitenant: None) -> None:
+def test_non_registered_user_gets_basic_role(
+    reset_multitenant: None,  # noqa: ARG001
+) -> None:
     """Test that a non-registered user gets a BASIC role when they register after being invited."""
     # Create admin user
     unique = uuid4().hex
@@ -38,7 +40,7 @@ def test_non_registered_user_gets_basic_role(reset_multitenant: None) -> None:
     assert UserManager.is_role(admin_user, UserRole.ADMIN)
 
     # Admin user invites a non-registered user
-    invited_email = f"{INVITED_BASIC_USER}+{unique}@test.com"
+    invited_email = f"{INVITED_BASIC_USER}_{unique}@example.com"
     UserManager.invite_user(invited_email, admin_user)
 
     # Non-registered user registers
@@ -48,7 +50,9 @@ def test_non_registered_user_gets_basic_role(reset_multitenant: None) -> None:
     assert UserManager.is_role(invited_basic_user, UserRole.BASIC)
 
 
-def test_user_can_accept_invitation(reset_multitenant: None) -> None:
+def test_user_can_accept_invitation(
+    reset_multitenant: None,  # noqa: ARG001
+) -> None:  # noqa: ARG001
     """Test that a user can accept an invitation and join the organization with BASIC role."""
     # Create admin user
     unique = uuid4().hex
@@ -56,7 +60,7 @@ def test_user_can_accept_invitation(reset_multitenant: None) -> None:
     assert UserManager.is_role(admin_user, UserRole.ADMIN)
 
     # Create a user to be invited
-    invited_user_email = f"invited_user+{unique}@test.com"
+    invited_user_email = f"invited_user_{unique}@example.com"
 
     # User registers with the same email as the invitation
     invited_user: DATestUser = UserManager.create(

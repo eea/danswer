@@ -16,14 +16,27 @@ const addUsers = async (url: string, { arg }: { arg: Array<string> }) => {
   });
 };
 
+export type EmailInviteStatus =
+  | "SENT"
+  | "NOT_CONFIGURED"
+  | "SEND_FAILED"
+  | "DISABLED";
+
 interface FormProps {
-  onSuccess: () => void;
+  onSuccess: (emailInviteStatus: EmailInviteStatus) => void;
   onFailure: (res: Response) => void;
 }
 
 interface FormValues {
   emails: string;
 }
+
+const normalizeEmails = (emails: string) =>
+  emails
+    .trim()
+    .split(WHITESPACE_SPLIT)
+    .filter(Boolean)
+    .map((email) => email.toLowerCase());
 
 const AddUserFormRenderer = ({
   touched,
@@ -47,6 +60,7 @@ const AddUserFormRenderer = ({
     {touched.emails && errors.emails && (
       <div className="text-error text-sm">{errors.emails}</div>
     )}
+    {/* TODO(@raunakab): migrate to opal Button once className/iconClassName is resolved */}
     <Button type="submit" disabled={isSubmitting} className="self-end">
       Add
     </Button>
@@ -60,8 +74,8 @@ const AddUserForm = withFormik<FormProps, FormValues>({
     };
   },
   validate: (values: FormValues): FormikErrors<FormValues> => {
-    const emails = values.emails.trim().split(WHITESPACE_SPLIT);
-    if (!emails.some(Boolean)) {
+    const emails = normalizeEmails(values.emails);
+    if (!emails.length) {
       return { emails: "Required" };
     }
     for (let email of emails) {
@@ -72,12 +86,13 @@ const AddUserForm = withFormik<FormProps, FormValues>({
     return {};
   },
   handleSubmit: async (values: FormValues, formikBag) => {
-    const emails = values.emails.trim().split(WHITESPACE_SPLIT);
+    const emails = normalizeEmails(values.emails);
     formikBag.setSubmitting(true);
     await addUsers("/api/manage/admin/users", { arg: emails })
-      .then((res) => {
+      .then(async (res) => {
         if (res.ok) {
-          formikBag.props.onSuccess();
+          const data = await res.json();
+          formikBag.props.onSuccess(data.email_invite_status);
         } else {
           formikBag.props.onFailure(res);
         }

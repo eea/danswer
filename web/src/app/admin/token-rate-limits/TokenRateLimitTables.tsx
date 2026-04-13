@@ -16,7 +16,8 @@ import { errorHandlingFetcher } from "@/lib/fetcher";
 import useSWR, { mutate } from "swr";
 import Checkbox from "@/refresh-components/inputs/Checkbox";
 import { TableHeader } from "@/components/ui/table";
-import Text from "@/components/ui/text";
+import { Text } from "@opal/components";
+import Spacer from "@/refresh-components/Spacer";
 
 type TokenRateLimitTableArgs = {
   tokenRateLimits: TokenRateLimitDisplay[];
@@ -65,23 +66,31 @@ export const TokenRateLimitTable = ({
 
   if (tokenRateLimits.length === 0) {
     return (
-      <div>
+      <div className="w-full">
         {!hideHeading && title && <Title>{title}</Title>}
         {!hideHeading && description && (
-          <Text className="my-2">{description}</Text>
+          <>
+            <Spacer rem={0.5} />
+            <Text as="p">{description}</Text>
+            <Spacer rem={0.5} />
+          </>
         )}
-        <Text className={`${!hideHeading && "my-8"}`}>
-          No token rate limits set!
-        </Text>
+        {!hideHeading && <Spacer rem={2} />}
+        <Text as="p">No token rate limits set!</Text>
+        {!hideHeading && <Spacer rem={2} />}
       </div>
     );
   }
 
   return (
-    <div>
+    <div className="w-full">
       {!hideHeading && title && <Title>{title}</Title>}
       {!hideHeading && description && (
-        <Text className="my-2">{description}</Text>
+        <>
+          <Spacer rem={0.5} />
+          <Text as="p">{description}</Text>
+          <Spacer rem={0.5} />
+        </>
       )}
       <Table
         className={`overflow-visible ${
@@ -188,7 +197,7 @@ export const GenericTokenRateLimitTable = ({
   }
 
   if (!isLoading && error) {
-    return <Text>Failed to load token rate limits</Text>;
+    return <Text as="p">Failed to load token rate limits</Text>;
   }
 
   let processedData = data;

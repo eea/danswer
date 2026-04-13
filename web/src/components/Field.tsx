@@ -27,9 +27,10 @@ import { useState, useEffect, memo, JSX } from "react";
 import remarkGfm from "remark-gfm";
 import Checkbox from "@/refresh-components/inputs/Checkbox";
 
-import { transformLinkUri } from "@/lib/utils";
+import { Section } from "@/layouts/general-layouts";
+import { cn, transformLinkUri } from "@/lib/utils";
 import FileInput from "@/app/admin/connectors/[connector]/pages/ConnectorInput/FileInput";
-import { DatePicker } from "./ui/datePicker";
+import InputDatePicker from "@/refresh-components/inputs/InputDatePicker";
 import { RichTextSubtext } from "./RichTextSubtext";
 import {
   TypedFile,
@@ -40,12 +41,11 @@ import {
 import Text from "@/refresh-components/texts/Text";
 import CreateButton from "@/refresh-components/buttons/CreateButton";
 
-import SvgEye from "@/icons/eye";
-import SvgEyeClosed from "@/icons/eye-closed";
 import SimpleTooltip from "@/refresh-components/SimpleTooltip";
 import InputTextArea, {
   InputTextAreaProps,
 } from "@/refresh-components/inputs/InputTextArea";
+import { SvgEye, SvgEyeClosed } from "@opal/icons";
 
 export function SectionHeader({
   children,
@@ -140,7 +140,7 @@ export function ExplanationText({
       {text}
     </a>
   ) : (
-    <Text text03 secondaryBody>
+    <Text as="p" text03 secondaryBody>
       {text}
     </Text>
   );
@@ -182,7 +182,11 @@ export const FieldLabel = ({
       } gap-x-2 items-start`}
     >
       <div className="flex gap-x-2 items-center">
-        {!removeLabel && <Label small={false}>{label}</Label>}
+        {!removeLabel && (
+          <Label small={false} htmlFor={name}>
+            {label}
+          </Label>
+        )}
         {optional ? <span>(optional) </span> : ""}
         {tooltip && <ToolTipDetails>{tooltip}</ToolTipDetails>}
       </div>
@@ -212,7 +216,7 @@ export function TextFormField({
   includeRevert,
   isTextArea = false,
   disabled = false,
-  autoCompleteDisabled = true,
+  autoCompleteEnabled = false,
   error,
   defaultHeight,
   isCode = false,
@@ -241,7 +245,7 @@ export function TextFormField({
   type?: string;
   isTextArea?: boolean;
   disabled?: boolean;
-  autoCompleteDisabled?: boolean;
+  autoCompleteEnabled?: boolean;
   error?: string;
   defaultHeight?: string;
   isCode?: boolean;
@@ -362,7 +366,7 @@ export function TextFormField({
           `}
           disabled={disabled}
           placeholder={placeholder}
-          autoComplete={autoCompleteDisabled ? "off" : undefined}
+          autoComplete={autoCompleteEnabled ? undefined : "off"}
         />
         {!isTextArea && isPasswordField && showPasswordToggle && (
           <button
@@ -690,6 +694,7 @@ interface BooleanFormFieldProps {
   optional?: boolean;
   tooltip?: string;
   disabledTooltip?: string;
+  disabledTooltipSide?: "top" | "bottom" | "left" | "right";
   onChange?: (checked: boolean) => void;
 }
 
@@ -704,6 +709,7 @@ export const BooleanFormField = memo(function BooleanFormField({
   disabled,
   tooltip,
   disabledTooltip,
+  disabledTooltipSide,
   onChange,
 }: BooleanFormFieldProps) {
   // Generate a stable, valid id from the field name for label association
@@ -711,48 +717,69 @@ export const BooleanFormField = memo(function BooleanFormField({
 
   return (
     <div>
-      <div className="flex items-center text-sm">
-        <FastField name={name} type="checkbox">
-          {({ field, form }: any) => (
+      <FastField
+        name={name}
+        type="checkbox"
+        disabled={disabled}
+        shouldUpdate={(next: any, prev: any) =>
+          next.disabled !== prev.disabled ||
+          next.formik.values !== prev.formik.values
+        }
+      >
+        {({ field, form }: any) => {
+          const toggle = () => {
+            if (!disabled) {
+              const newValue = !field.value;
+              form.setFieldValue(name, newValue);
+              if (onChange) onChange(newValue);
+            }
+          };
+
+          return (
             <SimpleTooltip
               // This may seem confusing, but we only want to show the `disabledTooltip` if and only if the `BooleanFormField` is disabled.
               // If it disabled, then we "enable" the showing of the tooltip. Thus, `disabled={!disabled}` is not a mistake.
               disabled={!disabled}
               tooltip={disabledTooltip}
+              side={disabledTooltipSide}
             >
-              <Checkbox
-                aria-label={`${label.toLowerCase().replace(" ", "-")}-checkbox`}
-                id={checkboxId}
-                className={`
-                     ${disabled ? "opacity-50" : ""}
-                     ${removeIndent ? "mr-2" : "mx-3"}`}
-                checked={Boolean(field.value)}
-                onCheckedChange={(checked) => {
-                  if (!disabled) form.setFieldValue(name, checked === true);
-                  if (onChange) onChange(checked === true);
-                }}
-              />
+              <Section flexDirection="row" width="fit" height="fit" gap={0}>
+                <Checkbox
+                  aria-label={`${label
+                    .toLowerCase()
+                    .replace(" ", "-")}-checkbox`}
+                  id={checkboxId}
+                  className={cn(
+                    disabled && "opacity-50",
+                    removeIndent ? "mr-2" : "mx-3"
+                  )}
+                  checked={Boolean(field.value)}
+                  onCheckedChange={(checked) => {
+                    if (!disabled) {
+                      form.setFieldValue(name, checked === true);
+                      if (onChange) onChange(checked === true);
+                    }
+                  }}
+                />
+                {!noLabel && (
+                  <div
+                    className={disabled ? "" : "cursor-pointer"}
+                    onClick={toggle}
+                  >
+                    <div className="flex items-center gap-x-2">
+                      <Label small={small}>{`${label}${
+                        optional ? " (Optional)" : ""
+                      }`}</Label>
+                      {tooltip && <ToolTipDetails>{tooltip}</ToolTipDetails>}
+                    </div>
+                    {subtext && <SubLabel>{subtext}</SubLabel>}
+                  </div>
+                )}
+              </Section>
             </SimpleTooltip>
-          )}
-        </FastField>
-        {!noLabel && (
-          <div>
-            <div className="flex items-center gap-x-2">
-              <Label
-                htmlFor={checkboxId}
-                small={small}
-                className="cursor-pointer"
-              >{`${label}${optional ? " (Optional)" : ""}`}</Label>
-              {tooltip && <ToolTipDetails>{tooltip}</ToolTipDetails>}
-            </div>
-            {subtext && (
-              <label htmlFor={checkboxId} className="cursor-pointer">
-                <SubLabel>{subtext}</SubLabel>
-              </label>
-            )}
-          </div>
-        )}
-      </div>
+          );
+        }}
+      </FastField>
 
       <ErrorMessage
         name={name}
@@ -1038,7 +1065,7 @@ export function DatePickerField({
   return (
     <div>
       <FieldLabel label={label} name={name} subtext={subtext} />
-      <DatePicker
+      <InputDatePicker
         selectedDate={field.value}
         setSelectedDate={helper.setValue}
         startYear={startYear}

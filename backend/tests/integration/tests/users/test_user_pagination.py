@@ -9,11 +9,11 @@ from tests.integration.common_utils.test_models import DATestUser
 # to verify that the pagination and filtering works as expected.
 def _verify_user_pagination(
     users: list[DATestUser],
+    user_performing_action: DATestUser,
     page_size: int = 5,
     search_query: str | None = None,
     role_filter: list[UserRole] | None = None,
     is_active_filter: bool | None = None,
-    user_performing_action: DATestUser | None = None,
 ) -> None:
     retrieved_users: list[FullUserSnapshot] = []
 
@@ -43,7 +43,7 @@ def _verify_user_pagination(
     assert all_expected_emails == all_retrieved_emails
 
 
-def test_user_pagination(reset: None) -> None:
+def test_user_pagination(reset: None) -> None:  # noqa: ARG001
     # Create an admin user to perform actions
     user_performing_action: DATestUser = UserManager.create(
         name="admin_performing_action"

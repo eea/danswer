@@ -11,8 +11,8 @@ from tests.integration.common_utils.test_models import DATestUser
 def _verify_index_attempt_pagination(
     cc_pair_id: int,
     index_attempt_ids: list[int],
+    user_performing_action: DATestUser,
     page_size: int = 5,
-    user_performing_action: DATestUser | None = None,
 ) -> None:
     retrieved_attempts: list[int] = []
     last_time_started = None  # Track the last time_started seen
@@ -51,7 +51,7 @@ def _verify_index_attempt_pagination(
     assert all_expected_attempts == all_retrieved_attempts
 
 
-def test_index_attempt_pagination(reset: None) -> None:
+def test_index_attempt_pagination(reset: None) -> None:  # noqa: ARG001
     MAX_WAIT = 60
     all_attempt_ids: list[int] = []
 

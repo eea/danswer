@@ -1,18 +1,13 @@
 // ExpandableContentWrapper
-import React, { useState, useEffect } from "react";
-import {
-  CustomTooltip,
-  TooltipGroup,
-} from "@/components/tooltip/CustomTooltip";
-import {
-  DexpandTwoIcon,
-  DownloadCSVIcon,
-  ExpandTwoIcon,
-  OpenIcon,
-} from "@/components/icons/icons";
+import React, { useState } from "react";
+import { SvgDownloadCloud, SvgFold, SvgMaximize2, SvgX } from "@opal/icons";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
-import { Modal } from "@/components/Modal";
-import { FileDescriptor } from "@/app/chat/interfaces";
+import { Button } from "@opal/components";
+import Text from "@/refresh-components/texts/Text";
+import { FileDescriptor } from "@/app/app/interfaces";
+import { cn } from "@/lib/utils";
+import PreviewModal from "@/sections/modals/PreviewModal";
+import { MinimalOnyxDocument } from "@/lib/search/interfaces";
 
 export interface ExpandableContentWrapperProps {
   fileDescriptor: FileDescriptor;
@@ -22,8 +17,6 @@ export interface ExpandableContentWrapperProps {
 
 export interface ContentComponentProps {
   fileDescriptor: FileDescriptor;
-  isLoading: boolean;
-  fadeIn: boolean;
   expanded?: boolean;
 }
 
@@ -33,23 +26,8 @@ export default function ExpandableContentWrapper({
   ContentComponent,
 }: ExpandableContentWrapperProps) {
   const [expanded, setExpanded] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
-  const [fadeIn, setFadeIn] = useState(false);
 
   const toggleExpand = () => setExpanded((prev) => !prev);
-
-  // Prevent a jarring fade in
-  useEffect(() => {
-    setTimeout(() => setIsLoading(false), 300);
-  }, []);
-
-  useEffect(() => {
-    if (!isLoading) {
-      setTimeout(() => setFadeIn(true), 50);
-    } else {
-      setFadeIn(false);
-    }
-  }, [isLoading]);
 
   const downloadFile = () => {
     const a = document.createElement("a");
@@ -62,55 +40,46 @@ export default function ExpandableContentWrapper({
   };
 
   const Content = (
-    <div
-      className={`${
-        !expanded ? "w-message-sm" : "w-full"
-      } !rounded !rounded-lg overflow-y-hidden h-full`}
-    >
-      <CardHeader className="w-full py-4 bg-background-tint-02 top-0">
+    <div className="w-message-default max-w-full !rounded-lg overflow-y-hidden h-full">
+      <CardHeader className="w-full bg-background-tint-02 top-0 p-3">
         <div className="flex justify-between items-center">
-          <CardTitle className="text-ellipsis line-clamp-1 text-xl font-semibold text-text-700 pr-4">
+          <Text className="text-ellipsis line-clamp-1" text03 mainUiAction>
             {fileDescriptor.name || "Untitled"}
-          </CardTitle>
-          <div className="flex items-center">
-            <TooltipGroup gap="gap-x-4">
-              <CustomTooltip showTick line content="Download file">
-                <button onClick={downloadFile}>
-                  <DownloadCSVIcon className="cursor-pointer hover:text-text-800 h-6 w-6 text-text-400" />
-                </button>
-              </CustomTooltip>
-              <CustomTooltip
-                line
-                showTick
-                content={expanded ? "Minimize" : "Full screen"}
-              >
-                <button onClick={toggleExpand}>
-                  {!expanded ? (
-                    <ExpandTwoIcon className="hover:text-text-800 h-6 w-6 cursor-pointer text-text-400" />
-                  ) : (
-                    <DexpandTwoIcon className="hover:text-text-800 h-6 w-6 cursor-pointer text-text-400" />
-                  )}
-                </button>
-              </CustomTooltip>
-              <CustomTooltip showTick line content="Hide">
-                <button onClick={close}>
-                  <OpenIcon className="hover:text-text-800 h-6 w-6 cursor-pointer text-text-400" />
-                </button>
-              </CustomTooltip>
-            </TooltipGroup>
+          </Text>
+          <div className="flex flex-row items-center justify-end gap-1">
+            <Button
+              prominence="tertiary"
+              size="sm"
+              onClick={downloadFile}
+              icon={SvgDownloadCloud}
+              tooltip="Download file"
+            />
+            <Button
+              prominence="tertiary"
+              size="sm"
+              onClick={toggleExpand}
+              icon={expanded ? SvgFold : SvgMaximize2}
+              tooltip={expanded ? "Minimize" : "Full screen"}
+            />
+            <Button
+              prominence="tertiary"
+              size="sm"
+              onClick={close}
+              icon={SvgX}
+              tooltip="Hide"
+            />
           </div>
         </div>
       </CardHeader>
       <Card
-        className={`!rounded-none p-0 relative mx-auto w-full ${
+        className={cn(
+          "!rounded-none p-0 relative mx-auto w-full",
           expanded ? "max-h-[600px]" : "max-h-[300px] h-full"
-        } `}
+        )}
       >
         <CardContent className="p-0">
           <ContentComponent
             fileDescriptor={fileDescriptor}
-            isLoading={isLoading}
-            fadeIn={fadeIn}
             expanded={expanded}
           />
         </CardContent>
@@ -118,16 +87,18 @@ export default function ExpandableContentWrapper({
     </div>
   );
 
+  const presentingDocument: MinimalOnyxDocument = {
+    document_id: fileDescriptor.id,
+    semantic_identifier: fileDescriptor.name ?? null,
+  };
+
   return (
     <>
       {expanded && (
-        <Modal
-          hideCloseButton
-          onOutsideClick={() => setExpanded(false)}
-          className="!max-w-5xl overflow-hidden rounded-lg !p-0 !m-0"
-        >
-          {Content}
-        </Modal>
+        <PreviewModal
+          presentingDocument={presentingDocument}
+          onClose={() => setExpanded(false)}
+        />
       )}
       {!expanded && Content}
     </>

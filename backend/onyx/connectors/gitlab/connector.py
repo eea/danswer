@@ -22,6 +22,7 @@ from onyx.connectors.interfaces import SecondsSinceUnixEpoch
 from onyx.connectors.models import BasicExpertInfo
 from onyx.connectors.models import ConnectorMissingCredentialError
 from onyx.connectors.models import Document
+from onyx.connectors.models import HierarchyNode
 from onyx.connectors.models import TextSection
 from onyx.utils.logger import setup_logger
 
@@ -94,7 +95,8 @@ def _convert_code_to_document(
 
     # Fetch the file content using the correct branch
     file_content_obj = project.files.get(
-        file_path=file["path"], ref=default_branch  # Use the default branch
+        file_path=file["path"],
+        ref=default_branch,  # Use the default branch
     )
     try:
         file_content = file_content_obj.decode().decode("utf-8")
@@ -167,7 +169,7 @@ class GitlabConnector(LoadConnector, PollConnector):
                 current_path = queue.popleft()
                 files = project.repository_tree(path=current_path, all=True)
                 for file_batch in _batch_gitlab_objects(files, self.batch_size):
-                    code_doc_batch: list[Document] = []
+                    code_doc_batch: list[Document | HierarchyNode] = []
                     for file in file_batch:
                         if _should_exclude(file["path"]):
                             continue
@@ -197,7 +199,7 @@ class GitlabConnector(LoadConnector, PollConnector):
             )
 
             for mr_batch in _batch_gitlab_objects(merge_requests, self.batch_size):
-                mr_doc_batch: list[Document] = []
+                mr_doc_batch: list[Document | HierarchyNode] = []
                 for mr in mr_batch:
                     mr.updated_at = datetime.strptime(
                         mr.updated_at, "%Y-%m-%dT%H:%M:%S.%f%z"
@@ -216,7 +218,7 @@ class GitlabConnector(LoadConnector, PollConnector):
             issues = project.issues.list(state=self.state_filter, iterator=True)
 
             for issue_batch in _batch_gitlab_objects(issues, self.batch_size):
-                issue_doc_batch: list[Document] = []
+                issue_doc_batch: list[Document | HierarchyNode] = []
                 for issue in issue_batch:
                     issue.updated_at = datetime.strptime(
                         issue.updated_at, "%Y-%m-%dT%H:%M:%S.%f%z"

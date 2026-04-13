@@ -1,12 +1,12 @@
 import { ReactNode } from "react";
-import { SvgProps } from "@/icons";
-import SidebarTab from "@/refresh-components/buttons/SidebarTab";
+import type { IconProps } from "@opal/types";
+import { SidebarTab } from "@opal/components";
 import SidebarWrapper from "@/sections/sidebar/SidebarWrapper";
 
 export interface StepSidebarProps {
   children: ReactNode;
   buttonName: string;
-  buttonIcon: React.FunctionComponent<SvgProps>;
+  buttonIcon: React.FunctionComponent<IconProps>;
   buttonHref: string;
 }
 
@@ -19,11 +19,7 @@ export default function StepSidebar({
   return (
     <SidebarWrapper>
       <div className="px-2">
-        <SidebarTab
-          leftIcon={buttonIcon}
-          className="bg-background-tint-00"
-          href={buttonHref}
-        >
+        <SidebarTab icon={buttonIcon} href={buttonHref}>
           {buttonName}
         </SidebarTab>
       </div>

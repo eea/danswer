@@ -7,7 +7,7 @@ import CollapsibleCard from "@/components/CollapsibleCard";
 import { ValidSources } from "@/lib/types";
 import { FaCircleQuestion } from "react-icons/fa6";
 import { CheckmarkIcon } from "@/components/icons/icons";
-import Button from "@/refresh-components/buttons/Button";
+import { Button } from "@opal/components";
 import Text from "@/refresh-components/texts/Text";
 import InputTypeIn from "@/refresh-components/inputs/InputTypeIn";
 import { cn } from "@/lib/utils";
@@ -33,13 +33,13 @@ function TableHeader() {
   return (
     <div className="grid grid-cols-12 gap-y-4 px-8 p-4 border-b bg-background-tint-00">
       <div className="col-span-1">
-        <Text>Entity Name</Text>
+        <Text as="p">Entity Name</Text>
       </div>
       <div className="col-span-10">
-        <Text>Description</Text>
+        <Text as="p">Description</Text>
       </div>
       <div className="col-span-1 flex flex-1 justify-center">
-        <Text>Active</Text>
+        <Text as="p">Active</Text>
       </div>
     </div>
   );
@@ -122,12 +122,12 @@ function TableRow({ entityType }: { entityType: EntityType }) {
           )}
         >
           <div className="col-span-1 flex items-center">
-            <Text>{snakeToHumanReadable(entityType.name)}</Text>
+            <Text as="p">{snakeToHumanReadable(entityType.name)}</Text>
           </div>
           <div className="col-span-10 relative">
             <InputTypeIn
               placeholder="Value"
-              disabled={!entityTypeState.active}
+              variant={!entityTypeState.active ? "disabled" : undefined}
               className="w-full px-3 py-2 border"
               defaultValue={entityType.description}
               onChange={(e) =>
@@ -237,18 +237,17 @@ export default function KGEntityTypes({
           value={search}
           onChange={(event) => setSearch(event.target.value)}
         />
-        <Button
-          className="h-9"
-          onClick={allClosed ? handleExpandAll : handleCollapseAll}
-        >
+        <Button onClick={allClosed ? handleExpandAll : handleCollapseAll}>
           {allClosed ? "Expand All" : "Collapse All"}
         </Button>
       </div>
       <div className="flex flex-col gap-y-4 w-full">
         {Object.entries(sourceAndEntityTypes.entity_types).length === 0 ? (
           <div className="flex flex-col gap-y-4">
-            <Text text02>No results available.</Text>
-            <Text text02>
+            <Text as="p" text02>
+              No results available.
+            </Text>
+            <Text as="p" text02>
               To configure Knowledge Graph, first connect some{" "}
               <Link
                 href="/admin/add-connector"
@@ -291,16 +290,16 @@ export default function KGEntityTypes({
                         {snakeToHumanReadable(key)}
                         <span className="ml-auto flex flex-row gap-x-16 items-center pr-16">
                           <span className="flex flex-col items-start">
-                            <Text secondaryBody text02>
+                            <Text as="p" secondaryBody text02>
                               Entities Count
                             </Text>
-                            <Text>{stats.entities_count}</Text>
+                            <Text as="p">{stats.entities_count}</Text>
                           </span>
                           <span className="flex flex-col items-start">
-                            <Text secondaryBody text02>
+                            <Text as="p" secondaryBody text02>
                               Last Updated
                             </Text>
-                            <Text>
+                            <Text as="p">
                               {stats.last_updated
                                 ? new Date(stats.last_updated).toLocaleString()
                                 : "N/A"}

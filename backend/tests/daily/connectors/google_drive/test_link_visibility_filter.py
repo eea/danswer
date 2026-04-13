@@ -1,17 +1,16 @@
 from collections.abc import Iterable
 from typing import Any
-from unittest.mock import MagicMock
 from unittest.mock import patch
 
 from onyx.connectors.google_drive.connector import GoogleDriveConnector
-from onyx.connectors.google_drive.file_retrieval import DriveFileFieldType
 from onyx.connectors.google_drive.file_retrieval import has_link_only_permission
 from onyx.connectors.google_drive.models import DriveRetrievalStage
 from onyx.connectors.google_drive.models import RetrievedDriveFile
 
 
 def _stub_run_functions(
-    func_with_args: Iterable[tuple], max_workers: int = 8  # noqa: ARG001
+    func_with_args: Iterable[tuple],
+    max_workers: int = 8,  # noqa: ARG001
 ) -> list[Any]:
     return [func(*args) for func, args in func_with_args]
 
@@ -36,7 +35,7 @@ def _prepare_connector(exclude: bool) -> GoogleDriveConnector:
         exclude_domain_link_only=exclude,
     )
     connector._creds = object()  # type: ignore[assignment]
-    connector._primary_admin_email = "admin@example.com"  # type: ignore[attr-defined]
+    connector._primary_admin_email = "admin@example.com"
     return connector
 
 
@@ -74,10 +73,8 @@ def test_connector_skips_link_only_files_when_enabled() -> None:
     retrieved_file = _build_retrieved_file(
         [{"type": "domain", "allowFileDiscovery": False}]
     )
-    fetch_mock = MagicMock(return_value=iter([retrieved_file]))
 
     with (
-        patch.object(connector, "_fetch_drive_items", fetch_mock),
         patch(
             "onyx.connectors.google_drive.connector.run_functions_tuples_in_parallel",
             side_effect=_stub_run_functions,
@@ -85,24 +82,23 @@ def test_connector_skips_link_only_files_when_enabled() -> None:
         patch(
             "onyx.connectors.google_drive.connector.convert_drive_item_to_document"
         ) as convert_mock,
+        patch(
+            "onyx.connectors.google_drive.connector.GoogleDriveConnector._get_new_ancestors_for_files"
+        ) as get_new_ancestors_mock,
     ):
         convert_mock.return_value = "doc"
         checkpoint = connector.build_dummy_checkpoint()
         results = list(
-            connector._extract_docs_from_google_drive(
+            connector._convert_retrieved_files_to_documents(
+                drive_files_iter=iter([retrieved_file]),
                 checkpoint=checkpoint,
-                start=None,
-                end=None,
                 include_permissions=False,
             )
         )
 
     assert results == []
     convert_mock.assert_not_called()
-    fetch_mock.assert_called_once()
-    assert (
-        fetch_mock.call_args.kwargs["field_type"] == DriveFileFieldType.WITH_PERMISSIONS
-    )
+    get_new_ancestors_mock.assert_called_once()
 
 
 def test_connector_processes_files_when_option_disabled() -> None:
@@ -110,10 +106,8 @@ def test_connector_processes_files_when_option_disabled() -> None:
     retrieved_file = _build_retrieved_file(
         [{"type": "domain", "allowFileDiscovery": False}]
     )
-    fetch_mock = MagicMock(return_value=iter([retrieved_file]))
 
     with (
-        patch.object(connector, "_fetch_drive_items", fetch_mock),
         patch(
             "onyx.connectors.google_drive.connector.run_functions_tuples_in_parallel",
             side_effect=_stub_run_functions,
@@ -121,19 +115,20 @@ def test_connector_processes_files_when_option_disabled() -> None:
         patch(
             "onyx.connectors.google_drive.connector.convert_drive_item_to_document"
         ) as convert_mock,
+        patch(
+            "onyx.connectors.google_drive.connector.GoogleDriveConnector._get_new_ancestors_for_files"
+        ) as get_new_ancestors_mock,
     ):
         convert_mock.return_value = "doc"
         checkpoint = connector.build_dummy_checkpoint()
         results = list(
-            connector._extract_docs_from_google_drive(
+            connector._convert_retrieved_files_to_documents(
+                drive_files_iter=iter([retrieved_file]),
                 checkpoint=checkpoint,
-                start=None,
-                end=None,
                 include_permissions=False,
             )
         )
 
     assert len(results) == 1
     convert_mock.assert_called_once()
-    fetch_mock.assert_called_once()
-    assert fetch_mock.call_args.kwargs["field_type"] == DriveFileFieldType.STANDARD
+    get_new_ancestors_mock.assert_called_once()

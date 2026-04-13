@@ -1,6 +1,5 @@
 import json
 import time
-from collections.abc import Callable
 from datetime import timedelta
 from itertools import islice
 from typing import Any
@@ -19,6 +18,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from onyx.background.celery.apps.app_base import task_logger
+from onyx.background.celery.celery_redis import celery_get_broker_client
 from onyx.background.celery.celery_redis import celery_get_queue_length
 from onyx.background.celery.celery_redis import celery_get_unacked_task_ids
 from onyx.background.celery.memory_monitoring import emit_process_memory
@@ -116,8 +116,7 @@ class Metric(BaseModel):
             string_value = self.value
         else:
             task_logger.error(
-                f"Invalid metric value type: {type(self.value)} "
-                f"({self.value}) for metric {self.name}."
+                f"Invalid metric value type: {type(self.value)} ({self.value}) for metric {self.name}."
             )
             return
 
@@ -146,14 +145,26 @@ def _collect_queue_metrics(redis_celery: Redis) -> list[Metric]:
     """Collect metrics about queue lengths for different Celery queues"""
     metrics = []
     queue_mappings = {
-        "celery_queue_length": "celery",
-        "docprocessing_queue_length": "docprocessing",
-        "sync_queue_length": "sync",
-        "deletion_queue_length": "deletion",
-        "pruning_queue_length": "pruning",
+        "celery_queue_length": OnyxCeleryQueues.PRIMARY,
+        "docprocessing_queue_length": OnyxCeleryQueues.DOCPROCESSING,
+        "docfetching_queue_length": OnyxCeleryQueues.CONNECTOR_DOC_FETCHING,
+        "sync_queue_length": OnyxCeleryQueues.VESPA_METADATA_SYNC,
+        "deletion_queue_length": OnyxCeleryQueues.CONNECTOR_DELETION,
+        "pruning_queue_length": OnyxCeleryQueues.CONNECTOR_PRUNING,
         "permissions_sync_queue_length": OnyxCeleryQueues.CONNECTOR_DOC_PERMISSIONS_SYNC,
         "external_group_sync_queue_length": OnyxCeleryQueues.CONNECTOR_EXTERNAL_GROUP_SYNC,
         "permissions_upsert_queue_length": OnyxCeleryQueues.DOC_PERMISSIONS_UPSERT,
+        "hierarchy_fetching_queue_length": OnyxCeleryQueues.CONNECTOR_HIERARCHY_FETCHING,
+        "llm_model_update_queue_length": OnyxCeleryQueues.LLM_MODEL_UPDATE,
+        "checkpoint_cleanup_queue_length": OnyxCeleryQueues.CHECKPOINT_CLEANUP,
+        "index_attempt_cleanup_queue_length": OnyxCeleryQueues.INDEX_ATTEMPT_CLEANUP,
+        "csv_generation_queue_length": OnyxCeleryQueues.CSV_GENERATION,
+        "user_file_processing_queue_length": OnyxCeleryQueues.USER_FILE_PROCESSING,
+        "user_file_project_sync_queue_length": OnyxCeleryQueues.USER_FILE_PROJECT_SYNC,
+        "user_file_delete_queue_length": OnyxCeleryQueues.USER_FILE_DELETE,
+        "monitoring_queue_length": OnyxCeleryQueues.MONITORING,
+        "sandbox_queue_length": OnyxCeleryQueues.SANDBOX,
+        "opensearch_migration_queue_length": OnyxCeleryQueues.OPENSEARCH_MIGRATION,
     }
 
     for name, queue in queue_mappings.items():
@@ -248,8 +259,7 @@ def _build_connector_final_metrics(
         )
         if _has_metric_been_emitted(redis_std, metric_key):
             task_logger.info(
-                f"Skipping final metrics for connector {cc_pair.connector.id} "
-                f"index attempt {attempt.id}, already emitted."
+                f"Skipping final metrics for connector {cc_pair.connector.id} index attempt {attempt.id}, already emitted."
             )
             continue
 
@@ -688,31 +698,27 @@ def monitor_background_processes(self: Task, *, tenant_id: str) -> None:
         return None
 
     try:
-        # Get Redis client for Celery broker
-        redis_celery = self.app.broker_connection().channel().client  # type: ignore
         redis_std = get_redis_client()
 
-        # Define metric collection functions and their dependencies
-        metric_functions: list[Callable[[], list[Metric]]] = [
-            lambda: _collect_queue_metrics(redis_celery),
-            lambda: _collect_connector_metrics(db_session, redis_std),
-            lambda: _collect_sync_metrics(db_session, redis_std),
-        ]
+        # Collect queue metrics with broker connection
+        r_celery = celery_get_broker_client(self.app)
+        queue_metrics = _collect_queue_metrics(r_celery)
 
-        # Collect and log each metric
+        # Collect remaining metrics (no broker connection needed)
         with get_session_with_current_tenant() as db_session:
-            for metric_fn in metric_functions:
-                metrics = metric_fn()
-                for metric in metrics:
-                    # double check to make sure we aren't double-emitting metrics
-                    if metric.key is None or not _has_metric_been_emitted(
-                        redis_std, metric.key
-                    ):
-                        metric.log()
-                        metric.emit(tenant_id)
+            all_metrics: list[Metric] = queue_metrics
+            all_metrics.extend(_collect_connector_metrics(db_session, redis_std))
+            all_metrics.extend(_collect_sync_metrics(db_session, redis_std))
 
-                    if metric.key is not None:
-                        _mark_metric_as_emitted(redis_std, metric.key)
+            for metric in all_metrics:
+                if metric.key is None or not _has_metric_been_emitted(
+                    redis_std, metric.key
+                ):
+                    metric.log()
+                    metric.emit(tenant_id)
+
+                if metric.key is not None:
+                    _mark_metric_as_emitted(redis_std, metric.key)
 
         task_logger.info("Successfully collected background metrics")
     except SoftTimeLimitExceeded:
@@ -871,7 +877,7 @@ def cloud_monitor_celery_queues(
 
 
 @shared_task(name=OnyxCeleryTask.MONITOR_CELERY_QUEUES, ignore_result=True, bind=True)
-def monitor_celery_queues(self: Task, *, tenant_id: str) -> None:
+def monitor_celery_queues(self: Task, *, tenant_id: str) -> None:  # noqa: ARG001
     return monitor_celery_queues_helper(self)
 
 
@@ -880,15 +886,13 @@ def monitor_celery_queues_helper(
 ) -> None:
     """A task to monitor all celery queue lengths."""
 
-    r_celery = task.app.broker_connection().channel().client  # type: ignore
-    n_celery = celery_get_queue_length("celery", r_celery)
+    r_celery = celery_get_broker_client(task.app)
+    n_celery = celery_get_queue_length(OnyxCeleryQueues.PRIMARY, r_celery)
     n_docfetching = celery_get_queue_length(
         OnyxCeleryQueues.CONNECTOR_DOC_FETCHING, r_celery
     )
     n_docprocessing = celery_get_queue_length(OnyxCeleryQueues.DOCPROCESSING, r_celery)
-    n_user_files_indexing = celery_get_queue_length(
-        OnyxCeleryQueues.USER_FILES_INDEXING, r_celery
-    )
+
     n_user_file_processing = celery_get_queue_length(
         OnyxCeleryQueues.USER_FILE_PROCESSING, r_celery
     )
@@ -910,6 +914,26 @@ def monitor_celery_queues_helper(
     n_permissions_upsert = celery_get_queue_length(
         OnyxCeleryQueues.DOC_PERMISSIONS_UPSERT, r_celery
     )
+    n_hierarchy_fetching = celery_get_queue_length(
+        OnyxCeleryQueues.CONNECTOR_HIERARCHY_FETCHING, r_celery
+    )
+    n_llm_model_update = celery_get_queue_length(
+        OnyxCeleryQueues.LLM_MODEL_UPDATE, r_celery
+    )
+    n_checkpoint_cleanup = celery_get_queue_length(
+        OnyxCeleryQueues.CHECKPOINT_CLEANUP, r_celery
+    )
+    n_index_attempt_cleanup = celery_get_queue_length(
+        OnyxCeleryQueues.INDEX_ATTEMPT_CLEANUP, r_celery
+    )
+    n_csv_generation = celery_get_queue_length(
+        OnyxCeleryQueues.CSV_GENERATION, r_celery
+    )
+    n_monitoring = celery_get_queue_length(OnyxCeleryQueues.MONITORING, r_celery)
+    n_sandbox = celery_get_queue_length(OnyxCeleryQueues.SANDBOX, r_celery)
+    n_opensearch_migration = celery_get_queue_length(
+        OnyxCeleryQueues.OPENSEARCH_MIGRATION, r_celery
+    )
 
     n_docfetching_prefetched = celery_get_unacked_task_ids(
         OnyxCeleryQueues.CONNECTOR_DOC_FETCHING, r_celery
@@ -924,7 +948,6 @@ def monitor_celery_queues_helper(
         f"docfetching_prefetched={len(n_docfetching_prefetched)} "
         f"docprocessing={n_docprocessing} "
         f"docprocessing_prefetched={len(n_docprocessing_prefetched)} "
-        f"user_files_indexing={n_user_files_indexing} "
         f"user_file_processing={n_user_file_processing} "
         f"user_file_project_sync={n_user_file_project_sync} "
         f"user_file_delete={n_user_file_delete} "
@@ -934,6 +957,14 @@ def monitor_celery_queues_helper(
         f"permissions_sync={n_permissions_sync} "
         f"external_group_sync={n_external_group_sync} "
         f"permissions_upsert={n_permissions_upsert} "
+        f"hierarchy_fetching={n_hierarchy_fetching} "
+        f"llm_model_update={n_llm_model_update} "
+        f"checkpoint_cleanup={n_checkpoint_cleanup} "
+        f"index_attempt_cleanup={n_index_attempt_cleanup} "
+        f"csv_generation={n_csv_generation} "
+        f"monitoring={n_monitoring} "
+        f"sandbox={n_sandbox} "
+        f"opensearch_migration={n_opensearch_migration} "
     )
 
 
@@ -955,7 +986,7 @@ def _get_cmdline_for_process(process: psutil.Process) -> str | None:
     queue=OnyxCeleryQueues.MONITORING,
     bind=True,
 )
-def monitor_process_memory(self: Task, *, tenant_id: str) -> None:
+def monitor_process_memory(self: Task, *, tenant_id: str) -> None:  # noqa: ARG001
     """
     Task to monitor memory usage of supervisor-managed processes.
     This periodically checks the memory usage of processes and logs information
@@ -1000,8 +1031,7 @@ def monitor_process_memory(self: Task, *, tenant_id: str) -> None:
                 if process_name in cmdline:
                     if process_type in supervisor_processes.values():
                         task_logger.error(
-                            f"Duplicate process type for type {process_type} "
-                            f"with cmd {cmdline} with pid={proc.pid}."
+                            f"Duplicate process type for type {process_type} with cmd {cmdline} with pid={proc.pid}."
                         )
                         continue
 
@@ -1010,8 +1040,7 @@ def monitor_process_memory(self: Task, *, tenant_id: str) -> None:
 
         if len(supervisor_processes) != len(process_type_mapping):
             task_logger.error(
-                "Missing processes: "
-                f"{set(process_type_mapping.keys()).symmetric_difference(supervisor_processes.values())}"
+                f"Missing processes: {set(process_type_mapping.keys()).symmetric_difference(supervisor_processes.values())}"
             )
 
         # Log memory usage for each process
@@ -1048,7 +1077,7 @@ def cloud_monitor_celery_pidbox(
     num_deleted = 0
 
     MAX_PIDBOX_IDLE = 24 * 3600  # 1 day in seconds
-    r_celery: Redis = self.app.broker_connection().channel().client  # type: ignore
+    r_celery = celery_get_broker_client(self.app)
     for key in r_celery.scan_iter("*.reply.celery.pidbox"):
         key_bytes = cast(bytes, key)
         key_str = key_bytes.decode("utf-8")
@@ -1065,9 +1094,7 @@ def cloud_monitor_celery_pidbox(
 
         r_celery.delete(key)
         task_logger.info(
-            f"Deleted idle pidbox: pidbox={key_str} "
-            f"idletime={idletime} "
-            f"max_idletime={MAX_PIDBOX_IDLE}"
+            f"Deleted idle pidbox: pidbox={key_str} idletime={idletime} max_idletime={MAX_PIDBOX_IDLE}"
         )
         num_deleted += 1
 

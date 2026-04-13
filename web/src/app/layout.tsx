@@ -1,96 +1,76 @@
 import "./globals.css";
 
-import {
-  fetchEnterpriseSettingsSS,
-  fetchSettingsSS,
-} from "@/components/settings/lib";
-import {
-  CUSTOM_ANALYTICS_ENABLED,
-  GTM_ENABLED,
-  SERVER_SIDE_ONLY__PAID_ENTERPRISE_FEATURES_ENABLED,
-  NEXT_PUBLIC_CLOUD_ENABLED,
-  MODAL_ROOT_ID,
-} from "@/lib/constants";
+import { GTM_ENABLED, MODAL_ROOT_ID } from "@/lib/constants";
 import { Metadata } from "next";
-import { buildClientUrl } from "@/lib/utilsSS";
-import { Inter } from "next/font/google";
-import {
-  EnterpriseSettings,
-  ApplicationStatus,
-} from "./admin/settings/interfaces";
-import AppProvider from "@/components/context/AppProvider";
+
+import AppProvider from "@/providers/AppProvider";
+import DynamicMetadata from "@/providers/DynamicMetadata";
 import { PHProvider } from "./providers";
-import { getAuthTypeMetadataSS, getCurrentUserSS } from "@/lib/userSS";
 import { Suspense } from "react";
 import PostHogPageView from "./PostHogPageView";
 import Script from "next/script";
-import { Hanken_Grotesk } from "next/font/google";
+import { DM_Mono, Hanken_Grotesk } from "next/font/google";
 import { WebVitals } from "./web-vitals";
 import { ThemeProvider } from "next-themes";
-import CloudError from "@/components/errorPages/CloudErrorPage";
-import Error from "@/components/errorPages/ErrorPage";
 
-import AccessRestrictedPage from "@/components/errorPages/AccessRestrictedPage";
-import { fetchAssistantData } from "@/lib/chat/fetchAssistantdata";
+
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { fetchAppSidebarMetadata } from "@/lib/appSidebarSS";
-
-const inter = Inter({
-  subsets: ["latin"],
-  variable: "--font-inter",
-  display: "swap",
-});
+import StatsOverlayLoader from "@/components/dev/StatsOverlayLoader";
+import { cn } from "@/lib/utils";
+import AppHealthBanner from "@/sections/AppHealthBanner";
+import CustomAnalyticsScript from "@/providers/CustomAnalyticsScript";
+import ProductGatingWrapper from "@/providers/ProductGatingWrapper";
+import SWRConfigProvider from "@/providers/SWRConfigProvider";
 
 const hankenGrotesk = Hanken_Grotesk({
   subsets: ["latin"],
   variable: "--font-hanken-grotesk",
   display: "swap",
+  fallback: [
+    "-apple-system",
+    "BlinkMacSystemFont",
+    "Segoe UI",
+    "Roboto",
+    "sans-serif",
+  ],
 });
 
-export async function generateMetadata(): Promise<Metadata> {
-  let logoLocation = buildClientUrl("/onyx.ico");
-  let enterpriseSettings: EnterpriseSettings | null = null;
-  if (SERVER_SIDE_ONLY__PAID_ENTERPRISE_FEATURES_ENABLED) {
-    enterpriseSettings = await (await fetchEnterpriseSettingsSS()).json();
-    logoLocation =
-      enterpriseSettings && enterpriseSettings.use_custom_logo
-        ? "/api/enterprise-settings/logo"
-        : buildClientUrl("/onyx.ico");
-  }
+const dmMono = DM_Mono({
+  weight: "400",
+  subsets: ["latin"],
+  variable: "--font-dm-mono",
+  display: "swap",
+  fallback: [
+    "SF Mono",
+    "Monaco",
+    "Cascadia Code",
+    "Roboto Mono",
+    "Consolas",
+    "Courier New",
+    "monospace",
+  ],
+});
 
-  return {
-    title: enterpriseSettings?.application_name || "Onyx",
-    description: "Question answering for your documents",
-    icons: {
-      icon: logoLocation,
-    },
-  };
-}
+export const metadata: Metadata = {
+  title: "Onyx",
+  description: "Question answering for your documents",
+};
 
+// force-dynamic prevents Next.js from statically prerendering pages at build
+// time — many child routes use cookies() which requires dynamic rendering.
+// This is safe because the layout itself has no server-side data fetching;
+// all data is fetched client-side via SWR in the provider tree.
 export const dynamic = "force-dynamic";
 
-export default async function RootLayout({
+export default function RootLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const [combinedSettings, assistants, user, authTypeMetadata] =
-    await Promise.all([
-      fetchSettingsSS(),
-      fetchAssistantData(),
-      getCurrentUserSS(),
-      getAuthTypeMetadataSS(),
-    ]);
-
-  const { folded } = await fetchAppSidebarMetadata(user);
-
-  const productGating =
-    combinedSettings?.settings.application_status ?? ApplicationStatus.ACTIVE;
-
-  const getPageContent = async (content: React.ReactNode) => (
+  return (
     <html
       lang="en"
-      className={`${inter.variable} ${hankenGrotesk.variable}`}
+      className={cn(hankenGrotesk.variable, dmMono.variable)}
       suppressHydrationWarning
     >
       <head>
@@ -98,15 +78,6 @@ export default async function RootLayout({
           name="viewport"
           content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0, interactive-widget=resizes-content"
         />
-        {CUSTOM_ANALYTICS_ENABLED &&
-          combinedSettings?.customAnalyticsScript && (
-            <script
-              type="text/javascript"
-              dangerouslySetInnerHTML={{
-                __html: combinedSettings.customAnalyticsScript,
-              }}
-            />
-          )}
 
         {GTM_ENABLED && (
           <Script
@@ -125,7 +96,7 @@ export default async function RootLayout({
         )}
       </head>
 
-      <body className={`relative ${inter.variable} font-hanken`}>
+      <body className={`relative font-hanken`}>
         <ThemeProvider
           attribute="class"
           defaultTheme="system"
@@ -134,7 +105,25 @@ export default async function RootLayout({
         >
           <div className="text-text min-h-screen bg-background">
             <TooltipProvider>
-              <PHProvider>{content}</PHProvider>
+              <PHProvider>
+                <SWRConfigProvider>
+                  <AppHealthBanner />
+                  <AppProvider>
+                    <DynamicMetadata />
+                    <CustomAnalyticsScript />
+                    <Suspense fallback={null}>
+                      <PostHogPageView />
+                    </Suspense>
+                    <div id={MODAL_ROOT_ID} className="h-screen w-screen">
+                      <ProductGatingWrapper>{children}</ProductGatingWrapper>
+                    </div>
+                    {process.env.NEXT_PUBLIC_POSTHOG_KEY && <WebVitals />}
+                    {process.env.NEXT_PUBLIC_ENABLE_STATS === "true" && (
+                      <StatsOverlayLoader />
+                    )}
+                  </AppProvider>
+                </SWRConfigProvider>
+              </PHProvider>
             </TooltipProvider>
           </div>
         </ThemeProvider>
@@ -142,31 +131,5 @@ export default async function RootLayout({
     </html>
   );
 
-//  if (productGating === ApplicationStatus.GATED_ACCESS) {
-//    return getPageContent(<AccessRestrictedPage />);
-//  }
 
-  if (!combinedSettings) {
-    return getPageContent(
-      NEXT_PUBLIC_CLOUD_ENABLED ? <CloudError /> : <Error />
-    );
-  }
-
-  return getPageContent(
-    <AppProvider
-      authTypeMetadata={authTypeMetadata}
-      user={user}
-      settings={combinedSettings}
-      assistants={assistants}
-      folded={folded}
-    >
-      <Suspense fallback={null}>
-        <PostHogPageView />
-      </Suspense>
-      <div id={MODAL_ROOT_ID} className="h-screen w-screen">
-        {children}
-      </div>
-      {process.env.NEXT_PUBLIC_POSTHOG_KEY && <WebVitals />}
-    </AppProvider>
-  );
 }

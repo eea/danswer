@@ -9,14 +9,14 @@ from typing import Any
 from typing import Optional
 from urllib.parse import quote
 
-import boto3  # type: ignore
-from botocore.client import Config  # type: ignore
+import boto3
+from botocore.client import Config
 from botocore.credentials import RefreshableCredentials
 from botocore.exceptions import ClientError
 from botocore.exceptions import NoCredentialsError
 from botocore.exceptions import PartialCredentialsError
 from botocore.session import get_session
-from mypy_boto3_s3 import S3Client  # type: ignore
+from mypy_boto3_s3 import S3Client
 
 from onyx.configs.app_configs import BLOB_STORAGE_SIZE_THRESHOLD
 from onyx.configs.app_configs import INDEX_BATCH_SIZE
@@ -36,12 +36,12 @@ from onyx.connectors.interfaces import PollConnector
 from onyx.connectors.interfaces import SecondsSinceUnixEpoch
 from onyx.connectors.models import ConnectorMissingCredentialError
 from onyx.connectors.models import Document
+from onyx.connectors.models import HierarchyNode
 from onyx.connectors.models import ImageSection
 from onyx.connectors.models import TextSection
 from onyx.file_processing.extract_file_text import extract_text_and_images
 from onyx.file_processing.extract_file_text import get_file_ext
-from onyx.file_processing.extract_file_text import is_accepted_file_ext
-from onyx.file_processing.extract_file_text import OnyxExtensionType
+from onyx.file_processing.file_types import OnyxFileExtensions
 from onyx.file_processing.image_utils import store_image_and_create_section
 from onyx.utils.logger import setup_logger
 
@@ -378,7 +378,7 @@ class BlobStorageConnector(LoadConnector, PollConnector):
         paginator = self.s3_client.get_paginator("list_objects_v2")
         pages = paginator.paginate(Bucket=self.bucket_name, Prefix=self.prefix)
 
-        batch: list[Document] = []
+        batch: list[Document | HierarchyNode] = []
         for page in pages:
             if "Contents" not in page:
                 continue
@@ -410,7 +410,7 @@ class BlobStorageConnector(LoadConnector, PollConnector):
                     continue
 
                 # Handle image files
-                if is_accepted_file_ext(file_ext, OnyxExtensionType.Multimedia):
+                if file_ext in OnyxFileExtensions.IMAGE_EXTENSIONS:
                     if not self._allow_images:
                         logger.debug(
                             f"Skipping image file: {key} (image processing not enabled)"
@@ -617,6 +617,10 @@ if __name__ == "__main__":
         for document_batch in document_batch_generator:
             print("First batch of documents:")
             for doc in document_batch:
+                if isinstance(doc, HierarchyNode):
+                    print("hierarchynode:", doc.display_name)
+                    continue
+
                 print(f"Document ID: {doc.id}")
                 print(f"Semantic Identifier: {doc.semantic_identifier}")
                 print(f"Source: {doc.source}")

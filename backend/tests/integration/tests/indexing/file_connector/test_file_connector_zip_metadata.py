@@ -34,15 +34,15 @@ TEST_METADATA_FILE = f"{TEST_FILES_BASE}/.onyx_metadata.json"
     ],
 )
 def test_zip_metadata_handling(
-    reset: None,
-    vespa_client: vespa_fixture,
+    reset: None,  # noqa: ARG001
+    vespa_client: vespa_fixture,  # noqa: ARG001
     zip_path: str,
     has_metadata: bool,
 ) -> None:
     before = datetime.now(timezone.utc)
     # Create an admin user
     admin_user: DATestUser = UserManager.create(
-        email="admin@onyx-test.com",
+        email="admin@example.com",
     )
 
     # Upload the test zip file (simulate this happening from frontend)
@@ -56,10 +56,10 @@ def test_zip_metadata_handling(
     file_paths = upload_response.file_paths
     assert file_paths, "File upload failed - no file paths returned"
     if has_metadata:
-        metadata = upload_response.zip_metadata
-        assert metadata, "Metadata should be present"
+        zip_metadata_file_id = upload_response.zip_metadata_file_id
+        assert zip_metadata_file_id, "Metadata file ID should be present"
     else:
-        metadata = {}
+        zip_metadata_file_id = None
 
     # Create a dummy credential for the file connector
     credential = CredentialManager.create(
@@ -77,7 +77,7 @@ def test_zip_metadata_handling(
         connector_specific_config={
             "file_locations": file_paths,
             "file_names": [os.path.basename(file_path) for file_path in file_paths],
-            "zip_metadata": metadata,
+            "zip_metadata_file_id": zip_metadata_file_id,
         },
         access_type=AccessType.PUBLIC,
         groups=[],

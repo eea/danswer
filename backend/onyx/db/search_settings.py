@@ -12,7 +12,6 @@ from onyx.db.models import CloudEmbeddingProvider
 from onyx.db.models import IndexAttempt
 from onyx.db.models import IndexModelStatus
 from onyx.db.models import SearchSettings
-from onyx.natural_language_processing.search_nlp_models import warm_up_cross_encoder
 from onyx.server.manage.embedding.models import (
     CloudEmbeddingProvider as ServerCloudEmbeddingProvider,
 )
@@ -55,12 +54,6 @@ def create_search_settings(
         enable_contextual_rag=search_settings.enable_contextual_rag,
         contextual_rag_llm_name=search_settings.contextual_rag_llm_name,
         contextual_rag_llm_provider=search_settings.contextual_rag_llm_provider,
-        multilingual_expansion=search_settings.multilingual_expansion,
-        disable_rerank_for_streaming=search_settings.disable_rerank_for_streaming,
-        rerank_model_name=search_settings.rerank_model_name,
-        rerank_provider_type=search_settings.rerank_provider_type,
-        rerank_api_key=search_settings.rerank_api_key,
-        num_rerank=search_settings.num_rerank,
         switchover_type=search_settings.switchover_type,
     )
 
@@ -136,7 +129,7 @@ def get_current_search_settings(db_session: Session) -> SearchSettings:
     latest_settings = result.scalars().first()
 
     if not latest_settings:
-        raise RuntimeError("No search settings specified, DB is not in a valid state")
+        raise RuntimeError("No search settings specified; DB is not in a valid state.")
     return latest_settings
 
 
@@ -214,14 +207,6 @@ def update_current_search_settings(
     if not current_settings:
         logger.warning("No current search settings found to update")
         return
-
-    # Whenever we update the current search settings, we should ensure that the local reranking model is warmed up.
-    if (
-        search_settings.rerank_provider_type is None
-        and search_settings.rerank_model_name is not None
-        and current_settings.rerank_model_name != search_settings.rerank_model_name
-    ):
-        warm_up_cross_encoder(search_settings.rerank_model_name)
 
     update_search_settings(current_settings, search_settings, preserved_fields)
     db_session.commit()

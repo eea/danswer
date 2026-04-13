@@ -14,7 +14,9 @@ from onyx.auth.schemas import UserRole
 from onyx.configs.app_configs import TRACK_EXTERNAL_IDP_EXPIRY
 from onyx.configs.constants import AuthType
 from onyx.context.search.models import SavedSearchSettings
+from onyx.db.enums import DefaultAppMode
 from onyx.db.enums import ThemePreference
+from onyx.db.memory import MAX_MEMORIES_PER_USER
 from onyx.db.models import AllowedAnswerFilters
 from onyx.db.models import ChannelConfig
 from onyx.db.models import SlackBot as SlackAppModel
@@ -33,6 +35,18 @@ if TYPE_CHECKING:
     pass
 
 
+class EmailInviteStatus(str, Enum):
+    SENT = "SENT"
+    NOT_CONFIGURED = "NOT_CONFIGURED"
+    SEND_FAILED = "SEND_FAILED"
+    DISABLED = "DISABLED"
+
+
+class BulkInviteResponse(BaseModel):
+    invited_count: int
+    email_invite_status: EmailInviteStatus
+
+
 class VersionResponse(BaseModel):
     backend_version: str
 
@@ -44,6 +58,9 @@ class AuthTypeResponse(BaseModel):
     requires_verification: bool
     anonymous_user_enabled: bool | None = None
     password_min_length: int
+    # whether there are any users in the system
+    has_users: bool = True
+    oauth_enabled: bool = False
 
 
 class UserSpecificAssistantPreference(BaseModel):
@@ -65,16 +82,30 @@ class UserPreferences(BaseModel):
     auto_scroll: bool | None = None
     temperature_override_enabled: bool | None = None
     theme_preference: ThemePreference | None = None
+    chat_background: str | None = None
+    default_app_mode: DefaultAppMode = DefaultAppMode.CHAT
+
+    # Voice preferences
+    voice_auto_send: bool | None = None
+    voice_auto_playback: bool | None = None
+    voice_playback_speed: float | None = None
 
     # controls which tools are enabled for the user for a specific assistant
     assistant_specific_configs: UserSpecificAssistantPreferences | None = None
+
+
+class MemoryItem(BaseModel):
+    id: int | None = None
+    content: str
 
 
 class UserPersonalization(BaseModel):
     name: str = ""
     role: str = ""
     use_memories: bool = True
-    memories: list[str] = Field(default_factory=list)
+    enable_memory_tool: bool = True
+    memories: list[MemoryItem] = Field(default_factory=list)
+    user_preferences: str = ""
 
 
 class TenantSnapshot(BaseModel):
@@ -116,6 +147,7 @@ class UserInfo(BaseModel):
         is_anonymous_user: bool | None = None,
         tenant_info: TenantInfo | None = None,
         assistant_specific_configs: UserSpecificAssistantPreferences | None = None,
+        memories: list[MemoryItem] | None = None,
     ) -> "UserInfo":
         return cls(
             id=str(user.id),
@@ -136,6 +168,11 @@ class UserInfo(BaseModel):
                     auto_scroll=user.auto_scroll,
                     temperature_override_enabled=user.temperature_override_enabled,
                     theme_preference=user.theme_preference,
+                    chat_background=user.chat_background,
+                    default_app_mode=user.default_app_mode,
+                    voice_auto_send=user.voice_auto_send,
+                    voice_auto_playback=user.voice_auto_playback,
+                    voice_playback_speed=user.voice_playback_speed,
                     assistant_specific_configs=assistant_specific_configs,
                 )
             ),
@@ -154,7 +191,9 @@ class UserInfo(BaseModel):
                 name=user.personal_name or "",
                 role=user.personal_role or "",
                 use_memories=user.use_memories,
-                memories=[memory.memory_text for memory in (user.memories or [])],
+                enable_memory_tool=user.enable_memory_tool,
+                memories=memories or [],
+                user_preferences=user.user_preferences or "",
             ),
         )
 
@@ -199,11 +238,36 @@ class ThemePreferenceRequest(BaseModel):
     theme_preference: ThemePreference
 
 
+class DefaultAppModeRequest(BaseModel):
+    default_app_mode: DefaultAppMode
+
+
+class ChatBackgroundRequest(BaseModel):
+    chat_background: str | None
+
+
+class VoiceSettingsUpdateRequest(BaseModel):
+    auto_send: bool | None = None
+    auto_playback: bool | None = None
+    playback_speed: float | None = Field(default=None, ge=0.5, le=2.0)
+
+
 class PersonalizationUpdateRequest(BaseModel):
     name: str | None = None
     role: str | None = None
     use_memories: bool | None = None
-    memories: list[str] | None = None
+    enable_memory_tool: bool | None = None
+    memories: list[MemoryItem] | None = None
+    user_preferences: str | None = Field(default=None, max_length=500)
+
+    @field_validator("memories", mode="before")
+    @classmethod
+    def validate_memory_count(
+        cls, value: list[MemoryItem] | None
+    ) -> list[MemoryItem] | None:
+        if value is not None and len(value) > MAX_MEMORIES_PER_USER:
+            raise ValueError(f"Maximum of {MAX_MEMORIES_PER_USER} memories allowed")
+        return value
 
 
 class SlackBotCreationRequest(BaseModel):
@@ -332,9 +396,21 @@ class SlackBot(BaseModel):
             name=slack_bot_model.name,
             enabled=slack_bot_model.enabled,
             configs_count=len(slack_bot_model.slack_channel_configs),
-            bot_token=slack_bot_model.bot_token,
-            app_token=slack_bot_model.app_token,
-            user_token=slack_bot_model.user_token,
+            bot_token=(
+                slack_bot_model.bot_token.get_value(apply_mask=True)
+                if slack_bot_model.bot_token
+                else ""
+            ),
+            app_token=(
+                slack_bot_model.app_token.get_value(apply_mask=True)
+                if slack_bot_model.app_token
+                else ""
+            ),
+            user_token=(
+                slack_bot_model.user_token.get_value(apply_mask=True)
+                if slack_bot_model.user_token
+                else None
+            ),
         )
 
 

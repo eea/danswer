@@ -17,6 +17,7 @@ from onyx.connectors.interfaces import SecondsSinceUnixEpoch
 from onyx.connectors.models import BasicExpertInfo
 from onyx.connectors.models import ConnectorMissingCredentialError
 from onyx.connectors.models import Document
+from onyx.connectors.models import HierarchyNode
 from onyx.connectors.models import TextSection
 from onyx.utils.retry_wrapper import retry_builder
 
@@ -67,7 +68,7 @@ class ClickupConnector(LoadConnector, PollConnector):
         response = self._make_request(url_endpoint)
         comments = [
             TextSection(
-                link=f'https://app.clickup.com/t/{task_id}?comment={comment_dict["id"]}',
+                link=f"https://app.clickup.com/t/{task_id}?comment={comment_dict['id']}",
                 text=comment_dict["comment_text"],
             )
             for comment_dict in response["comments"]
@@ -80,7 +81,7 @@ class ClickupConnector(LoadConnector, PollConnector):
         start: int | None = None,
         end: int | None = None,
     ) -> GenerateDocumentsOutput:
-        doc_batch: list[Document] = []
+        doc_batch: list[Document | HierarchyNode] = []
         page: int = 0
         params = {
             "include_markdown_description": "true",

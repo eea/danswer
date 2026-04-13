@@ -2,7 +2,7 @@ import {
   CredentialBase,
   CredentialWithPrivateKey,
 } from "./connectors/credentials";
-import { AccessType } from "@/lib/types";
+import { AccessType, ProcessingMode } from "@/lib/types";
 import { TypedFile } from "./connectors/fileTypes";
 import {
   CREDENTIAL_NAME,
@@ -87,10 +87,11 @@ export async function forceDeleteCredential<T>(credentialId: number) {
 export function linkCredential(
   connectorId: number,
   credentialId: number,
-  name?: string,
+  name: string,
   accessType?: AccessType,
   groups?: number[],
-  autoSyncOptions?: Record<string, any>
+  autoSyncOptions?: Record<string, any>,
+  processingMode?: ProcessingMode
 ) {
   return fetch(
     `/api/manage/connector/${connectorId}/credential/${credentialId}`,
@@ -100,10 +101,11 @@ export function linkCredential(
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        name: name || null,
+        name,
         access_type: accessType !== undefined ? accessType : "public",
         groups: groups || null,
         auto_sync_options: autoSyncOptions || null,
+        processing_mode: processingMode || "REGULAR",
       }),
     }
   );

@@ -1,381 +1,358 @@
 "use client";
 
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
 import { usePathname } from "next/navigation";
-import { useSettingsContext } from "@/components/settings/SettingsProvider";
-import { CgArrowsExpandUpLeft } from "react-icons/cg";
-import Text from "@/refresh-components/texts/Text";
+import { useSettingsContext } from "@/providers/SettingsProvider";
 import SidebarSection from "@/sections/sidebar/SidebarSection";
-import Settings from "@/sections/sidebar/Settings/Settings";
-import SidebarWrapper from "@/sections/sidebar/SidebarWrapper";
+import * as SidebarLayouts from "@/layouts/sidebar-layouts";
+import { useSidebarFolded } from "@/layouts/sidebar-layouts";
 import { useIsKGExposed } from "@/app/admin/kg/utils";
 import { useCustomAnalyticsEnabled } from "@/lib/hooks/useCustomAnalyticsEnabled";
-import { useUser } from "@/components/user/UserProvider";
+import { useUser } from "@/providers/UserProvider";
 import { UserRole } from "@/lib/types";
-import { MdOutlineCreditCard } from "react-icons/md";
+import { usePaidEnterpriseFeaturesEnabled } from "@/components/settings/usePaidEnterpriseFeaturesEnabled";
+import { CombinedSettings } from "@/interfaces/settings";
+import { SidebarTab } from "@opal/components";
+import InputTypeIn from "@/refresh-components/inputs/InputTypeIn";
+import Separator from "@/refresh-components/Separator";
+import Spacer from "@/refresh-components/Spacer";
+import { SvgArrowUpCircle, SvgSearch, SvgX } from "@opal/icons";
 import {
-  ClipboardIcon,
-  NotebookIconSkeleton,
-  ConnectorIconSkeleton,
-  ThumbsUpIconSkeleton,
-  ToolIconSkeleton,
-  CpuIconSkeleton,
-  UsersIconSkeleton,
-  GroupsIconSkeleton,
-  KeyIconSkeleton,
-  ShieldIconSkeleton,
-  DatabaseIconSkeleton,
-  SettingsIconSkeleton,
-  PaintingIconSkeleton,
-  ZoomInIconSkeleton,
-  SlackIconSkeleton,
-  DocumentSetIconSkeleton,
-  AssistantsIconSkeleton,
-  SearchIcon,
-  DocumentIcon2,
-  BrainIcon,
-  GlobeIcon,
-} from "@/components/icons/icons";
-import OnyxLogo from "@/icons/onyx-logo";
-import { CombinedSettings } from "@/app/admin/settings/interfaces";
-import { FiActivity, FiBarChart2 } from "react-icons/fi";
-import SidebarTab from "@/refresh-components/buttons/SidebarTab";
-import SidebarBody from "@/sections/sidebar/SidebarBody";
+  useBillingInformation,
+  useLicense,
+  hasActiveSubscription,
+} from "@/lib/billing";
+import { ADMIN_ROUTES, sidebarItem } from "@/lib/admin-routes";
+import useFilter from "@/hooks/useFilter";
+import { IconFunctionComponent } from "@opal/types";
+import AccountPopover from "@/sections/sidebar/AccountPopover";
 
-const connectors_items = () => [
-  {
-    name: "Existing Connectors",
-    icon: NotebookIconSkeleton,
-    link: "/admin/indexing/status",
-  },
-  {
-    name: "Add Connector",
-    icon: ConnectorIconSkeleton,
-    link: "/admin/add-connector",
-  },
-];
+const SECTIONS = {
+  UNLABELED: "",
+  AGENTS_AND_ACTIONS: "Agents & Actions",
+  DOCUMENTS_AND_KNOWLEDGE: "Documents & Knowledge",
+  INTEGRATIONS: "Integrations",
+  PERMISSIONS: "Permissions",
+  ORGANIZATION: "Organization",
+  USAGE: "Usage",
+} as const;
 
-const document_management_items = () => [
-  {
-    name: "Document Sets",
-    icon: DocumentSetIconSkeleton,
-    link: "/admin/documents/sets",
-  },
-  {
-    name: "Explorer",
-    icon: ZoomInIconSkeleton,
-    link: "/admin/documents/explorer",
-  },
-  {
-    name: "Feedback",
-    icon: ThumbsUpIconSkeleton,
-    link: "/admin/documents/feedback",
-  },
-];
+interface SidebarItemEntry {
+  section: string;
+  name: string;
+  icon: IconFunctionComponent;
+  link: string;
+  error?: boolean;
+  disabled?: boolean;
+}
 
-const custom_assistants_items = (
-  isCurator: boolean,
-  enableEnterprise: boolean
-) => {
-  const items = [
-    {
-      name: "Assistants",
-      icon: AssistantsIconSkeleton,
-      link: "/admin/assistants",
-    },
-  ];
-
-  if (!isCurator) {
-    items.push(
-      {
-        name: "Slack Bots",
-        icon: SlackIconSkeleton,
-        link: "/admin/bots",
-      },
-      {
-        name: "Actions",
-        icon: ToolIconSkeleton,
-        link: "/admin/actions",
-      }
-    );
-  } else {
-    items.push({
-      name: "Actions",
-      icon: ToolIconSkeleton,
-      link: "/admin/actions",
-    });
-  }
-
-  if (enableEnterprise) {
-    items.push({
-      name: "Standard Answers",
-      icon: ClipboardIcon,
-      link: "/admin/standard-answer",
-    });
-  }
-
-  return items;
-};
-
-const collections = (
+function buildItems(
   isCurator: boolean,
   enableCloud: boolean,
   enableEnterprise: boolean,
   settings: CombinedSettings | null,
   kgExposed: boolean,
-  customAnalyticsEnabled: boolean
-) => [
-  {
-    name: "Connectors",
-    items: connectors_items(),
-  },
-  {
-    name: "Document Management",
-    items: document_management_items(),
-  },
-  {
-    name: "Custom Assistants",
-    items: custom_assistants_items(isCurator, enableEnterprise),
-  },
-  ...(isCurator
-    ? [
-        {
-          name: "User Management",
-          items: [
-            {
-              name: "Groups",
-              icon: GroupsIconSkeleton,
-              link: "/admin/groups",
-            },
-          ],
-        },
-      ]
-    : []),
-  ...(!isCurator
-    ? [
-        {
-          name: "Configuration",
-          items: [
-            {
-              name: "Default Assistant",
-              icon: OnyxLogo,
-              link: "/admin/configuration/default-assistant",
-            },
-            {
-              name: "LLM",
-              icon: CpuIconSkeleton,
-              link: "/admin/configuration/llm",
-            },
-            {
-              name: "Web Search",
-              icon: GlobeIcon,
-              link: "/admin/configuration/web-search",
-            },
-            ...(!enableCloud
-              ? [
-                  {
-                    error: settings?.settings.needs_reindexing,
-                    name: "Search Settings",
-                    icon: SearchIcon,
-                    link: "/admin/configuration/search",
-                  },
-                ]
-              : []),
-            {
-              name: "Document Processing",
-              icon: DocumentIcon2,
-              link: "/admin/configuration/document-processing",
-            },
-            ...(kgExposed
-              ? [
-                  {
-                    name: "Knowledge Graph",
-                    icon: BrainIcon,
-                    link: "/admin/kg",
-                  },
-                ]
-              : []),
-          ],
-        },
-        {
-          name: "User Management",
-          items: [
-            {
-              name: "Users",
-              icon: UsersIconSkeleton,
-              link: "/admin/users",
-            },
-            ...(enableEnterprise
-              ? [
-                  {
-                    name: "Groups",
-                    icon: GroupsIconSkeleton,
-                    link: "/admin/groups",
-                  },
-                ]
-              : []),
-            {
-              name: "API Keys",
-              icon: KeyIconSkeleton,
-              link: "/admin/api-key",
-            },
-            {
-              name: "Token Rate Limits",
-              icon: ShieldIconSkeleton,
-              link: "/admin/token-rate-limits",
-            },
-          ],
-        },
-        ...(enableEnterprise
-          ? [
-              {
-                name: "Performance",
-                items: [
-                  {
-                    name: "Usage Statistics",
-                    icon: FiActivity,
-                    link: "/admin/performance/usage",
-                  },
-                  ...(settings?.settings.query_history_type !== "disabled"
-                    ? [
-                        {
-                          name: "Query History",
-                          icon: DatabaseIconSkeleton,
-                          link: "/admin/performance/query-history",
-                        },
-                      ]
-                    : []),
-                  ...(!enableCloud && customAnalyticsEnabled
-                    ? [
-                        {
-                          name: "Custom Analytics",
-                          icon: FiBarChart2,
-                          link: "/admin/performance/custom-analytics",
-                        },
-                      ]
-                    : []),
-                ],
-              },
-            ]
-          : []),
-        {
-          name: "Settings",
-          items: [
-            {
-              name: "Workspace Settings",
-              icon: SettingsIconSkeleton,
-              link: "/admin/settings",
-            },
-            ...(enableEnterprise
-              ? [
-                  {
-                    name: "Whitelabeling",
-                    icon: PaintingIconSkeleton,
-                    link: "/admin/whitelabeling",
-                  },
-                ]
-              : []),
-            ...(enableCloud
-              ? [
-                  {
-                    name: "Billing",
-                    icon: MdOutlineCreditCard,
-                    link: "/admin/billing",
-                  },
-                ]
-              : []),
-          ],
-        },
-        {
-          name: "Customize Layout",
-          items: [
-            {
-              name: "Pages",
-              icon: SettingsIconSkeleton,
-              link: "/admin/eea_config/pages",
-            },
-          ],
-        },
-      ]
-    : []),
-];
+  customAnalyticsEnabled: boolean,
+  hasSubscription: boolean,
+  hooksEnabled: boolean
+): SidebarItemEntry[] {
+  const vectorDbEnabled = settings?.settings.vector_db_enabled !== false;
+  const items: SidebarItemEntry[] = [];
+
+  const add = (section: string, route: Parameters<typeof sidebarItem>[0]) => {
+    items.push({ ...sidebarItem(route), section });
+  };
+
+  const addDisabled = (
+    section: string,
+    route: Parameters<typeof sidebarItem>[0],
+    isDisabled: boolean
+  ) => {
+    items.push({ ...sidebarItem(route), section, disabled: isDisabled });
+  };
+
+  // 1. No header — core configuration (admin only)
+  if (!isCurator) {
+    add(SECTIONS.UNLABELED, ADMIN_ROUTES.LLM_MODELS);
+    add(SECTIONS.UNLABELED, ADMIN_ROUTES.WEB_SEARCH);
+    add(SECTIONS.UNLABELED, ADMIN_ROUTES.IMAGE_GENERATION);
+    add(SECTIONS.UNLABELED, ADMIN_ROUTES.VOICE);
+    add(SECTIONS.UNLABELED, ADMIN_ROUTES.CODE_INTERPRETER);
+    add(SECTIONS.UNLABELED, ADMIN_ROUTES.CHAT_PREFERENCES);
+
+    if (vectorDbEnabled && kgExposed) {
+      add(SECTIONS.UNLABELED, ADMIN_ROUTES.KNOWLEDGE_GRAPH);
+    }
+
+    if (!enableCloud && customAnalyticsEnabled) {
+      addDisabled(
+        SECTIONS.UNLABELED,
+        ADMIN_ROUTES.CUSTOM_ANALYTICS,
+        !enableEnterprise
+      );
+    }
+  }
+
+  // 2. Agents & Actions
+  add(SECTIONS.AGENTS_AND_ACTIONS, ADMIN_ROUTES.AGENTS);
+  add(SECTIONS.AGENTS_AND_ACTIONS, ADMIN_ROUTES.MCP_ACTIONS);
+  add(SECTIONS.AGENTS_AND_ACTIONS, ADMIN_ROUTES.OPENAPI_ACTIONS);
+
+  // 3. Documents & Knowledge
+  if (vectorDbEnabled) {
+    add(SECTIONS.DOCUMENTS_AND_KNOWLEDGE, ADMIN_ROUTES.INDEXING_STATUS);
+    add(SECTIONS.DOCUMENTS_AND_KNOWLEDGE, ADMIN_ROUTES.ADD_CONNECTOR);
+    add(SECTIONS.DOCUMENTS_AND_KNOWLEDGE, ADMIN_ROUTES.DOCUMENT_SETS);
+    if (!isCurator && !enableCloud) {
+      items.push({
+        ...sidebarItem(ADMIN_ROUTES.INDEX_SETTINGS),
+        section: SECTIONS.DOCUMENTS_AND_KNOWLEDGE,
+        error: settings?.settings.needs_reindexing,
+      });
+    }
+    if (!isCurator && settings?.settings.opensearch_indexing_enabled) {
+      add(SECTIONS.DOCUMENTS_AND_KNOWLEDGE, ADMIN_ROUTES.INDEX_MIGRATION);
+    }
+  }
+
+  // 4. Integrations (admin only)
+  if (!isCurator) {
+    add(SECTIONS.INTEGRATIONS, ADMIN_ROUTES.API_KEYS);
+    add(SECTIONS.INTEGRATIONS, ADMIN_ROUTES.SLACK_BOTS);
+    add(SECTIONS.INTEGRATIONS, ADMIN_ROUTES.DISCORD_BOTS);
+    if (hooksEnabled) {
+      add(SECTIONS.INTEGRATIONS, ADMIN_ROUTES.HOOKS);
+    }
+  }
+
+  // 5. Permissions
+  if (!isCurator) {
+    add(SECTIONS.PERMISSIONS, ADMIN_ROUTES.USERS);
+    addDisabled(SECTIONS.PERMISSIONS, ADMIN_ROUTES.GROUPS, !enableEnterprise);
+    addDisabled(SECTIONS.PERMISSIONS, ADMIN_ROUTES.SCIM, !enableEnterprise);
+  } else if (enableEnterprise) {
+    add(SECTIONS.PERMISSIONS, ADMIN_ROUTES.GROUPS);
+  }
+
+  // 6. Organization (admin only)
+  if (!isCurator) {
+    if (hasSubscription) {
+      add(SECTIONS.ORGANIZATION, ADMIN_ROUTES.BILLING);
+    }
+    addDisabled(
+      SECTIONS.ORGANIZATION,
+      ADMIN_ROUTES.TOKEN_RATE_LIMITS,
+      !enableEnterprise
+    );
+    addDisabled(SECTIONS.ORGANIZATION, ADMIN_ROUTES.THEME, !enableEnterprise);
+  }
+
+  // 7. Usage (admin only)
+  if (!isCurator) {
+    addDisabled(SECTIONS.USAGE, ADMIN_ROUTES.USAGE, !enableEnterprise);
+    if (settings?.settings.query_history_type !== "disabled") {
+      addDisabled(
+        SECTIONS.USAGE,
+        ADMIN_ROUTES.QUERY_HISTORY,
+        !enableEnterprise
+      );
+    }
+  }
+
+  // 9. Customize Layout (EEA only, admin only)
+  if (!isCurator && enableEnterprise) {
+    add(SECTIONS.ORGANIZATION, ADMIN_ROUTES.EEA_PAGES);
+  }
+
+  return items;
+}/** Preserve section ordering while grouping consecutive items by section. */
+function groupBySection(items: SidebarItemEntry[]) {
+  const groups: { section: string; items: SidebarItemEntry[] }[] = [];
+  for (const item of items) {
+    const last = groups[groups.length - 1];
+    if (last && last.section === item.section) {
+      last.items.push(item);
+    } else {
+      groups.push({ section: item.section, items: [item] });
+    }
+  }
+  return groups;
+}
+85
 
 interface AdminSidebarProps {
-  // These props are passed down from a server component (Layout.tsx) that
-  // determines feature availability server-side. We don't calculate these
-  // directly in this client component to avoid:
-  // 1. Unnecessary API calls on the client-side
-  // 2. Security concerns - preventing end-users from tampering with
-  //    feature flags by making direct API calls
-  // 3. Performance - avoiding refetches when the data is already available
   enableCloudSS: boolean;
-  enableEnterpriseSS: boolean;
+  folded: boolean;
+  onFoldChange: Dispatch<SetStateAction<boolean>>;
 }
 
-export default function AdminSidebar({
+interface AdminSidebarInnerProps {
+  enableCloudSS: boolean;
+  onFoldChange: Dispatch<SetStateAction<boolean>>;
+}
+
+function AdminSidebarInner({
   enableCloudSS,
-  enableEnterpriseSS,
-}: AdminSidebarProps) {
+  onFoldChange,
+}: AdminSidebarInnerProps) {
+  const folded = useSidebarFolded();
+  const searchRef = useRef<HTMLInputElement>(null);
+  const [focusSearch, setFocusSearch] = useState(false);
+
+  useEffect(() => {
+    if (focusSearch && !folded && searchRef.current) {
+      searchRef.current.focus();
+      setFocusSearch(false);
+    }
+  }, [focusSearch, folded]);
   const { kgExposed } = useIsKGExposed();
   const pathname = usePathname();
   const { customAnalyticsEnabled } = useCustomAnalyticsEnabled();
   const { user } = useUser();
   const settings = useSettingsContext();
-
+  const enableEnterprise = usePaidEnterpriseFeaturesEnabled();
+  const { data: billingData, isLoading: billingLoading } =
+    useBillingInformation();
+  const { data: licenseData, isLoading: licenseLoading } = useLicense();
   const isCurator =
     user?.role === UserRole.CURATOR || user?.role === UserRole.GLOBAL_CURATOR;
+  // Default to true while loading to avoid flashing "Upgrade Plan"
+  const hasSubscriptionOrLicense =
+    billingLoading || licenseLoading
+      ? true
+      : Boolean(
+          (billingData && hasActiveSubscription(billingData)) ||
+            licenseData?.has_license
+        );
+  const hooksEnabled =
+    enableEnterprise && (settings?.settings.hooks_enabled ?? false);
 
-  const items = collections(
+  const allItems = buildItems(
     isCurator,
     enableCloudSS,
-    enableEnterpriseSS,
+    enableEnterprise,
     settings,
     kgExposed,
-    customAnalyticsEnabled
+    customAnalyticsEnabled,
+    hasSubscriptionOrLicense,
+    hooksEnabled
   );
 
+  const itemExtractor = useCallback((item: SidebarItemEntry) => item.name, []);
+
+  const { query, setQuery, filtered } = useFilter(allItems, itemExtractor);
+
+  const enabled = filtered.filter((item) => !item.disabled);
+  const disabled = filtered.filter((item) => item.disabled);
+  const enabledGroups = groupBySection(enabled);
+  const disabledGroups = groupBySection(disabled);
+
   return (
-    <SidebarWrapper>
-      <SidebarBody
-        actionButton={
+    <>
+      <SidebarLayouts.Header>
+        {folded ? (
           <SidebarTab
-            leftIcon={({ className }) => (
-              <CgArrowsExpandUpLeft className={className} size={16} />
-            )}
-            href="/chat"
+            icon={SvgSearch}
+            folded
+            onClick={() => {
+              onFoldChange(false);
+              setFocusSearch(true);
+            }}
           >
-            Exit Admin
+            Search
           </SidebarTab>
-        }
-        footer={
-          <div className="flex flex-col gap-2">
-            {settings.webVersion && (
-              <Text text02 secondaryBody className="px-2">
-                {`Onyx version: ${settings.webVersion}`}
-              </Text>
-            )}
-            <Settings />
-          </div>
-        }
-      >
-        {items.map((collection, index) => (
-          <SidebarSection key={index} title={collection.name}>
-            <div className="flex flex-col w-full">
-              {collection.items.map(({ link, icon: Icon, name }, index) => (
-                <SidebarTab
-                  key={index}
-                  href={link}
-                  active={pathname.startsWith(link)}
-                  leftIcon={({ className }) => (
-                    <Icon className={className} size={16} />
-                  )}
-                >
-                  {name}
-                </SidebarTab>
-              ))}
-            </div>
+        ) : (
+          <InputTypeIn
+            ref={searchRef}
+            variant="internal"
+            leftSearchIcon
+            placeholder="Search..."
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        )}
+      </SidebarLayouts.Header>
+
+      <SidebarLayouts.Body scrollKey="admin-sidebar">
+        {enabledGroups.map((group, groupIndex) => {
+          const tabs = group.items.map(({ link, icon, name }) => (
+            <SidebarTab
+              key={link}
+              icon={icon}
+              href={link}
+              selected={pathname.startsWith(link)}
+            >
+              {name}
+            </SidebarTab>
+          ));
+
+          if (!group.section) {
+            return <div key={groupIndex}>{tabs}</div>;
+          }
+
+          return (
+            <SidebarSection key={groupIndex} title={group.section}>
+              {tabs}
+            </SidebarSection>
+          );
+        })}
+
+        {disabledGroups.length > 0 && <Separator noPadding className="px-2" />}
+
+        {disabledGroups.map((group, groupIndex) => (
+          <SidebarSection
+            key={`disabled-${groupIndex}`}
+            title={group.section}
+            disabled
+          >
+            {group.items.map(({ link, icon, name }) => (
+              <SidebarTab key={link} disabled icon={icon}>
+                {name}
+              </SidebarTab>
+            ))}
           </SidebarSection>
         ))}
-      </SidebarBody>
-    </SidebarWrapper>
+      </SidebarLayouts.Body>
+
+      <SidebarLayouts.Footer>
+        {!folded && (
+          <>
+            <Separator noPadding className="px-2" />
+            <Spacer rem={0.5} />
+          </>
+        )}
+        <SidebarTab
+          icon={SvgX}
+          href="/app"
+          variant="sidebar-light"
+          folded={folded}
+        >
+          Exit Admin Panel
+        </SidebarTab>
+        <AccountPopover folded={folded} />
+      </SidebarLayouts.Footer>
+    </>
+  );
+}
+
+export default function AdminSidebar({
+  enableCloudSS,
+  folded,
+  onFoldChange,
+}: AdminSidebarProps) {
+  return (
+    <SidebarLayouts.Root folded={folded} onFoldChange={onFoldChange}>
+      <AdminSidebarInner
+        enableCloudSS={enableCloudSS}
+        onFoldChange={onFoldChange}
+      />
+    </SidebarLayouts.Root>
   );
 }

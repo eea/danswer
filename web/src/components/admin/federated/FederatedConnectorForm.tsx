@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import Button from "@/refresh-components/buttons/Button";
+import { Button as OpalButton } from "@opal/components";
 import {
   ConfigurableSources,
   CredentialFieldSpec,
@@ -17,7 +18,7 @@ import { Input } from "@/components/ui/input";
 import { useRouter } from "next/navigation";
 import Text from "@/refresh-components/texts/Text";
 import { AlertTriangle, Check, Loader2, Trash2Icon, Info } from "lucide-react";
-import { BackButton } from "@/components/BackButton";
+import BackButton from "@/refresh-components/buttons/BackButton";
 import Title from "@/components/ui/title";
 import {
   DropdownMenu,
@@ -25,15 +26,15 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { DropdownMenuItemWithTooltip } from "@/components/ui/dropdown-menu-with-tooltip";
-import { usePopup } from "@/components/admin/connectors/Popup";
+import { toast } from "@/hooks/useToast";
 
 import { Badge } from "@/components/ui/badge";
-import SvgSettings from "@/icons/settings";
 import SimpleLoader from "@/refresh-components/loaders/SimpleLoader";
 import SimpleTooltip from "@/refresh-components/SimpleTooltip";
 import { ListFieldInput } from "@/refresh-components/inputs/ListFieldInput";
 import Checkbox from "@/refresh-components/inputs/Checkbox";
 import Separator from "@/refresh-components/Separator";
+import { SvgSettings } from "@opal/icons";
 
 export interface FederatedConnectorFormProps {
   connector: ConfigurableSources;
@@ -132,7 +133,7 @@ async function createFederatedConnector(
 
 async function updateFederatedConnector(
   id: number,
-  credentials: CredentialForm,
+  credentials: CredentialForm | null,
   config?: ConfigForm
 ): Promise<{ success: boolean; message: string }> {
   try {
@@ -142,7 +143,7 @@ async function updateFederatedConnector(
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        credentials,
+        credentials: credentials ?? undefined,
         config: config || {},
       }),
     });
@@ -198,10 +199,11 @@ export function FederatedConnectorForm({
   const router = useRouter();
   const sourceMetadata = getSourceMetadata(connector);
   const isEditMode = connectorId !== undefined;
-  const { popup, setPopup } = usePopup();
 
   const [formState, setFormState] = useState<FormState>({
-    credentials: preloadedConnectorData?.credentials || {},
+    // In edit mode, don't populate credentials with masked values from the API.
+    // Masked values (e.g. "••••••••••••") would be saved back and corrupt the real credentials.
+    credentials: isEditMode ? {} : preloadedConnectorData?.credentials || {},
     config: preloadedConnectorData?.config || {},
     schema: preloadedCredentialSchema?.credentials || null,
     configurationSchema: null,
@@ -209,6 +211,7 @@ export function FederatedConnectorForm({
     configurationSchemaError: null,
     connectorError: null,
   });
+  const [credentialsModified, setCredentialsModified] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitMessage, setSubmitMessage] = useState<string | null>(null);
   const [submitSuccess, setSubmitSuccess] = useState<boolean | null>(null);
@@ -217,6 +220,9 @@ export function FederatedConnectorForm({
   const [isLoadingSchema, setIsLoadingSchema] = useState(
     !preloadedCredentialSchema
   );
+  const [configValidationErrors, setConfigValidationErrors] = useState<
+    Record<string, string>
+  >({});
 
   // Fetch credential schema if not preloaded
   useEffect(() => {
@@ -314,7 +320,6 @@ export function FederatedConnectorForm({
   if (isLoadingSchema) {
     return (
       <div className="mx-auto w-[800px]">
-        {popup}
         <div className="flex flex-col items-center justify-center py-16">
           <Loader2 className="h-8 w-8 animate-spin text-blue-500 mb-4" />
           <div className="text-center">
@@ -331,6 +336,7 @@ export function FederatedConnectorForm({
   }
 
   const handleCredentialChange = (key: string, value: string) => {
+    setCredentialsModified(true);
     setFormState((prev) => ({
       ...prev,
       credentials: {
@@ -352,6 +358,11 @@ export function FederatedConnectorForm({
 
   const handleValidateCredentials = async () => {
     if (!formState.schema) return;
+    if (isEditMode && !credentialsModified) {
+      setSubmitMessage("Enter new credential values before validating.");
+      setSubmitSuccess(false);
+      return;
+    }
 
     setIsValidating(true);
     setSubmitMessage(null);
@@ -387,25 +398,16 @@ export function FederatedConnectorForm({
       const result = await deleteFederatedConnector(connectorId);
 
       if (result.success) {
-        setPopup({
-          message: result.message,
-          type: "success",
-        });
+        toast.success(result.message);
         // Redirect after a short delay
         setTimeout(() => {
           router.push("/admin/indexing/status");
         }, 500);
       } else {
-        setPopup({
-          message: result.message,
-          type: "error",
-        });
+        toast.error(result.message);
       }
     } catch (error) {
-      setPopup({
-        message: `Error deleting connector: ${error}`,
-        type: "error",
-      });
+      toast.error(`Error deleting connector: ${error}`);
     } finally {
       setIsDeleting(false);
     }
@@ -418,8 +420,10 @@ export function FederatedConnectorForm({
     setSubmitSuccess(null);
 
     try {
-      // Validate required fields
-      if (formState.schema) {
+      const shouldValidateCredentials = !isEditMode || credentialsModified;
+
+      // Validate required fields (skip for credentials in edit mode when unchanged)
+      if (formState.schema && shouldValidateCredentials) {
         const missingRequired = Object.entries(formState.schema)
           .filter(
             ([key, field]) => field.required && !formState.credentials[key]
@@ -436,16 +440,33 @@ export function FederatedConnectorForm({
         }
       }
 
-      // Validate credentials before creating/updating
-      const validation = await validateCredentials(
-        connector,
-        formState.credentials
-      );
-      if (!validation.success) {
-        setSubmitMessage(`Credential validation failed: ${validation.message}`);
+      // Validate configuration fields (Slack-specific validation)
+      const configErrors = getConfigValidationErrors();
+      if (Object.keys(configErrors).length > 0) {
+        setConfigValidationErrors(configErrors);
+        // Show the first error message
+        const firstError = Object.values(configErrors)[0] as string;
+        setSubmitMessage(firstError);
         setSubmitSuccess(false);
         setIsSubmitting(false);
         return;
+      }
+      setConfigValidationErrors({});
+
+      // Validate credentials before creating/updating (skip in edit mode when unchanged)
+      if (shouldValidateCredentials) {
+        const validation = await validateCredentials(
+          connector,
+          formState.credentials
+        );
+        if (!validation.success) {
+          setSubmitMessage(
+            `Credential validation failed: ${validation.message}`
+          );
+          setSubmitSuccess(false);
+          setIsSubmitting(false);
+          return;
+        }
       }
 
       // Create or update the connector
@@ -453,7 +474,7 @@ export function FederatedConnectorForm({
         isEditMode && connectorId
           ? await updateFederatedConnector(
               connectorId,
-              formState.credentials,
+              credentialsModified ? formState.credentials : null,
               formState.config
             )
           : await createFederatedConnector(
@@ -514,7 +535,7 @@ export function FederatedConnectorForm({
             className="flex items-center justify-between gap-4 py-2"
           >
             <div className="flex-1">
-              <Text mainUiAction text04 className="mb-1">
+              <Text as="p" mainUiAction text04 className="mb-1">
                 {fieldKey
                   .replace(/_/g, " ")
                   .replace(/\b\w/g, (l) => l.toUpperCase())}
@@ -523,7 +544,7 @@ export function FederatedConnectorForm({
                 )}
               </Text>
               {fieldSpec.description && (
-                <Text mainUiMuted text03>
+                <Text as="p" mainUiMuted text03>
                   {fieldSpec.description}
                 </Text>
               )}
@@ -532,14 +553,16 @@ export function FederatedConnectorForm({
               id={fieldKey}
               type={fieldSpec.secret ? "password" : "text"}
               placeholder={
-                fieldSpec.example
-                  ? String(fieldSpec.example)
-                  : fieldSpec.description
+                isEditMode && !credentialsModified
+                  ? "••••••••  (leave blank to keep current value)"
+                  : fieldSpec.example
+                    ? String(fieldSpec.example)
+                    : fieldSpec.description
               }
               value={formState.credentials[fieldKey] || ""}
               onChange={(e) => handleCredentialChange(fieldKey, e.target.value)}
               className="w-96"
-              required={fieldSpec.required}
+              required={!isEditMode && fieldSpec.required}
             />
           </div>
         ))}
@@ -554,6 +577,35 @@ export function FederatedConnectorForm({
     }
     // Disable channels field when search_all_channels is true
     return formState.config.search_all_channels === true;
+  };
+
+  // Helper to determine if channels field is required for Slack
+  const isSlackChannelsRequired = (): boolean => {
+    if (connector !== "slack") {
+      return false;
+    }
+    // Channels are required when search_all_channels is false
+    return formState.config.search_all_channels === false;
+  };
+
+  // Get validation errors for configuration fields (Slack-specific)
+  const getConfigValidationErrors = (): Record<string, string> => {
+    const errors: Record<string, string> = {};
+
+    if (connector === "slack") {
+      // Check if channels are required but not provided
+      if (
+        formState.config.search_all_channels === false &&
+        (!formState.config.channels ||
+          !Array.isArray(formState.config.channels) ||
+          formState.config.channels.length === 0)
+      ) {
+        errors.channels =
+          "At least one channel is required when 'Search All Channels' is disabled";
+      }
+    }
+
+    return errors;
   };
 
   const renderConfigFields = () => {
@@ -573,6 +625,9 @@ export function FederatedConnectorForm({
         </div>
       );
     }
+
+    const channelInputPlaceholder =
+      "Type channel name or regex pattern and press Enter";
 
     return (
       <>
@@ -596,13 +651,13 @@ export function FederatedConnectorForm({
                       }
                     />
                     <div className="flex-1">
-                      <Text mainUiAction text04>
+                      <Text as="p" mainUiAction text04>
                         {fieldKey
                           .replace(/_/g, " ")
                           .replace(/\b\w/g, (l) => l.toUpperCase())}
                       </Text>
                       {fieldSpec.description && (
-                        <Text mainUiMuted text03>
+                        <Text as="p" mainUiMuted text03>
                           {fieldSpec.description}
                         </Text>
                       )}
@@ -612,37 +667,55 @@ export function FederatedConnectorForm({
                   <>
                     {isListType ? (
                       <>
-                        <Text mainUiAction text04>
+                        <Text as="p" mainUiAction text04>
                           {fieldSpec.description ||
                             fieldKey
                               .replace(/_/g, " ")
                               .replace(/\b\w/g, (l) => l.toUpperCase())}
-                          {fieldSpec.required && (
+                          {(fieldSpec.required ||
+                            (fieldKey === "channels" &&
+                              isSlackChannelsRequired())) && (
                             <span className="text-red-500 ml-1">*</span>
                           )}
                         </Text>
                         <ListFieldInput
                           values={
                             Array.isArray(formState.config[fieldKey])
-                              ? formState.config[fieldKey]
+                              ? (formState.config[fieldKey] as string[])
                               : []
                           }
-                          onChange={(values) =>
-                            handleConfigChange(fieldKey, values)
-                          }
+                          onChange={(values) => {
+                            handleConfigChange(fieldKey, values);
+                            // Clear validation error when user adds channels
+                            if (
+                              fieldKey === "channels" &&
+                              configValidationErrors.channels
+                            ) {
+                              setConfigValidationErrors((prev) => {
+                                const { channels, ...rest } = prev;
+                                return rest;
+                              });
+                            }
+                          }}
                           placeholder={
-                            fieldSpec.example &&
-                            Array.isArray(fieldSpec.example)
-                              ? `e.g., ${fieldSpec.example.join(", ")}`
+                            fieldKey === "channels" ||
+                            fieldKey === "exclude_channels"
+                              ? channelInputPlaceholder
                               : "Type and press Enter to add an item"
                           }
                           disabled={disableSlackChannelInput(fieldKey)}
+                          error={!!configValidationErrors[fieldKey]}
                         />
+                        {configValidationErrors[fieldKey] && (
+                          <Text as="p" className="text-red-500 text-sm mt-1">
+                            {configValidationErrors[fieldKey]}
+                          </Text>
+                        )}
                       </>
                     ) : (
                       <div className="flex items-center justify-between gap-4 py-2">
                         <div className="flex-1">
-                          <Text mainUiAction text04 className="mb-1">
+                          <Text as="p" mainUiAction text04 className="mb-1">
                             {fieldKey
                               .replace(/_/g, " ")
                               .replace(/\b\w/g, (l) => l.toUpperCase())}
@@ -651,7 +724,7 @@ export function FederatedConnectorForm({
                             )}
                           </Text>
                           {fieldSpec.description && (
-                            <Text mainUiMuted text03>
+                            <Text as="p" mainUiMuted text03>
                               {fieldSpec.description}
                             </Text>
                           )}
@@ -692,8 +765,7 @@ export function FederatedConnectorForm({
   };
 
   return (
-    <div className="mx-auto w-[800px]">
-      {popup}
+    <div className="mx-auto w-[800px] pb-8">
       <BackButton routerOverride="/admin/indexing/status" />
 
       <div className="flex items-center justify-between h-16 pb-2 border-b border-neutral-200 dark:border-neutral-600">
@@ -726,9 +798,9 @@ export function FederatedConnectorForm({
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <div>
-                  <Button secondary leftIcon={SvgSettings}>
+                  <OpalButton prominence="secondary" icon={SvgSettings}>
                     Manage
-                  </Button>
+                  </OpalButton>
                 </div>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
@@ -754,11 +826,17 @@ export function FederatedConnectorForm({
       <Card className="px-8 py-4">
         <CardContent className="p-0">
           <form onSubmit={handleSubmit}>
-            <Text headingH3>Credentials</Text>
-            <Text mainUiMuted>Enter the credentials for this connector.</Text>
+            <Text as="p" headingH3>
+              Credentials
+            </Text>
+            <Text as="p" mainUiMuted>
+              Enter the credentials for this connector.
+            </Text>
             <div className="space-y-4">{renderCredentialFields()}</div>
             <Separator />
-            <Text headingH3>Configuration</Text>
+            <Text as="p" headingH3>
+              Configuration
+            </Text>
             <div className="space-y-4">{renderConfigFields()}</div>
 
             <div className="flex gap-2 pt-4 w-full justify-end">
@@ -779,6 +857,7 @@ export function FederatedConnectorForm({
                 </div>
               )}
 
+              {/* TODO(@raunakab): migrate to opal Button once className/iconClassName is resolved */}
               <Button
                 type="button"
                 secondary
@@ -788,6 +867,7 @@ export function FederatedConnectorForm({
               >
                 {isValidating ? "Validating..." : "Validate"}
               </Button>
+              {/* TODO(@raunakab): migrate to opal Button once className/iconClassName is resolved */}
               <Button
                 type="submit"
                 disabled={isSubmitting || !formState.schema}

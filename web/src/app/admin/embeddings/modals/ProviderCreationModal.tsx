@@ -1,28 +1,20 @@
 import React, { useRef, useState } from "react";
-import Text from "@/components/ui/text";
+import Text from "@/refresh-components/texts/Text";
 import { Callout } from "@/components/ui/callout";
-import Button from "@/refresh-components/buttons/Button";
+import { Button } from "@opal/components";
 import { Formik, Form } from "formik";
 import * as Yup from "yup";
 import { Label, TextFormField } from "@/components/Field";
-import { LoadingAnimation } from "@/components/Loading";
 import {
   CloudEmbeddingProvider,
   EmbeddingProvider,
   getFormattedProviderName,
-} from "../../../../components/embedding/interfaces";
-import { EMBEDDING_PROVIDERS_ADMIN_URL } from "../../configuration/llm/constants";
-import { Modal } from "@/components/Modal";
-
-export function ProviderCreationModal({
-  selectedProvider,
-  onConfirm,
-  onCancel,
-  existingProvider,
-  isProxy,
-  isAzure,
-  updateCurrentModel,
-}: {
+} from "@/components/embedding/interfaces";
+import { EMBEDDING_PROVIDERS_ADMIN_URL } from "@/lib/llmConfig/constants";
+import Modal from "@/refresh-components/Modal";
+import { SvgSettings } from "@opal/icons";
+import SimpleLoader from "@/refresh-components/loaders/SimpleLoader";
+export interface ProviderCreationModalProps {
   updateCurrentModel: (
     newModel: string,
     provider_type: EmbeddingProvider
@@ -33,11 +25,20 @@ export function ProviderCreationModal({
   existingProvider?: CloudEmbeddingProvider;
   isProxy?: boolean;
   isAzure?: boolean;
-}) {
+}
+
+export default function ProviderCreationModal({
+  selectedProvider,
+  onConfirm,
+  onCancel,
+  existingProvider,
+  isProxy,
+  isAzure,
+  updateCurrentModel,
+}: ProviderCreationModalProps) {
   const useFileUpload =
     selectedProvider.provider_type == EmbeddingProvider.GOOGLE;
 
-  const [isProcessing, setIsProcessing] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string>("");
   const [fileName, setFileName] = useState<string>("");
 
@@ -108,7 +109,6 @@ export function ProviderCreationModal({
     values: any,
     { setSubmitting }: { setSubmitting: (isSubmitting: boolean) => void }
   ) => {
-    setIsProcessing(true);
     setErrorMsg("");
     try {
       const customConfig = Object.fromEntries(values.custom_config);
@@ -139,7 +139,6 @@ export function ProviderCreationModal({
       if (!initialResponse.ok) {
         const errorMsg = (await initialResponse.json()).detail;
         setErrorMsg(errorMsg);
-        setIsProcessing(false);
         setSubmitting(false);
         return;
       }
@@ -177,138 +176,143 @@ export function ProviderCreationModal({
         setErrorMsg("An unknown error occurred");
       }
     } finally {
-      setIsProcessing(false);
       setSubmitting(false);
     }
   };
 
   return (
-    <Modal
-      title={`Configure ${getFormattedProviderName(
-        selectedProvider.provider_type
-      )}`}
-      onOutsideClick={onCancel}
-      icon={selectedProvider.icon}
-    >
-      <div>
-        <Formik
-          initialValues={initialValues}
-          validationSchema={validationSchema}
-          onSubmit={handleSubmit}
-        >
-          {({ isSubmitting, handleSubmit, setFieldValue }) => (
-            <Form onSubmit={handleSubmit} className="space-y-4">
-              <Text className="text-lg mb-2">
-                You are setting the credentials for this provider. To access
-                this information, follow the instructions{" "}
-                <a
-                  className="cursor-pointer underline"
-                  target="_blank"
-                  href={selectedProvider.docsLink}
-                  rel="noreferrer"
-                >
-                  here
-                </a>{" "}
-                and gather your{" "}
-                <a
-                  className="cursor-pointer underline"
-                  target="_blank"
-                  href={selectedProvider.apiLink}
-                  rel="noreferrer"
-                >
-                  {isProxy || isAzure ? "API URL" : "API KEY"}
-                </a>
-              </Text>
+    <Modal open onOpenChange={onCancel}>
+      <Modal.Content width="sm" height="sm">
+        <Modal.Header
+          icon={SvgSettings}
+          title={`Configure ${getFormattedProviderName(
+            selectedProvider.provider_type
+          )}`}
+          onClose={onCancel}
+        />
+        <Modal.Body>
+          <Formik
+            initialValues={initialValues}
+            validationSchema={validationSchema}
+            onSubmit={handleSubmit}
+          >
+            {({ isSubmitting, handleSubmit, setFieldValue }) => (
+              <Form onSubmit={handleSubmit} className="space-y-4">
+                <Text as="p">
+                  You are setting the credentials for this provider. To access
+                  this information, follow the instructions{" "}
+                  <a
+                    className="cursor-pointer underline"
+                    target="_blank"
+                    href={selectedProvider.docsLink}
+                    rel="noreferrer"
+                  >
+                    here
+                  </a>{" "}
+                  and gather your{" "}
+                  <a
+                    className="cursor-pointer underline"
+                    target="_blank"
+                    href={selectedProvider.apiLink}
+                    rel="noreferrer"
+                  >
+                    {isProxy || isAzure ? "API URL" : "API KEY"}
+                  </a>
+                </Text>
 
-              <div className="flex w-full flex-col gap-y-6">
-                {(isProxy || isAzure) && (
-                  <TextFormField
-                    name="api_url"
-                    label="API URL"
-                    placeholder="API URL"
-                    type="text"
-                  />
-                )}
-
-                {isProxy && (
-                  <TextFormField
-                    name="model_name"
-                    label={`Model Name ${isProxy ? "(for testing)" : ""}`}
-                    placeholder="Model Name"
-                    type="text"
-                  />
-                )}
-
-                {isAzure && (
-                  <TextFormField
-                    name="deployment_name"
-                    label="Deployment Name"
-                    placeholder="Deployment Name"
-                    type="text"
-                  />
-                )}
-
-                {isAzure && (
-                  <TextFormField
-                    name="api_version"
-                    label="API Version"
-                    placeholder="API Version"
-                    type="text"
-                  />
-                )}
-
-                {useFileUpload ? (
-                  <>
-                    <Label>Upload JSON File</Label>
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      accept=".json"
-                      onChange={(e) => handleFileUpload(e, setFieldValue)}
-                      className="text-lg w-full p-1"
+                <div className="flex w-full flex-col gap-y-6">
+                  {(isProxy || isAzure) && (
+                    <TextFormField
+                      name="api_url"
+                      label="API URL"
+                      placeholder="API URL"
+                      type="text"
                     />
-                    {fileName && <p>Uploaded file: {fileName}</p>}
-                  </>
-                ) : (
-                  <TextFormField
-                    name="api_key"
-                    label={`API Key ${
-                      isProxy ? "(for non-local deployments)" : ""
-                    }`}
-                    placeholder="API Key"
-                    type="password"
-                  />
+                  )}
+
+                  {isProxy && (
+                    <TextFormField
+                      name="model_name"
+                      label={`Model Name ${isProxy ? "(for testing)" : ""}`}
+                      placeholder="Model Name"
+                      type="text"
+                    />
+                  )}
+
+                  {isAzure && (
+                    <TextFormField
+                      name="deployment_name"
+                      label="Deployment Name"
+                      placeholder="Deployment Name"
+                      type="text"
+                    />
+                  )}
+
+                  {isAzure && (
+                    <TextFormField
+                      name="api_version"
+                      label="API Version"
+                      placeholder="API Version"
+                      type="text"
+                    />
+                  )}
+
+                  {useFileUpload ? (
+                    <>
+                      <Label>Upload JSON File</Label>
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept=".json"
+                        onChange={(e) => handleFileUpload(e, setFieldValue)}
+                        className="text-lg w-full p-1"
+                      />
+                      {fileName && <p>Uploaded file: {fileName}</p>}
+                    </>
+                  ) : (
+                    <TextFormField
+                      name="api_key"
+                      label={`API Key ${
+                        isProxy ? "(for non-local deployments)" : ""
+                      }`}
+                      placeholder="API Key"
+                      type="password"
+                    />
+                  )}
+
+                  <a
+                    href={selectedProvider.apiLink}
+                    target="_blank"
+                    className="underline cursor-pointer"
+                    rel="noreferrer"
+                  >
+                    Learn more here
+                  </a>
+                </div>
+
+                {errorMsg && (
+                  <Callout title="Error" type="danger">
+                    {errorMsg}
+                  </Callout>
                 )}
 
-                <a
-                  href={selectedProvider.apiLink}
-                  target="_blank"
-                  className="underline cursor-pointer"
-                  rel="noreferrer"
+                <Button
+                  disabled={isSubmitting}
+                  type="submit"
+                  width="full"
+                  icon={isSubmitting ? SimpleLoader : undefined}
                 >
-                  Learn more here
-                </a>
-              </div>
-
-              {errorMsg && (
-                <Callout title="Error" type="danger">
-                  {errorMsg}
-                </Callout>
-              )}
-
-              <Button type="submit" className="w-full" disabled={isSubmitting}>
-                {isProcessing ? (
-                  <LoadingAnimation />
-                ) : existingProvider ? (
-                  "Update"
-                ) : (
-                  "Create"
-                )}
-              </Button>
-            </Form>
-          )}
-        </Formik>
-      </div>
+                  {isSubmitting
+                    ? "Submitting"
+                    : existingProvider
+                      ? "Update"
+                      : "Create"}
+                </Button>
+              </Form>
+            )}
+          </Formik>
+        </Modal.Body>
+      </Modal.Content>
     </Modal>
   );
 }

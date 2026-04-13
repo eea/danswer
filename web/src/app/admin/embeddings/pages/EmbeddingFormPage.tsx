@@ -1,11 +1,12 @@
 "use client";
 
-import { usePopup } from "@/components/admin/connectors/Popup";
-import { HealthCheckBanner } from "@/components/health/healthcheck";
-import { EmbeddingModelSelection } from "../EmbeddingModelSelectionForm";
+import { toast } from "@/hooks/useToast";
+
+import EmbeddingModelSelection from "../EmbeddingModelSelectionForm";
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
-import Text from "@/components/ui/text";
+import Text from "@/refresh-components/texts/Text";
 import Button from "@/refresh-components/buttons/Button";
+import { Button as OpalButton } from "@opal/components";
 import { WarningCircle, Warning, CaretDownIcon } from "@phosphor-icons/react";
 import {
   CloudEmbeddingModel,
@@ -15,6 +16,7 @@ import {
 import { errorHandlingFetcher } from "@/lib/fetcher";
 import { ErrorCallout } from "@/components/ErrorCallout";
 import useSWR from "swr";
+import { SWR_KEYS } from "@/lib/swr-keys";
 import { ThreeDotsLoader } from "@/components/Loading";
 import AdvancedEmbeddingFormPage from "./AdvancedEmbeddingFormPage";
 import {
@@ -26,9 +28,8 @@ import {
 } from "../interfaces";
 import RerankingDetailsForm from "../RerankingFormPage";
 import { useEmbeddingFormContext } from "@/components/context/EmbeddingContext";
-import { Modal } from "@/components/Modal";
-import { InstantSwitchConfirmModal } from "../modals/InstantSwitchConfirmModal";
-
+import Modal from "@/refresh-components/Modal";
+import InstantSwitchConfirmModal from "../modals/InstantSwitchConfirmModal";
 import { useRouter } from "next/navigation";
 import CardSection from "@/components/admin/CardSection";
 import { combineSearchSettings } from "./utils";
@@ -39,12 +40,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import SimpleTooltip from "@/refresh-components/SimpleTooltip";
-import SvgArrowLeft from "@/icons/arrow-left";
-import SvgArrowRight from "@/icons/arrow-right";
-
+import { SvgAlertTriangle, SvgArrowLeft, SvgArrowRight } from "@opal/icons";
 export default function EmbeddingForm() {
   const { formStep, nextFormStep, prevFormStep } = useEmbeddingFormContext();
-  const { popup, setPopup } = usePopup();
   const router = useRouter();
 
   const [advancedEmbeddingDetails, setAdvancedEmbeddingDetails] =
@@ -121,7 +119,7 @@ export default function EmbeddingForm() {
     isLoading: isLoadingCurrentModel,
     error: currentEmbeddingModelError,
   } = useSWR<CloudEmbeddingModel | HostedEmbeddingModel | null>(
-    "/api/search-settings/get-current-search-settings",
+    SWR_KEYS.currentSearchSettings,
     errorHandlingFetcher,
     { refreshInterval: 5000 } // 5 seconds
   );
@@ -132,7 +130,7 @@ export default function EmbeddingForm() {
 
   const { data: searchSettings, isLoading: isLoadingSearchSettings } =
     useSWR<SavedSearchSettings | null>(
-      "/api/search-settings/get-current-search-settings",
+      SWR_KEYS.currentSearchSettings,
       errorHandlingFetcher,
       { refreshInterval: 5000 } // 5 seconds
     );
@@ -210,10 +208,7 @@ export default function EmbeddingForm() {
     if (response.ok) {
       return true;
     } else {
-      setPopup({
-        message: "Failed to update search settings",
-        type: "error",
-      });
+      toast.error("Failed to update search settings");
       return false;
     }
   }, [
@@ -221,7 +216,6 @@ export default function EmbeddingForm() {
     advancedEmbeddingDetails,
     rerankingDetails,
     switchoverType,
-    setPopup,
   ]);
 
   const handleValidationChange = useCallback(
@@ -255,6 +249,7 @@ export default function EmbeddingForm() {
       return needsReIndex ? (
         <div className="flex mx-auto gap-x-1 ml-auto items-center">
           <div className="flex items-center h-fit">
+            {/* TODO(@raunakab): migrate to opal Button once className/iconClassName is resolved */}
             <Button
               onClick={() => {
                 if (switchoverType == SwitchoverType.INSTANT) {
@@ -276,6 +271,7 @@ export default function EmbeddingForm() {
             </Button>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
+                {/* TODO(@raunakab): migrate to opal Button once className/iconClassName is resolved */}
                 <Button
                   disabled={!isOverallFormValid}
                   action
@@ -381,15 +377,15 @@ export default function EmbeddingForm() {
         </div>
       ) : (
         <div className="flex mx-auto gap-x-1 ml-auto items-center">
-          <Button
+          <OpalButton
+            disabled={!isOverallFormValid}
             onClick={() => {
               updateSearch();
               navigateToEmbeddingPage("search settings");
             }}
-            disabled={!isOverallFormValid}
           >
             Update Search
-          </Button>
+          </OpalButton>
           {!isOverallFormValid &&
             Object.keys(combinedFormErrors).length > 0 && (
               <div className="relative group">
@@ -481,7 +477,7 @@ export default function EmbeddingForm() {
     if (response.ok) {
       navigateToEmbeddingPage("embedding model");
     } else {
-      setPopup({ message: "Failed to update embedding model", type: "error" });
+      toast.error("Failed to update embedding model");
 
       alert(`Failed to update embedding model - ${await response.text()}`);
     }
@@ -489,18 +485,13 @@ export default function EmbeddingForm() {
 
   return (
     <div className="mx-auto mb-8 w-full">
-      {popup}
-
-      <div className="mb-4">
-        <HealthCheckBanner />
-      </div>
       <div className="mx-auto max-w-4xl">
         {formStep == 0 && (
           <>
             <h2 className="text-2xl font-bold mb-4 text-text-800">
               Select an Embedding Model
             </h2>
-            <Text className="mb-4">
+            <Text as="p" className="mb-4">
               Note that updating the backing model will require a complete
               re-indexing of all documents across every connected source. This
               is taken care of in the background so that the system can continue
@@ -520,7 +511,8 @@ export default function EmbeddingForm() {
               />
             </CardSection>
             <div className="mt-4 flex w-full justify-end">
-              <Button
+              <OpalButton
+                variant="action"
                 onClick={() => {
                   if (
                     selectedProvider.model_name.includes("e5") &&
@@ -529,45 +521,64 @@ export default function EmbeddingForm() {
                     setDisplayPoorModelName(false);
                     setShowPoorModel(true);
                   } else {
+                    // Skip reranking step (step 1), go directly to advanced settings (step 2)
+                    nextFormStep();
                     nextFormStep();
                   }
                 }}
                 rightIcon={SvgArrowRight}
-                action
               >
                 Continue
-              </Button>
+              </OpalButton>
             </div>
           </>
         )}
         {showPoorModel && (
-          <Modal
-            onOutsideClick={() => setShowPoorModel(false)}
-            width="max-w-3xl"
-            title={`Are you sure you want to select ${selectedProvider.model_name}?`}
-          >
-            <>
-              <div className="text-lg">
-                {selectedProvider.model_name} is a lower accuracy model.
-                <br />
-                We recommend the following alternatives.
-                <li>Cohere embed-english-v3.0 for cloud-based</li>
-                <li>Nomic nomic-embed-text-v1 for self-hosted</li>
-              </div>
-              <div className="flex mt-4 justify-between">
-                <Button secondary onClick={() => setShowPoorModel(false)}>
+          <Modal open onOpenChange={() => setShowPoorModel(false)}>
+            <Modal.Content>
+              <Modal.Header
+                icon={SvgAlertTriangle}
+                title={`Are you sure you want to select ${selectedProvider.model_name}?`}
+                onClose={() => setShowPoorModel(false)}
+              />
+              <Modal.Body>
+                <div className="text-lg">
+                  <Text as="p">
+                    {`${selectedProvider.model_name} is a lower accuracy model. We recommend the following alternatives:`}
+                  </Text>
+                  <ul className="list-disc list-inside mt-2 ml-4">
+                    <li>
+                      <Text as="p">
+                        Cohere embed-english-v3.0 for cloud-based
+                      </Text>
+                    </li>
+                    <li>
+                      <Text as="p">
+                        Nomic nomic-embed-text-v1 for self-hosted
+                      </Text>
+                    </li>
+                  </ul>
+                </div>
+              </Modal.Body>
+              <Modal.Footer>
+                <OpalButton
+                  prominence="secondary"
+                  onClick={() => setShowPoorModel(false)}
+                >
                   Cancel update
-                </Button>
-                <Button
+                </OpalButton>
+                <OpalButton
                   onClick={() => {
                     setShowPoorModel(false);
+                    // Skip reranking step (step 1), go directly to advanced settings (step 2)
+                    nextFormStep();
                     nextFormStep();
                   }}
                 >
-                  Continue with {selectedProvider.model_name}
-                </Button>
-              </div>
-            </>
+                  {`Continue with ${selectedProvider.model_name}`}
+                </OpalButton>
+              </Modal.Footer>
+            </Modal.Content>
           </Modal>
         )}
 
@@ -587,7 +598,7 @@ export default function EmbeddingForm() {
             <h2 className="text-2xl font-bold mb-4 text-text-800">
               Select a Reranking Model
             </h2>
-            <Text className="mb-4">
+            <Text as="p" className="mb-4">
               Updating the reranking model does not require re-indexing
               documents. The reranker helps improve search quality by reordering
               results after the initial embedding search. Changes will take
@@ -611,26 +622,26 @@ export default function EmbeddingForm() {
             </CardSection>
 
             <div className={`mt-4 w-full grid grid-cols-3`}>
-              <Button
-                leftIcon={SvgArrowLeft}
+              <OpalButton
+                prominence="secondary"
+                icon={SvgArrowLeft}
                 onClick={() => prevFormStep()}
-                secondary
               >
                 Previous
-              </Button>
+              </OpalButton>
 
               <ReIndexingButton needsReIndex={needsReIndex} />
 
               <div className="flex w-full justify-end">
-                <Button
+                <OpalButton
+                  prominence="secondary"
                   onClick={() => {
                     nextFormStep();
                   }}
                   rightIcon={SvgArrowRight}
-                  secondary
                 >
                   Advanced
-                </Button>
+                </OpalButton>
               </div>
             </div>
           </>
@@ -640,7 +651,7 @@ export default function EmbeddingForm() {
             <h2 className="text-2xl font-bold mb-4 text-text-800">
               Advanced Search Configuration
             </h2>
-            <Text className="mb-4">
+            <Text as="p" className="mb-4">
               Configure advanced embedding and search settings. Changes will
               require re-indexing documents.
             </Text>
@@ -656,13 +667,17 @@ export default function EmbeddingForm() {
             </CardSection>
 
             <div className={`mt-4 grid  grid-cols-3 w-full `}>
-              <Button
-                onClick={() => prevFormStep()}
-                leftIcon={SvgArrowLeft}
-                secondary
+              <OpalButton
+                prominence="secondary"
+                onClick={() => {
+                  // Skip reranking step (step 1), go back to embedding model (step 0)
+                  prevFormStep();
+                  prevFormStep();
+                }}
+                icon={SvgArrowLeft}
               >
                 Previous
-              </Button>
+              </OpalButton>
 
               <ReIndexingButton needsReIndex={needsReIndex} />
             </div>

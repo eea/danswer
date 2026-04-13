@@ -4,7 +4,7 @@ from urllib.parse import parse_qs
 from urllib.parse import ParseResult
 from urllib.parse import urlparse
 
-from google.oauth2.credentials import Credentials as OAuthCredentials  # type: ignore
+from google.oauth2.credentials import Credentials as OAuthCredentials
 from google_auth_oauthlib.flow import InstalledAppFlow  # type: ignore
 from sqlalchemy.orm import Session
 
@@ -44,6 +44,7 @@ from onyx.connectors.google_utils.shared_constants import (
 from onyx.db.credentials import update_credential_json
 from onyx.db.models import User
 from onyx.key_value_store.factory import get_kv_store
+from onyx.key_value_store.interface import unwrap_str
 from onyx.server.documents.models import CredentialBase
 from onyx.server.documents.models import GoogleAppCredentials
 from onyx.server.documents.models import GoogleServiceAccountKey
@@ -89,7 +90,7 @@ def _get_current_oauth_user(creds: OAuthCredentials, source: DocumentSource) -> 
 
 
 def verify_csrf(credential_id: int, state: str) -> None:
-    csrf = get_kv_store().load(KV_CRED_KEY.format(str(credential_id)))
+    csrf = unwrap_str(get_kv_store().load(KV_CRED_KEY.format(str(credential_id))))
     if csrf != state:
         raise PermissionError(
             "State from Google Drive Connector callback does not match expected"
@@ -178,8 +179,10 @@ def get_auth_url(credential_id: int, source: DocumentSource) -> str:
     params = parse_qs(parsed_url.query)
 
     get_kv_store().store(
-        KV_CRED_KEY.format(credential_id), params.get("state", [None])[0], encrypt=True
-    )  # type: ignore
+        KV_CRED_KEY.format(credential_id),
+        {"value": params.get("state", [None])[0]},
+        encrypt=True,
+    )
     return str(auth_url)
 
 

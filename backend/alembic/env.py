@@ -1,4 +1,4 @@
-from typing import Any, Literal
+from typing import Any
 from onyx.db.engine.iam_auth import get_iam_auth_token
 from onyx.configs.app_configs import USE_IAM_AUTH
 from onyx.configs.app_configs import POSTGRES_HOST
@@ -19,7 +19,6 @@ from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy.ext.asyncio import create_async_engine
-from sqlalchemy.sql.schema import SchemaItem
 from onyx.configs.constants import SSL_CERT_FILE
 from shared_configs.configs import (
     MULTI_TENANT,
@@ -39,11 +38,11 @@ config = context.config
 if config.config_file_name is not None and config.attributes.get(
     "configure_logger", True
 ):
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False prevents breaking pytest's caplog fixture
+    # See: https://pytest-alembic.readthedocs.io/en/latest/setup.html#caplog-issues
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = [Base.metadata, ResultModelBase.metadata]
-
-EXCLUDE_TABLES = {"kombu_queue", "kombu_message"}
 
 logger = logging.getLogger(__name__)
 
@@ -52,25 +51,6 @@ if USE_IAM_AUTH:
     if not os.path.exists(SSL_CERT_FILE):
         raise FileNotFoundError(f"Expected {SSL_CERT_FILE} when USE_IAM_AUTH is true.")
     ssl_context = ssl.create_default_context(cafile=SSL_CERT_FILE)
-
-
-def include_object(
-    object: SchemaItem,
-    name: str | None,
-    type_: Literal[
-        "schema",
-        "table",
-        "column",
-        "index",
-        "unique_constraint",
-        "foreign_key_constraint",
-    ],
-    reflected: bool,
-    compare_to: SchemaItem | None,
-) -> bool:
-    if type_ == "table" and name in EXCLUDE_TABLES:
-        return False
-    return True
 
 
 def filter_tenants_by_range(
@@ -223,14 +203,12 @@ def do_run_migrations(
 ) -> None:
     if create_schema:
         connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema_name}"'))
-        connection.execute(text("COMMIT"))
 
     connection.execute(text(f'SET search_path TO "{schema_name}"'))
 
     context.configure(
         connection=connection,
         target_metadata=target_metadata,  # type: ignore
-        include_object=include_object,
         version_table_schema=schema_name,
         include_schemas=True,
         compare_type=True,
@@ -243,7 +221,10 @@ def do_run_migrations(
 
 
 def provide_iam_token_for_alembic(
-    dialect: Any, conn_rec: Any, cargs: Any, cparams: Any
+    dialect: Any,  # noqa: ARG001
+    conn_rec: Any,  # noqa: ARG001
+    cargs: Any,  # noqa: ARG001
+    cparams: Any,
 ) -> None:
     if USE_IAM_AUTH:
         # Database connection settings
@@ -307,6 +288,7 @@ async def run_async_migrations() -> None:
                         schema_name=schema,
                         create_schema=create_schema,
                     )
+                    await connection.commit()
             except Exception as e:
                 logger.error(f"Error migrating schema {schema}: {e}")
                 if not continue_on_error:
@@ -344,6 +326,7 @@ async def run_async_migrations() -> None:
                         schema_name=schema,
                         create_schema=create_schema,
                     )
+                    await connection.commit()
             except Exception as e:
                 logger.error(f"Error migrating schema {schema}: {e}")
                 if not continue_on_error:
@@ -357,8 +340,7 @@ async def run_async_migrations() -> None:
         # upgrade_all_tenants=true or schemas in multi-tenant mode
         # and for non-multi-tenant mode, we should use schemas with the default schema
         raise ValueError(
-            "No migration target specified. Use either upgrade_all_tenants=true for all tenants "
-            "or schemas for specific schemas."
+            "No migration target specified. Use either upgrade_all_tenants=true for all tenants or schemas for specific schemas."
         )
 
     await engine.dispose()
@@ -400,7 +382,6 @@ def run_migrations_offline() -> None:
                 url=url,
                 target_metadata=target_metadata,  # type: ignore
                 literal_binds=True,
-                include_object=include_object,
                 version_table_schema=schema,
                 include_schemas=True,
                 script_location=config.get_main_option("script_location"),
@@ -442,7 +423,6 @@ def run_migrations_offline() -> None:
                 url=url,
                 target_metadata=target_metadata,  # type: ignore
                 literal_binds=True,
-                include_object=include_object,
                 version_table_schema=schema,
                 include_schemas=True,
                 script_location=config.get_main_option("script_location"),
@@ -454,14 +434,53 @@ def run_migrations_offline() -> None:
     else:
         # This should not happen in the new design
         raise ValueError(
-            "No migration target specified. Use either upgrade_all_tenants=true for all tenants "
-            "or schemas for specific schemas."
+            "No migration target specified. Use either upgrade_all_tenants=true for all tenants or schemas for specific schemas."
         )
 
 
 def run_migrations_online() -> None:
-    logger.info("run_migrations_online starting.")
-    asyncio.run(run_async_migrations())
+    """Run migrations in 'online' mode.
+
+    Supports pytest-alembic by checking for a pre-configured connection
+    in context.config.attributes["connection"]. If present, uses that
+    connection/engine directly instead of creating a new async engine.
+    """
+    # Check if pytest-alembic is providing a connection/engine
+    connectable = context.config.attributes.get("connection", None)
+
+    if connectable is not None:
+        # pytest-alembic is providing an engine - use it directly
+        logger.debug("run_migrations_online starting (pytest-alembic mode).")
+
+        # For pytest-alembic, we use the default schema (public)
+        schema_name = context.config.attributes.get(
+            "schema_name", POSTGRES_DEFAULT_SCHEMA
+        )
+
+        # pytest-alembic passes an Engine, we need to get a connection from it
+        with connectable.connect() as connection:
+            # Set search path for the schema
+            connection.execute(text(f'SET search_path TO "{schema_name}"'))
+
+            context.configure(
+                connection=connection,
+                target_metadata=target_metadata,  # type: ignore
+                version_table_schema=schema_name,
+                include_schemas=True,
+                compare_type=True,
+                compare_server_default=True,
+                script_location=config.get_main_option("script_location"),
+            )
+
+            with context.begin_transaction():
+                context.run_migrations()
+
+            # Commit the transaction to ensure changes are visible to next migration
+            connection.commit()
+    else:
+        # Normal operation - use async migrations
+        logger.info("run_migrations_online starting.")
+        asyncio.run(run_async_migrations())
 
 
 if context.is_offline_mode():

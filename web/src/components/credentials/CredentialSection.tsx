@@ -12,16 +12,16 @@ import {
   updateCredential,
   updateCredentialWithPrivateKey,
 } from "@/lib/credential";
-import { usePopup } from "@/components/admin/connectors/Popup";
+import { toast } from "@/hooks/useToast";
 import CreateCredential from "./actions/CreateCredential";
 import { CCPairFullInfo } from "@/app/admin/connector/[ccPairId]/types";
 import ModifyCredential from "./actions/ModifyCredential";
-import Text from "@/components/ui/text";
+import { Text } from "@opal/components";
 import {
   buildCCPairInfoUrl,
   buildSimilarCredentialInfoURL,
 } from "@/app/admin/connector/[ccPairId]/lib";
-import { Modal } from "../Modal";
+import Modal from "@/refresh-components/Modal";
 import EditCredential from "./actions/EditCredential";
 import { getSourceDisplayName } from "@/lib/sources";
 import {
@@ -36,16 +36,19 @@ import { Spinner } from "@/components/Spinner";
 import { CreateStdOAuthCredential } from "@/components/credentials/actions/CreateStdOAuthCredential";
 import { Card } from "../ui/card";
 import { isTypedFileField, TypedFile } from "@/lib/connectors/fileTypes";
+import { SvgEdit, SvgKey } from "@opal/icons";
+
+export interface CredentialSectionProps {
+  ccPair: CCPairFullInfo;
+  sourceType: ValidSources;
+  refresh: () => void;
+}
 
 export default function CredentialSection({
   ccPair,
   sourceType,
   refresh,
-}: {
-  ccPair: CCPairFullInfo;
-  sourceType: ValidSources;
-  refresh: () => void;
-}) {
+}: CredentialSectionProps) {
   const { data: credentials } = useSWR<Credential<ConfluenceCredentialJson>[]>(
     buildSimilarCredentialInfoURL(sourceType),
     errorHandlingFetcher,
@@ -93,18 +96,14 @@ export default function CredentialSection({
       mutate(buildSimilarCredentialInfoURL(sourceType));
       refresh();
 
-      setPopup({
-        message: "Swapped credential successfully!",
-        type: "success",
-      });
+      toast.success("Swapped credential successfully!");
     } else {
       const errorData = await response.json();
-      setPopup({
-        message: `Issue swapping credential: ${
+      toast.error(
+        `Issue swapping credential: ${
           errorData.detail || errorData.message || "Unknown error"
-        }`,
-        type: "error",
-      });
+        }`
+      );
     }
   };
 
@@ -131,16 +130,10 @@ export default function CredentialSection({
       response = await updateCredential(selectedCredential.id, details);
     }
     if (response.ok) {
-      setPopup({
-        message: "Updated credential",
-        type: "success",
-      });
+      toast.success("Updated credential");
       onSucces();
     } else {
-      setPopup({
-        message: "Issue updating credential",
-        type: "error",
-      });
+      toast.error("Issue updating credential");
     }
   };
 
@@ -172,8 +165,6 @@ export default function CredentialSection({
     setEditingCredential(null);
     setShowModifyCredential(true);
   };
-  const { popup, setPopup } = usePopup();
-
   if (!credentials || !editableCredentials) {
     return <></>;
   }
@@ -186,8 +177,6 @@ export default function CredentialSection({
       rounded-lg
       bg-background"
     >
-      {popup}
-
       <Card className="p-6">
         <div className="flex items-center">
           <div className="flex-shrink-0 mr-3">
@@ -196,7 +185,7 @@ export default function CredentialSection({
           <div className="flex-grow flex flex-col justify-center">
             <div className="flex items-center justify-between">
               <div>
-                <Text className="font-medium">
+                <Text as="p">
                   {ccPair.credential.name ||
                     `Credential #${ccPair.credential.id}`}
                 </Text>
@@ -240,70 +229,83 @@ export default function CredentialSection({
       </Card>
 
       {showModifyCredential && (
-        <Modal
-          onOutsideClick={closeModifyCredential}
-          className="max-w-3xl rounded-lg"
-          title="Update Credentials"
-        >
-          <ModifyCredential
-            close={closeModifyCredential}
-            accessType={ccPair.access_type}
-            attachedConnector={ccPair.connector}
-            defaultedCredential={defaultedCredential}
-            credentials={credentials}
-            editableCredentials={editableCredentials}
-            onDeleteCredential={onDeleteCredential}
-            onEditCredential={(credential: Credential<any>) =>
-              onEditCredential(credential)
-            }
-            onSwap={onSwap}
-            onCreateNew={() => makeShowCreateCredential()}
-          />
+        <Modal open onOpenChange={closeModifyCredential}>
+          <Modal.Content>
+            <Modal.Header
+              icon={SvgEdit}
+              title="Update Credentials"
+              onClose={closeModifyCredential}
+            />
+            <Modal.Body>
+              <ModifyCredential
+                close={closeModifyCredential}
+                accessType={ccPair.access_type}
+                attachedConnector={ccPair.connector}
+                defaultedCredential={defaultedCredential}
+                credentials={credentials}
+                editableCredentials={editableCredentials}
+                onDeleteCredential={onDeleteCredential}
+                onEditCredential={(credential: Credential<any>) =>
+                  onEditCredential(credential)
+                }
+                onSwap={onSwap}
+                onCreateNew={() => makeShowCreateCredential()}
+              />
+            </Modal.Body>
+          </Modal.Content>
         </Modal>
       )}
 
       {editingCredential && (
-        <Modal
-          onOutsideClick={closeEditingCredential}
-          className="max-w-3xl rounded-lg"
-          title="Edit Credential"
-        >
-          <EditCredential
-            onUpdate={onUpdateCredential}
-            setPopup={setPopup}
-            credential={editingCredential}
-            onClose={closeEditingCredential}
-          />
+        <Modal open onOpenChange={closeEditingCredential}>
+          <Modal.Content>
+            <Modal.Header
+              icon={SvgEdit}
+              title="Edit Credential"
+              onClose={closeEditingCredential}
+            />
+            <Modal.Body>
+              <EditCredential
+                onUpdate={onUpdateCredential}
+                credential={editingCredential}
+                onClose={closeEditingCredential}
+              />
+            </Modal.Body>
+          </Modal.Content>
         </Modal>
       )}
 
       {showCreateCredential && (
-        <Modal
-          onOutsideClick={closeCreateCredential}
-          className="max-w-3xl flex flex-col items-start rounded-lg"
-          title={`Create ${getSourceDisplayName(sourceType)} Credential`}
-        >
-          {oauthDetailsLoading ? (
-            <Spinner />
-          ) : (
-            <>
-              {oauthDetails && oauthDetails.oauth_enabled ? (
-                <CreateStdOAuthCredential
-                  sourceType={sourceType}
-                  additionalFields={oauthDetails.additional_kwargs}
-                />
+        <Modal open onOpenChange={closeCreateCredential}>
+          <Modal.Content>
+            <Modal.Header
+              icon={SvgKey}
+              title={`Create ${getSourceDisplayName(sourceType)} Credential`}
+              onClose={closeCreateCredential}
+            />
+            <Modal.Body>
+              {oauthDetailsLoading ? (
+                <Spinner />
               ) : (
-                <CreateCredential
-                  sourceType={sourceType}
-                  accessType={ccPair.access_type}
-                  swapConnector={ccPair.connector}
-                  setPopup={setPopup}
-                  onSwap={onSwap}
-                  onClose={closeCreateCredential}
-                />
+                <>
+                  {oauthDetails && oauthDetails.oauth_enabled ? (
+                    <CreateStdOAuthCredential
+                      sourceType={sourceType}
+                      additionalFields={oauthDetails.additional_kwargs}
+                    />
+                  ) : (
+                    <CreateCredential
+                      sourceType={sourceType}
+                      accessType={ccPair.access_type}
+                      swapConnector={ccPair.connector}
+                      onSwap={onSwap}
+                      onClose={closeCreateCredential}
+                    />
+                  )}
+                </>
               )}
-            </>
-          )}
+            </Modal.Body>
+          </Modal.Content>
         </Modal>
       )}
     </div>

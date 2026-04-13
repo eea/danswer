@@ -1,16 +1,16 @@
 "use client";
 
-import { OnSubmitProps } from "@/app/chat/hooks/useChatController";
-import LineItem from "@/refresh-components/buttons/LineItem";
-import { useAgentsContext } from "@/refresh-components/contexts/AgentsContext";
-import { cn } from "@/lib/utils";
+import { OnSubmitProps } from "@/hooks/useChatController";
+import { useCurrentAgent } from "@/hooks/useAgents";
+import { Interactive } from "@opal/core";
+import { Content } from "@opal/layouts";
 
-interface SuggestionsProps {
+export interface SuggestionsProps {
   onSubmit: (props: OnSubmitProps) => void;
 }
 
-export function Suggestions({ onSubmit }: SuggestionsProps) {
-  const { currentAgent } = useAgentsContext();
+export default function Suggestions({ onSubmit }: SuggestionsProps) {
+  const currentAgent = useCurrentAgent();
 
   if (
     !currentAgent ||
@@ -23,16 +23,33 @@ export function Suggestions({ onSubmit }: SuggestionsProps) {
     onSubmit({
       message: suggestion,
       currentMessageFiles: [],
-      useAgentSearch: false,
+      deepResearch: false,
     });
   };
 
   return (
-    <div className={cn("flex flex-col w-full p-1 gap-1")}>
+    <div className="max-w-[var(--app-page-main-content-width)] flex flex-col w-full p-1">
       {currentAgent.starter_messages.map(({ message }, index) => (
-        <LineItem key={index} onClick={() => handleSuggestionClick(message)}>
-          {message}
-        </LineItem>
+        <Interactive.Stateless
+          key={index}
+          variant="default"
+          prominence="tertiary"
+          onClick={() => handleSuggestionClick(message)}
+        >
+          <Interactive.Container
+            widthVariant="full"
+            roundingVariant="sm"
+            heightVariant="lg"
+          >
+            <Content
+              title={message}
+              sizePreset="main-ui"
+              variant="body"
+              widthVariant="full"
+              prominence="muted"
+            />
+          </Interactive.Container>
+        </Interactive.Stateless>
       ))}
     </div>
   );

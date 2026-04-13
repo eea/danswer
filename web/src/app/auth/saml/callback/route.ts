@@ -1,3 +1,4 @@
+import { authErrorRedirect } from "@/app/auth/libSS";
 import { validateInternalRedirect } from "@/lib/auth/redirectValidation";
 import { getDomain } from "@/lib/redirectSS";
 import { buildUrl } from "@/lib/utilsSS";
@@ -17,16 +18,7 @@ async function handleSamlCallback(
 
   const fetchOptions: RequestInit = {
     method,
-    headers: {
-      "X-Forwarded-Host":
-        request.headers.get("X-Forwarded-Host") ||
-        request.headers.get("host") ||
-        "",
-      "X-Forwarded-Port":
-        request.headers.get("X-Forwarded-Port") ||
-        new URL(request.url).port ||
-        "",
-    },
+    headers: {},
   };
 
   let relayState: string | null = null;
@@ -61,10 +53,7 @@ async function handleSamlCallback(
   const setCookieHeader = response.headers.get("set-cookie");
 
   if (!setCookieHeader) {
-    return NextResponse.redirect(
-      new URL("/auth/error", getDomain(request)),
-      SEE_OTHER_REDIRECT_STATUS
-    );
+    return authErrorRedirect(request, response, SEE_OTHER_REDIRECT_STATUS);
   }
 
   const validatedRelayState = validateInternalRedirect(relayState);

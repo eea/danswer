@@ -2,6 +2,7 @@ import * as Yup from "yup";
 import { ConfigurableSources, ValidInputTypes, ValidSources } from "../types";
 import { AccessTypeGroupSelectorFormType } from "@/components/admin/connectors/AccessTypeGroupSelector";
 import { Credential } from "@/lib/connectors/credentials"; // Import Credential type
+import { DOCS_ADMINS_PATH } from "@/lib/constants";
 
 export function isLoadState(connector_name: string): boolean {
   // TODO: centralize connector metadata like this somewhere instead of hardcoding it here
@@ -511,7 +512,7 @@ export const connectorConfigs: Record<
             ],
           },
         ],
-        defaultTab: "space",
+        defaultTab: "general",
       },
     ],
     advanced_values: [
@@ -809,7 +810,7 @@ export const connectorConfigs: Record<
                   "\n    }" +
                   "\n  }" +
                   "\n}" +
-                  "\n\n[See our docs](https://docs.onyx.app/admin/connectors/official/salesforce) for more details.",
+                  `\n\n[See our docs](${DOCS_ADMINS_PATH}/connectors/official/salesforce) for more details.`,
               },
             ],
           },
@@ -831,6 +832,7 @@ export const connectorConfigs: Record<
         description: `• If no sites are specified, all sites in your organization will be indexed (Sites.Read.All permission required).
 • Specifying 'https://onyxai.sharepoint.com/sites/support' for example only indexes this site.
 • Specifying 'https://onyxai.sharepoint.com/sites/support/subfolder' for example only indexes this folder.
+• Specifying sites currently works for SharePoint instances using English, Spanish, or German. Contact the Onyx team if you need another language supported.
 `,
       },
     ],
@@ -855,6 +857,76 @@ export const connectorConfigs: Record<
         description:
           "Index aspx-pages of all SharePoint sites defined above, even if a library or folder is specified.",
       },
+      {
+        type: "checkbox",
+        label: "Treat sharing links as public?",
+        description:
+          "When enabled, documents with a sharing link (anonymous or organization-wide) " +
+          "are treated as public (visible to all Onyx users). " +
+          "When disabled, only users and groups with explicit role assignments can see the document.",
+        name: "treat_sharing_link_as_public",
+        optional: true,
+        default: false,
+      },
+      {
+        type: "list",
+        query: "Enter site URLs to exclude:",
+        label: "Excluded Sites",
+        name: "excluded_sites",
+        optional: true,
+        description:
+          "Site URLs or glob patterns to exclude from indexing. " +
+          "Matched sites will never be indexed, even if they appear in the sites list above. " +
+          "Examples: 'https://contoso.sharepoint.com/sites/archive' (exact), " +
+          "'*://*/sites/archive-*' (glob pattern).",
+      },
+      {
+        type: "list",
+        query: "Enter file path patterns to exclude:",
+        label: "Excluded Paths",
+        name: "excluded_paths",
+        optional: true,
+        description:
+          "Glob patterns for file paths to exclude from indexing within document libraries. " +
+          "Patterns are matched against both the full relative path and the filename. " +
+          "Examples: '*.tmp' (temp files), '~$*' (Office lock files), 'Archive/*' (folder).",
+      },
+      {
+        type: "text",
+        query: "Microsoft Authority Host:",
+        label: "Authority Host",
+        name: "authority_host",
+        optional: true,
+        default: "https://login.microsoftonline.com",
+        description:
+          "The Microsoft identity authority host used for authentication. " +
+          "For most deployments, leave as default. " +
+          "For GCC High / DoD, use https://login.microsoftonline.us",
+      },
+      {
+        type: "text",
+        query: "Microsoft Graph API Host:",
+        label: "Graph API Host",
+        name: "graph_api_host",
+        optional: true,
+        default: "https://graph.microsoft.com",
+        description:
+          "The Microsoft Graph API host. " +
+          "For most deployments, leave as default. " +
+          "For GCC High / DoD, use https://graph.microsoft.us",
+      },
+      {
+        type: "text",
+        query: "SharePoint Domain Suffix:",
+        label: "SharePoint Domain Suffix",
+        name: "sharepoint_domain_suffix",
+        optional: true,
+        default: "sharepoint.com",
+        description:
+          "The domain suffix for SharePoint sites (e.g. sharepoint.com). " +
+          "For most deployments, leave as default. " +
+          "For GCC High, use sharepoint.us",
+      },
     ],
   },
   teams: {
@@ -869,7 +941,32 @@ export const connectorConfigs: Record<
         description: `Specify 0 or more Teams to index. For example, specifying the Team 'Support' for the 'onyxai' Org will cause us to only index messages sent in channels belonging to the 'Support' Team. If no Teams are specified, all Teams in your organization will be indexed.`,
       },
     ],
-    advanced_values: [],
+    advanced_values: [
+      {
+        type: "text",
+        query: "Microsoft Authority Host:",
+        label: "Authority Host",
+        name: "authority_host",
+        optional: true,
+        default: "https://login.microsoftonline.com",
+        description:
+          "The Microsoft identity authority host used for authentication. " +
+          "For most deployments, leave as default. " +
+          "For GCC High / DoD, use https://login.microsoftonline.us",
+      },
+      {
+        type: "text",
+        query: "Microsoft Graph API Host:",
+        label: "Graph API Host",
+        name: "graph_api_host",
+        optional: true,
+        default: "https://graph.microsoft.com",
+        description:
+          "The Microsoft Graph API host. " +
+          "For most deployments, leave as default. " +
+          "For GCC High / DoD, use https://graph.microsoft.us",
+      },
+    ],
   },
   discourse: {
     description: "Configure Discourse connector",
@@ -887,6 +984,79 @@ export const connectorConfigs: Record<
         label: "Categories",
         name: "categories",
         optional: true,
+      },
+    ],
+    advanced_values: [],
+  },
+  drupal_wiki: {
+    description: "Configure Drupal Wiki connector",
+    values: [
+      {
+        type: "text",
+        query: "Enter the base URL of the Drupal Wiki instance:",
+        label: "Base URL",
+        name: "base_url",
+        optional: false,
+        description:
+          "The base URL of your Drupal Wiki instance (e.g., https://help.drupal-wiki.com )",
+      },
+      {
+        type: "tab",
+        name: "indexing_scope",
+        label: "What should we index from Drupal Wiki?",
+        optional: true,
+        tabs: [
+          {
+            value: "everything",
+            label: "Everything",
+            fields: [
+              {
+                type: "string_tab",
+                label: "Everything",
+                name: "everything_description",
+                description:
+                  "This connector will index all spaces the provided credentials have access to!",
+              },
+            ],
+          },
+          {
+            value: "specific",
+            label: "Specific Spaces/Pages",
+            fields: [
+              {
+                type: "list",
+                query: "Enter space IDs to include:",
+                label: "Space IDs",
+                name: "spaces",
+                description:
+                  "Specify one or more space IDs to index. Only numeric values are allowed.",
+                optional: true,
+                transform: (values: string[]) =>
+                  values.filter((value) => /^\d+$/.test(value.trim())),
+              },
+              {
+                type: "list",
+                query: "Enter page IDs to include:",
+                label: "Page IDs",
+                name: "pages",
+                description:
+                  "Specify one or more page IDs to index. Only numeric values are allowed.",
+                optional: true,
+                transform: (values: string[]) =>
+                  values.filter((value) => /^\d+$/.test(value.trim())),
+              },
+            ],
+          },
+        ],
+      },
+      {
+        type: "checkbox",
+        query: "Include attachments?",
+        label: "Include Attachments",
+        name: "include_attachments",
+        description:
+          "Enable processing of page attachments including images and documents",
+        default: false,
       },
     ],
     advanced_values: [],
@@ -933,6 +1103,15 @@ export const connectorConfigs: Record<
         name: "channel_regex_enabled",
         description: `If enabled, we will treat the "channels" specified above as regular expressions. A channel's messages will be pulled in by the connector if the name of the channel fully matches any of the specified regular expressions.
 For example, specifying .*-support.* as a "channel" will cause the connector to include any channels with "-support" in the name.`,
+        optional: true,
+      },
+      {
+        type: "checkbox",
+        query: "Include bot messages?",
+        label: "Include Bot Messages",
+        name: "include_bot_messages",
+        description:
+          "If enabled, messages from bots and apps will be indexed. Useful for channels that are primarily bot-driven feeds (e.g. CRM updates, automated notes).",
         optional: true,
       },
     ],
@@ -1018,6 +1197,11 @@ For example, specifying .*-support.* as a "channel" will cause the connector to 
         optional: false,
       },
     ],
+    advanced_values: [],
+  },
+  coda: {
+    description: "Configure Coda connector",
+    values: [],
     advanced_values: [],
   },
   notion: {
@@ -1494,19 +1678,48 @@ For example, specifying .*-support.* as a "channel" will cause the connector to 
     description: "Configure Airtable connector",
     values: [
       {
-        type: "text",
-        query: "Enter the base ID:",
-        label: "Base ID",
-        name: "base_id",
-        optional: false,
-        description: "The ID of the Airtable base to index.",
-      },
-      {
-        type: "text",
-        query: "Enter the table name or ID:",
-        label: "Table Name or Table ID",
-        name: "table_name_or_id",
-        optional: false,
+        type: "tab",
+        name: "airtable_scope",
+        label: "What should we index from Airtable?",
+        optional: true,
+        tabs: [
+          {
+            value: "everything",
+            label: "Everything",
+            fields: [
+              {
+                type: "string_tab",
+                label: "Everything",
+                name: "everything_description",
+                description:
+                  "This connector will automatically discover and index all bases and tables accessible by your API token.",
+              },
+            ],
+          },
+          {
+            value: "specific",
+            label: "Specific Table",
+            fields: [
+              {
+                type: "text",
+                query: "Paste the Airtable URL:",
+                label: "Airtable URL",
+                name: "airtable_url",
+                optional: false,
+                description:
+                  "Paste the URL from your browser when viewing the table, e.g. https://airtable.com/appXXX/tblYYY/viwZZZ",
+              },
+              {
+                type: "text",
+                label: "Share ID",
+                name: "share_id",
+                optional: true,
+                description:
+                  "Optional. If you want record links to use a shared view URL, put the share ID here e.g. shrkfjEzDmLaDtK83.",
+              },
+            ],
+          },
+        ],
       },
       {
         type: "checkbox",
@@ -1517,24 +1730,7 @@ For example, specifying .*-support.* as a "channel" will cause the connector to 
         optional: false,
       },
     ],
-    advanced_values: [
-      {
-        type: "text",
-        label: "View ID",
-        name: "view_id",
-        optional: true,
-        description:
-          "If you need to link to a specific View, put that ID here e.g. viwVUEJjWPd8XYjh8.",
-      },
-      {
-        type: "text",
-        label: "Share ID",
-        name: "share_id",
-        optional: true,
-        description:
-          "If you need to link to a specific Share, put that ID here e.g. shrkfjEzDmLaDtK83.",
-      },
-    ],
+    advanced_values: [],
     overrideDefaultFreq: 60 * 60 * 24,
   },
   highspot: {
@@ -1797,11 +1993,17 @@ export interface SalesforceConfig {
 export interface SharepointConfig {
   sites?: string[];
   include_site_pages?: boolean;
+  treat_sharing_link_as_public?: boolean;
   include_site_documents?: boolean;
+  authority_host?: string;
+  graph_api_host?: string;
+  sharepoint_domain_suffix?: string;
 }
 
 export interface TeamsConfig {
   teams?: string[];
+  authority_host?: string;
+  graph_api_host?: string;
 }
 
 export interface DiscourseConfig {
@@ -1813,8 +2015,11 @@ export interface AxeroConfig {
   spaces?: string[];
 }
 
-export interface TeamsConfig {
-  teams?: string[];
+export interface DrupalWikiConfig {
+  base_url: string;
+  spaces?: string[];
+  pages?: string[];
+  include_attachments?: boolean;
 }
 
 export interface ProductboardConfig {}
@@ -1823,6 +2028,7 @@ export interface SlackConfig {
   workspace: string;
   channels?: string[];
   channel_regex_enabled?: boolean;
+  include_bot_messages?: boolean;
 }
 
 export interface SlabConfig {
@@ -1842,12 +2048,16 @@ export interface LoopioConfig {
 export interface FileConfig {
   file_locations: string[];
   file_names: string[];
-  zip_metadata: Record<string, any>;
+  zip_metadata_file_id: string | null;
 }
 
 export interface ZulipConfig {
   realm_name: string;
   realm_url: string;
+}
+
+export interface CodaConfig {
+  workspace_id?: string;
 }
 
 export interface NotionConfig {

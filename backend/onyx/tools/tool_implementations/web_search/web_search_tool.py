@@ -1,36 +1,117 @@
-from collections.abc import Generator
+import json
 from typing import Any
 
 from sqlalchemy.orm import Session
 from typing_extensions import override
 
-from onyx.chat.prompt_builder.answer_prompt_builder import AnswerPromptBuilder
+from onyx.chat.emitter import Emitter
+from onyx.context.search.models import SearchDocsResponse
+from onyx.context.search.utils import convert_inference_sections_to_search_docs
 from onyx.db.engine.sql_engine import get_session_with_current_tenant
 from onyx.db.web_search import fetch_active_web_search_provider
-from onyx.llm.interfaces import LLM
-from onyx.llm.models import PreviousMessage
-from onyx.tools.message import ToolCallSummary
+from onyx.server.query_and_chat.placement import Placement
+from onyx.server.query_and_chat.streaming_models import Packet
+from onyx.server.query_and_chat.streaming_models import SearchToolDocumentsDelta
+from onyx.server.query_and_chat.streaming_models import SearchToolQueriesDelta
+from onyx.server.query_and_chat.streaming_models import SearchToolStart
+from onyx.tools.interface import Tool
+from onyx.tools.models import ToolCallException
 from onyx.tools.models import ToolResponse
-from onyx.tools.tool import RunContextWrapper
-from onyx.tools.tool import Tool
+from onyx.tools.models import WebSearchToolOverrideKwargs
+from onyx.tools.tool_implementations.utils import (
+    convert_inference_sections_to_llm_string,
+)
+from onyx.tools.tool_implementations.web_search.models import DEFAULT_MAX_RESULTS
+from onyx.tools.tool_implementations.web_search.models import WebSearchResult
+from onyx.tools.tool_implementations.web_search.providers import (
+    build_search_provider_from_config,
+)
+from onyx.tools.tool_implementations.web_search.providers import (
+    provider_requires_api_key,
+)
+from onyx.tools.tool_implementations.web_search.utils import (
+    filter_web_search_results_with_no_title_or_snippet,
+)
+from onyx.tools.tool_implementations.web_search.utils import (
+    inference_section_from_internet_search_result,
+)
 from onyx.utils.logger import setup_logger
-from onyx.utils.special_types import JSON_ro
-
+from onyx.utils.threadpool_concurrency import run_functions_tuples_in_parallel
+from shared_configs.enums import WebSearchProviderType
 
 logger = setup_logger()
 
-# TODO: Align on separation of Tools and SubAgents. Right now, we're only keeping this around for backwards compatibility.
-QUERY_FIELD = "query"
-_GENERIC_ERROR_MESSAGE = "WebSearchTool should only be used by the Deep Research Agent, not via tool calling."
+QUERIES_FIELD = "queries"
 
 
-class WebSearchTool(Tool[None]):
-    _NAME = "run_web_search"
-    _DESCRIPTION = "Search the web for information. Never call this tool."
-    _DISPLAY_NAME = "Web Search"
+def _sanitize_query(query: str) -> str:
+    """Remove control characters and normalize whitespace in a query.
 
-    def __init__(self, tool_id: int) -> None:
+    LLMs sometimes produce queries with null characters or other control
+    characters that need to be stripped before sending to search providers.
+    """
+    # Remove control characters (ASCII 0-31 and 127 DEL)
+    sanitized = "".join(c for c in query if ord(c) >= 32 and ord(c) != 127)
+    # Collapse multiple whitespace characters into single space and strip
+    return " ".join(sanitized.split())
+
+
+def _normalize_queries_input(raw: Any) -> list[str]:
+    """Coerce LLM output to a list of sanitized query strings.
+
+    Accepts a bare string or a list (possibly with non-string elements).
+    Sanitizes each query (strip control chars, normalize whitespace) and
+    drops empty or whitespace-only entries.
+    """
+    if isinstance(raw, str):
+        raw = raw.strip()
+        if not raw:
+            return []
+        raw = [raw]
+    elif not isinstance(raw, list):
+        return []
+    result: list[str] = []
+    for q in raw:
+        if q is None:
+            continue
+        sanitized = _sanitize_query(str(q))
+        if sanitized:
+            result.append(sanitized)
+    return result
+
+
+class WebSearchTool(Tool[WebSearchToolOverrideKwargs]):
+    NAME = "web_search"
+    DESCRIPTION = "Search the web for information."
+    DISPLAY_NAME = "Web Search"
+
+    def __init__(self, tool_id: int, emitter: Emitter) -> None:
+        super().__init__(emitter=emitter)
         self._id = tool_id
+
+        # Get web search provider from database
+        with get_session_with_current_tenant() as db_session:
+            provider_model = fetch_active_web_search_provider(db_session)
+            if provider_model is None:
+                raise RuntimeError("No web search provider configured.")
+            provider_type = WebSearchProviderType(provider_model.provider_type)
+            api_key = (
+                provider_model.api_key.get_value(apply_mask=False)
+                if provider_model.api_key
+                else None
+            )
+            config = provider_model.config
+
+        if provider_requires_api_key(provider_type) and api_key is None:
+            raise RuntimeError(
+                f"No API key configured for {provider_type.value} web search provider."
+            )
+
+        self._provider = build_search_provider_from_config(
+            provider_type=provider_type,
+            api_key=api_key,
+            config=config,
+        )
 
     @property
     def id(self) -> int:
@@ -38,15 +119,20 @@ class WebSearchTool(Tool[None]):
 
     @property
     def name(self) -> str:
-        return self._NAME
+        return self.NAME
 
     @property
     def description(self) -> str:
-        return self._DESCRIPTION
+        return self.DESCRIPTION
 
     @property
     def display_name(self) -> str:
-        return self._DISPLAY_NAME
+        return self.DISPLAY_NAME
+
+    @property
+    def supports_site_filter(self) -> bool:
+        """Whether the underlying provider supports site: operator."""
+        return self._provider.supports_site_filter
 
     @override
     @classmethod
@@ -61,55 +147,206 @@ class WebSearchTool(Tool[None]):
             "type": "function",
             "function": {
                 "name": self.name,
-                "description": self.description,
+                "description": (
+                    "Search the web for information. Returns a list of search results with titles, metadata, and snippets."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        QUERY_FIELD: {
-                            "type": "string",
-                            "description": "What to search for",
+                        QUERIES_FIELD: {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "One or more queries to look up on the web. Must contain only printable characters",
                         },
                     },
-                    "required": [QUERY_FIELD],
+                    "required": [QUERIES_FIELD],
                 },
             },
         }
 
-    def get_args_for_non_tool_calling_llm(
+    def emit_start(self, placement: Placement) -> None:
+        self.emitter.emit(
+            Packet(
+                placement=placement,
+                obj=SearchToolStart(is_internet_search=True),
+            )
+        )
+
+    def _safe_execute_single_search(
         self,
         query: str,
-        history: list[PreviousMessage],
-        llm: LLM,
-        force_run: bool = False,
-    ) -> dict[str, Any] | None:
-        raise ValueError(_GENERIC_ERROR_MESSAGE)
+        provider: Any,
+    ) -> tuple[list[WebSearchResult] | None, str | None]:
+        """Execute a single search query and return results with error capture.
 
-    def build_tool_message_content(
-        self, *args: ToolResponse
-    ) -> str | list[str | dict[str, Any]]:
-        raise ValueError(_GENERIC_ERROR_MESSAGE)
-
-    def run_v2(
-        self,
-        run_context: RunContextWrapper[Any],
-        *args: Any,
-        **kwargs: Any,
-    ) -> Any:
-        raise NotImplementedError("WebSearchTool.run_v2 is not implemented.")
+        Returns:
+            A tuple of (results, error_message). If successful, error_message is None.
+            If failed, results is None and error_message contains the error.
+        """
+        try:
+            raw_results = list(provider.search(query))
+            filtered_results = filter_web_search_results_with_no_title_or_snippet(
+                raw_results
+            )
+            results = filtered_results[:DEFAULT_MAX_RESULTS]
+            return (results, None)
+        except Exception as e:
+            error_msg = str(e)
+            logger.warning(f"Web search query '{query}' failed: {error_msg}")
+            return (None, error_msg)
 
     def run(
-        self, override_kwargs: None = None, **llm_kwargs: str
-    ) -> Generator[ToolResponse, None, None]:
-        raise ValueError(_GENERIC_ERROR_MESSAGE)
-
-    def final_result(self, *args: ToolResponse) -> JSON_ro:
-        raise ValueError(_GENERIC_ERROR_MESSAGE)
-
-    def build_next_prompt(
         self,
-        prompt_builder: AnswerPromptBuilder,
-        tool_call_summary: ToolCallSummary,
-        tool_responses: list[ToolResponse],
-        using_tool_calling_llm: bool,
-    ) -> AnswerPromptBuilder:
-        raise ValueError(_GENERIC_ERROR_MESSAGE)
+        placement: Placement,
+        override_kwargs: WebSearchToolOverrideKwargs,
+        **llm_kwargs: Any,
+    ) -> ToolResponse:
+        """Execute the web search tool with multiple queries in parallel"""
+        if QUERIES_FIELD not in llm_kwargs:
+            raise ToolCallException(
+                message=f"Missing required '{QUERIES_FIELD}' parameter in web_search tool call",
+                llm_facing_message=(
+                    f"The web_search tool requires a '{QUERIES_FIELD}' parameter "
+                    f"containing an array of search queries. Please provide the queries "
+                    f'like: {{"queries": ["your search query here"]}}'
+                ),
+            )
+        queries = _normalize_queries_input(llm_kwargs[QUERIES_FIELD])
+        if not queries:
+            raise ToolCallException(
+                message=(
+                    "No valid web search queries provided; all queries were empty or whitespace-only after trimming."
+                ),
+                llm_facing_message=(
+                    "No valid web search queries were provided (they were empty or "
+                    "whitespace-only). Please provide a real search query."
+                ),
+            )
+
+        # Emit queries
+        self.emitter.emit(
+            Packet(
+                placement=placement,
+                obj=SearchToolQueriesDelta(queries=queries),
+            )
+        )
+
+        # Perform searches in parallel with error capture
+        functions_with_args = [
+            (self._safe_execute_single_search, (query, self._provider))
+            for query in queries
+        ]
+        search_results_with_errors: list[
+            tuple[list[WebSearchResult] | None, str | None]
+        ] = run_functions_tuples_in_parallel(
+            functions_with_args,
+            allow_failures=False,  # Our wrapper handles errors internally
+        )
+
+        # Separate successful results from failures
+        valid_results: list[list[WebSearchResult]] = []
+        failed_queries: dict[str, str] = {}
+
+        for query, (results, error) in zip(queries, search_results_with_errors):
+            if error is not None:
+                failed_queries[query] = error
+            elif results is not None:
+                valid_results.append(results)
+
+        # Log partial failures but continue if we have at least one success
+        if failed_queries and valid_results:
+            logger.warning(
+                f"Web search partial failure: {len(failed_queries)}/{len(queries)} "
+                f"queries failed. Failed queries: {json.dumps(failed_queries)}"
+            )
+
+        # If all queries failed, raise ToolCallException with details
+        if not valid_results:
+            error_details = json.dumps(failed_queries, indent=2)
+            raise ToolCallException(
+                message=f"All web search queries failed: {error_details}",
+                llm_facing_message=(
+                    f"All web search queries failed. Query failures:\n{error_details}"
+                ),
+            )
+
+        # Interweave top results from each query in round-robin fashion
+        all_search_results: list[WebSearchResult] = []
+
+        if valid_results:
+            # Track seen (title, url) pairs to avoid duplicates
+            seen = set()
+            # Track current index for each result set
+            indices = [0] * len(valid_results)
+
+            # Round-robin interweaving: cycle through result sets and increment indices
+            while len(all_search_results) < DEFAULT_MAX_RESULTS:
+                added_any = False
+                for idx, results in enumerate(valid_results):
+                    if len(all_search_results) >= DEFAULT_MAX_RESULTS:
+                        break
+                    if indices[idx] < len(results):
+                        result = results[indices[idx]]
+                        key = (result.title, result.link)
+                        if key not in seen:
+                            seen.add(key)
+                            all_search_results.append(result)
+                            added_any = True
+                        indices[idx] += 1
+                # Stop if no more results to add
+                if not added_any:
+                    break
+
+        # This should be a very rare case and is due to not failing loudly enough in the search provider implementation.
+        if not all_search_results:
+            raise ToolCallException(
+                message="Web search queries succeeded but returned no results",
+                llm_facing_message=(
+                    "Web search completed but found no results for the given queries. "
+                    "Try rephrasing or using different search terms."
+                ),
+            )
+
+        # Convert search results to InferenceSections with rank-based scoring
+        inference_sections = [
+            inference_section_from_internet_search_result(result, rank=i)
+            for i, result in enumerate(all_search_results)
+        ]
+
+        # Convert to SearchDocs
+        search_docs = convert_inference_sections_to_search_docs(
+            inference_sections, is_internet=True
+        )
+
+        # Emit documents
+        self.emitter.emit(
+            Packet(
+                placement=placement,
+                obj=SearchToolDocumentsDelta(documents=search_docs),
+            )
+        )
+
+        # Format for LLM
+        if not all_search_results:
+            docs_str = json.dumps(
+                {
+                    "results": [],
+                    "message": "The web search completed but returned no results for any of the queries. Do not search again.",
+                }
+            )
+            citation_mapping: dict[int, str] = {}
+        else:
+            docs_str, citation_mapping = convert_inference_sections_to_llm_string(
+                top_sections=inference_sections,
+                citation_start=override_kwargs.starting_citation_num,
+                limit=None,  # Already truncated
+                include_source_type=False,
+                include_link=True,
+            )
+
+        return ToolResponse(
+            rich_response=SearchDocsResponse(
+                search_docs=search_docs, citation_mapping=citation_mapping
+            ),
+            llm_facing_response=docs_str,
+        )

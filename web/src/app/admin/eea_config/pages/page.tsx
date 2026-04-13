@@ -5,26 +5,23 @@ import { AdminPageTitle } from "@/components/admin/Title";
 import { errorHandlingFetcher } from "@/lib/fetcher";
 //import {TableHeaderCell } from "@tremor/react";
 
-import Text from "@/components/ui/text";
-import Title from "@/components/ui/title";
+import { Text } from "@opal/components";
 import Button from "@/refresh-components/buttons/Button";
-import { Separator } from "@radix-ui/react-separator";
+import Separator from "@/refresh-components/Separator";
 
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+import TableElement from "@opal/components/table/TableElement";
+import TableHeader from "@opal/components/table/TableHeader";
+import TableBody from "@opal/components/table/TableBody";
+import TableRow from "@opal/components/table/TableRow";
+import TableHead from "@opal/components/table/TableHead";
+import TableCell from "@opal/components/table/TableCell";
 
 
 import { FiCpu, FiEdit } from "react-icons/fi";
 import useSWR from "swr";
 import { Form, Formik, Field } from "formik";
 import { TextFormField } from "@/components/Field";
-import { usePopup } from "@/components/admin/connectors/Popup";
+import { useToast } from "@/hooks/useToast";
 import Link from "next/link";
 import { useState } from "react";
 import { DeleteButton } from "@/components/DeleteButton";
@@ -75,6 +72,7 @@ const PagesTable = ({
   refresh,
 }: PagesTableProps) => {
   const [page, setPage] = useState(1);
+  const { toast } = useToast();
 
   // sort by name for consistent ordering
   pages.sort((a, b) => {
@@ -89,22 +87,22 @@ const PagesTable = ({
 
   return (
     <div>
-      <Title>Existing Pages</Title>
-      <Table className="overflow-visible mt-2">
-        <TableHead>
-          <TableRow>
-            <TableHeader>Name</TableHeader>
-            <TableHeader>Delete</TableHeader>
-          </TableRow>
-        </TableHead>
+      <div className="mt-2">
+        <TableElement>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Name</TableHead>
+              <TableHead>Delete</TableHead>
+            </TableRow>
+          </TableHeader>
         <TableBody>
           {pages
             .slice((page - 1) * numToDisplay, page * numToDisplay)
             .map((pageTitle) => {
               return (
                 <TableRow key={pageTitle}>
-                  <TableCell className="whitespace-normal break-all">
-                    <div className="flex gap-x-1 text-emphasis">
+                  <TableCell>
+                    <div className="whitespace-normal break-all flex gap-x-1 text-emphasis">
                       <EditRow pageTitle={pageTitle} />
                     </div>
                   </TableCell>
@@ -135,10 +133,12 @@ const PagesTable = ({
                         console.log(response);
                         if (!response?.ok) {
                           console.log(`Error while deleting the page: ${response.status} - ${response.statusText}`);
+                          toast.error("Failed to delete page");
                           refresh();
                           return;
                         } else {
                           console.log("Page deleted");
+                          toast.success("Page deleted successfully");
                           refresh();
                           return;
                         }
@@ -150,7 +150,8 @@ const PagesTable = ({
               );
             })}
         </TableBody>
-      </Table>
+      </TableElement>
+      </div>
 
       <div className="mt-3 flex">
         <div className="mx-auto">
@@ -174,13 +175,13 @@ const Page = () => {
     refreshPagesList,
   } = usePagesList();
 
-  let config_json = { "pages": [] };
+  let config_json = { pages: {} };
   if (data) {
-    console.log(data)
+    console.log(data);
     config_json = JSON.parse(data?.config);
   }
 
-  const { popup, setPopup } = usePopup();
+  const { toast } = useToast();
 
   if (isLoading) {
     return <LoadingAnimation text="Loading" />;
@@ -190,12 +191,11 @@ const Page = () => {
   return (
     <>
       <div className="mb-8">
-        {popup}
         <div className="mx-auto container">
           <AdminPageTitle icon={<FiCpu size={32} />} title="Pages configuration" />
-          <Text className="mb-3">
-            <b>User defined pages</b> allow you to create pages.
-          </Text>
+          <div className="mb-3 text-text-04 font-main-ui-body">
+            <strong>User defined pages</strong> allow you to create pages.
+          </div>
 
           <div className="mb-3"></div>
 

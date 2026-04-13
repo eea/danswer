@@ -1,13 +1,14 @@
 "use client";
 
 import { Label, SubLabel } from "@/components/Field";
-import { usePopup } from "@/components/admin/connectors/Popup";
-import { SettingsContext } from "@/components/settings/SettingsProvider";
-import Button from "@/refresh-components/buttons/Button";
+import { toast } from "@/hooks/useToast";
+import { SettingsContext } from "@/providers/SettingsProvider";
+import { Button, Text } from "@opal/components";
+import { markdown } from "@opal/utils";
 import { Callout } from "@/components/ui/callout";
-import Text from "@/components/ui/text";
 import { useContext, useState } from "react";
 import InputTextArea from "@/refresh-components/inputs/InputTextArea";
+import Spacer from "@/refresh-components/Spacer";
 
 export function CustomAnalyticsUpdateForm() {
   const settings = useContext(SettingsContext);
@@ -17,15 +18,12 @@ export function CustomAnalyticsUpdateForm() {
     useState<string>(customAnalyticsScript || "");
   const [secretKey, setSecretKey] = useState<string>("");
 
-  const { popup, setPopup } = usePopup();
-
   if (!settings) {
     return <Callout type="danger" title="Failed to fetch settings"></Callout>;
   }
 
   return (
     <div>
-      {popup}
       <form
         onSubmit={async (e) => {
           e.preventDefault();
@@ -44,33 +42,29 @@ export function CustomAnalyticsUpdateForm() {
             }
           );
           if (response.ok) {
-            setPopup({
-              type: "success",
-              message: "Custom analytics script updated successfully!",
-            });
+            toast.success("Custom analytics script updated successfully!");
           } else {
             const errorMsg = (await response.json()).detail;
-            setPopup({
-              type: "error",
-              message: `Failed to update custom analytics script: "${errorMsg}"`,
-            });
+            toast.error(
+              `Failed to update custom analytics script: "${errorMsg}"`
+            );
           }
           setSecretKey("");
         }}
       >
         <div className="mb-4">
           <Label>Script</Label>
-          <Text className="mb-3">
+          <Text as="p">
             Specify the Javascript that should run on page load in order to
             initialize your custom tracking/analytics.
           </Text>
-          <Text className="mb-2">
-            Do not include the{" "}
-            <span className="font-mono">&lt;script&gt;&lt;/script&gt;</span>{" "}
-            tags. If you upload a script below but you are not recieving any
-            events in your analytics platform, try removing all extra whitespace
-            before each line of JavaScript.
+          <Spacer rem={0.75} />
+          <Text as="p">
+            {markdown(
+              "Do not include the `<script></script>` tags. If you upload a script below but you are not receiving any events in your analytics platform, try removing all extra whitespace before each line of JavaScript."
+            )}
           </Text>
+          <Spacer rem={0.5} />
           <InputTextArea
             value={newCustomAnalyticsScript}
             onChange={(event) =>
@@ -101,10 +95,8 @@ export function CustomAnalyticsUpdateForm() {
           value={secretKey}
           onChange={(e) => setSecretKey(e.target.value)}
         />
-
-        <Button className="mt-4" type="submit">
-          Update
-        </Button>
+        <Spacer rem={1} />
+        <Button type="submit">Update</Button>
       </form>
     </div>
   );

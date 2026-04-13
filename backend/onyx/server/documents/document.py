@@ -4,12 +4,13 @@ from fastapi import HTTPException
 from fastapi import Query
 from sqlalchemy.orm import Session
 
-from onyx.auth.users import current_user
+from onyx.auth.permissions import require_permission
 from onyx.context.search.models import IndexFilters
 from onyx.context.search.preprocessing.access_filters import (
     build_access_filters_for_user,
 )
 from onyx.db.engine.sql_engine import get_session
+from onyx.db.enums import Permission
 from onyx.db.models import User
 from onyx.db.search_settings import get_current_search_settings
 from onyx.document_index.factory import get_default_document_index
@@ -18,6 +19,7 @@ from onyx.natural_language_processing.utils import get_tokenizer
 from onyx.prompts.prompt_utils import build_doc_context_str
 from onyx.server.documents.models import ChunkInfo
 from onyx.server.documents.models import DocumentInfo
+from onyx.server.utils_vector_db import require_vector_db
 
 
 router = APIRouter(prefix="/document")
@@ -25,14 +27,15 @@ router = APIRouter(prefix="/document")
 
 # Have to use a query parameter as FastAPI is interpreting the URL type document_ids
 # as a different path
-@router.get("/document-size-info")
+@router.get("/document-size-info", dependencies=[Depends(require_vector_db)])
 def get_document_info(
     document_id: str = Query(...),
-    user: User | None = Depends(current_user),
+    user: User = Depends(require_permission(Permission.BASIC_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> DocumentInfo:
     search_settings = get_current_search_settings(db_session)
-    document_index = get_default_document_index(search_settings, None)
+    # This flow is for search so we do not get all indices.
+    document_index = get_default_document_index(search_settings, None, db_session)
 
     user_acl_filters = build_access_filters_for_user(user, db_session)
     inference_chunks = document_index.id_based_retrieval(
@@ -68,15 +71,16 @@ def get_document_info(
     )
 
 
-@router.get("/chunk-info")
+@router.get("/chunk-info", dependencies=[Depends(require_vector_db)])
 def get_chunk_info(
     document_id: str = Query(...),
     chunk_id: int = Query(...),
-    user: User | None = Depends(current_user),
+    user: User = Depends(require_permission(Permission.BASIC_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> ChunkInfo:
     search_settings = get_current_search_settings(db_session)
-    document_index = get_default_document_index(search_settings, None)
+    # This flow is for search so we do not get all indices.
+    document_index = get_default_document_index(search_settings, None, db_session)
 
     user_acl_filters = build_access_filters_for_user(user, db_session)
     chunk_request = VespaChunkRequest(

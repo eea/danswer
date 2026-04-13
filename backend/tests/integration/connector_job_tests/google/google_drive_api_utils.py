@@ -44,8 +44,7 @@ class GoogleDriveManager:
         about = service.about().get(fields="user").execute()
         if about.get("user", {}).get("emailAddress") != impersonated_user_email:
             raise ValueError(
-                f"Failed to impersonate {impersonated_user_email}. "
-                f"Instead got {about.get('user', {}).get('emailAddress')}"
+                f"Failed to impersonate {impersonated_user_email}. Instead got {about.get('user', {}).get('emailAddress')}"
             )
         return service
 
@@ -131,7 +130,11 @@ class GoogleDriveManager:
         ).execute()
 
     @staticmethod
-    def remove_file_permissions(drive_service: Any, file_id: str, email: str) -> None:
+    def remove_file_permissions(
+        drive_service: Any,
+        file_id: str,
+        email: str,  # noqa: ARG004
+    ) -> None:
         permissions = (
             drive_service.permissions()
             .list(fileId=file_id, supportsAllDrives=True)

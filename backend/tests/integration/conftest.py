@@ -3,6 +3,9 @@ from collections.abc import Callable
 
 import pytest
 
+# Integration tests rely on this mode to enable mock_llm_response paths.
+os.environ["INTEGRATION_TESTS_MODE"] = "true"
+
 from onyx.auth.schemas import UserRole
 from onyx.configs.constants import DocumentSource
 from onyx.db.engine.sql_engine import get_session_with_current_tenant
@@ -13,6 +16,9 @@ from tests.integration.common_utils.constants import GENERAL_HEADERS
 from tests.integration.common_utils.managers.api_key import APIKeyManager
 from tests.integration.common_utils.managers.cc_pair import CCPairManager
 from tests.integration.common_utils.managers.document import DocumentManager
+from tests.integration.common_utils.managers.image_generation import (
+    ImageGenerationConfigManager,
+)
 from tests.integration.common_utils.managers.llm_provider import LLMProviderManager
 from tests.integration.common_utils.managers.user import build_email
 from tests.integration.common_utils.managers.user import DEFAULT_PASSWORD
@@ -20,6 +26,7 @@ from tests.integration.common_utils.managers.user import UserManager
 from tests.integration.common_utils.reset import reset_all
 from tests.integration.common_utils.reset import reset_all_multitenant
 from tests.integration.common_utils.test_models import DATestAPIKey
+from tests.integration.common_utils.test_models import DATestImageGenerationConfig
 from tests.integration.common_utils.test_models import DATestLLMProvider
 from tests.integration.common_utils.test_models import DATestUser
 from tests.integration.common_utils.test_models import SimpleTestDocument
@@ -48,7 +55,8 @@ def load_env_vars(env_file: str = ".env") -> None:
                 line = line.strip()
                 if line and not line.startswith("#"):
                     key, value = line.split("=", 1)
-                    os.environ[key] = value.strip()
+                    # Preserve explicitly pre-set vars (e.g. INTEGRATION_TESTS_MODE).
+                    os.environ.setdefault(key, value.strip())
         print("Successfully loaded environment variables")
     except FileNotFoundError:
         print(f"File {env_file} not found")
@@ -80,11 +88,8 @@ def reset() -> None:
 
 
 @pytest.fixture
-def new_admin_user(reset: None) -> DATestUser | None:
-    try:
-        return UserManager.create(name=ADMIN_USER_NAME)
-    except Exception:
-        return None
+def new_admin_user(reset: None) -> DATestUser:  # noqa: ARG001
+    return UserManager.create(name=ADMIN_USER_NAME)
 
 
 @pytest.fixture
@@ -128,7 +133,7 @@ def admin_user() -> DATestUser:
 def basic_user(
     # make sure the admin user exists first to ensure this new user
     # gets the BASIC role
-    admin_user: DATestUser,
+    admin_user: DATestUser,  # noqa: ARG001
 ) -> DATestUser:
     try:
         user = UserManager.create(name=BASIC_USER_NAME)
@@ -174,8 +179,19 @@ def reset_multitenant() -> None:
 
 
 @pytest.fixture
-def llm_provider(admin_user: DATestUser | None) -> DATestLLMProvider:
+def llm_provider(admin_user: DATestUser) -> DATestLLMProvider:
     return LLMProviderManager.create(user_performing_action=admin_user)
+
+
+@pytest.fixture
+def image_generation_config(
+    admin_user: DATestUser,
+) -> DATestImageGenerationConfig:
+    """Create a default image generation config for tests."""
+    return ImageGenerationConfigManager.create(
+        user_performing_action=admin_user,
+        is_default=True,
+    )
 
 
 @pytest.fixture
@@ -206,11 +222,15 @@ def document_builder(admin_user: DATestUser) -> DocumentBuilderType:
     return _document_builder
 
 
-def pytest_runtest_logstart(nodeid: str, location: tuple[str, int | None, str]) -> None:
+def pytest_runtest_logstart(
+    nodeid: str,
+    location: tuple[str, int | None, str],  # noqa: ARG001
+) -> None:
     print(f"\nTest start: {nodeid}")
 
 
 def pytest_runtest_logfinish(
-    nodeid: str, location: tuple[str, int | None, str]
+    nodeid: str,
+    location: tuple[str, int | None, str],  # noqa: ARG001
 ) -> None:
     print(f"\nTest end: {nodeid}")

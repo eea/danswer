@@ -140,8 +140,7 @@ def _migrate_files_to_postgres() -> None:
     # Fetch rows that have external storage pointers (bucket/object_key not NULL)
     result = session.execute(
         text(
-            "SELECT file_id, bucket_name, object_key FROM file_record "
-            "WHERE bucket_name IS NOT NULL AND object_key IS NOT NULL"
+            "SELECT file_id, bucket_name, object_key FROM file_record WHERE bucket_name IS NOT NULL AND object_key IS NOT NULL"
         )
     )
 
@@ -182,8 +181,7 @@ def _migrate_files_to_postgres() -> None:
             # Update DB row: set lobj_oid, clear bucket/object_key
             session.execute(
                 text(
-                    "UPDATE file_record SET lobj_oid = :lobj_oid, bucket_name = NULL, "
-                    "object_key = NULL WHERE file_id = :file_id"
+                    "UPDATE file_record SET lobj_oid = :lobj_oid, bucket_name = NULL, object_key = NULL WHERE file_id = :file_id"
                 ),
                 {"lobj_oid": lobj_oid, "file_id": file_id},
             )
@@ -224,8 +222,7 @@ def _migrate_files_to_external_storage() -> None:
     # Find all files currently stored in PostgreSQL (lobj_oid is not null)
     result = session.execute(
         text(
-            "SELECT file_id FROM file_record WHERE lobj_oid IS NOT NULL "
-            "AND bucket_name IS NULL AND object_key IS NULL"
+            "SELECT file_id FROM file_record WHERE lobj_oid IS NOT NULL AND bucket_name IS NULL AND object_key IS NULL"
         )
     )
 
@@ -257,8 +254,8 @@ def _migrate_files_to_external_storage() -> None:
             print(f"File {file_id} not found in PostgreSQL storage.")
             continue
 
-        lobj_id = cast(int, file_record.lobj_oid)  # type: ignore
-        file_metadata = cast(Any, file_record.file_metadata)  # type: ignore
+        lobj_id = cast(int, file_record.lobj_oid)
+        file_metadata = cast(Any, file_record.file_metadata)
 
         # Read file content from PostgreSQL
         try:
@@ -280,7 +277,7 @@ def _migrate_files_to_external_storage() -> None:
             else:
                 # Convert other types to dict if possible, otherwise None
                 try:
-                    file_metadata = dict(file_record.file_metadata)  # type: ignore
+                    file_metadata = dict(file_record.file_metadata)
                 except (TypeError, ValueError):
                     file_metadata = None
 

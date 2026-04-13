@@ -71,6 +71,13 @@ def time_str_to_utc(datetime_str: str) -> datetime:
     raise ValueError(f"Unable to parse datetime string: {datetime_str}")
 
 
+# TODO: use this function in other connectors
+def datetime_from_utc_timestamp(timestamp: int) -> datetime:
+    """Convert a Unix timestamp to a datetime object in UTC"""
+
+    return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+
+
 def basic_expert_info_representation(info: BasicExpertInfo) -> str | None:
     if info.first_name and info.last_name:
         return f"{info.first_name} {info.middle_initial} {info.last_name}"
@@ -90,10 +97,17 @@ def basic_expert_info_representation(info: BasicExpertInfo) -> str | None:
 def get_experts_stores_representations(
     experts: list[BasicExpertInfo] | None,
 ) -> list[str] | None:
+    """Gets string representations of experts supplied.
+
+    If an expert cannot be represented as a string, it is omitted from the
+    result.
+    """
     if not experts:
         return None
 
-    reps = [basic_expert_info_representation(owner) for owner in experts]
+    reps: list[str | None] = [
+        basic_expert_info_representation(owner) for owner in experts
+    ]
     return [owner for owner in reps if owner is not None]
 
 
@@ -124,8 +138,7 @@ def _parse_document_source(connector_type: Any) -> DocumentSource | None:
         return DocumentSource(normalized)
     except ValueError:
         logger.warning(
-            f"Invalid connector_type value: '{connector_type}' "
-            f"(normalized: '{normalized}')"
+            f"Invalid connector_type value: '{connector_type}' (normalized: '{normalized}')"
         )
         return None
 
@@ -134,7 +147,7 @@ def process_onyx_metadata(
     metadata: dict[str, Any],
 ) -> tuple[OnyxMetadata, dict[str, Any]]:
     """
-    Users may set Onyx metadata and custom tags in text files. https://docs.onyx.app/admin/connectors/official/file
+    Users may set Onyx metadata and custom tags in text files. https://docs.onyx.app/admins/connectors/official/file
     Any unrecognized fields are treated as custom tags.
     """
     p_owner_names = metadata.get("primary_owners")
@@ -157,6 +170,7 @@ def process_onyx_metadata(
 
     return (
         OnyxMetadata(
+            document_id=metadata.get("id"),
             source_type=source_type,
             link=metadata.get("link"),
             file_display_name=metadata.get("file_display_name"),

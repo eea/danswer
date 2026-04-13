@@ -1,20 +1,13 @@
 "use client";
-import { WellKnownLLMProviderDescriptor } from "@/app/admin/configuration/llm/interfaces";
-import React, {
-  createContext,
-  useContext,
-  useState,
-  useEffect,
-  useCallback,
-} from "react";
-import { useUser } from "../user/UserProvider";
-import { useRouter } from "next/navigation";
-import { checkLlmProvider } from "../initialSetup/welcome/lib";
+import { LLMProviderDescriptor } from "@/interfaces/llm";
+import React, { createContext, useContext, useCallback } from "react";
+import { useLLMProviders } from "@/hooks/useLLMProviders";
 
 interface ProviderContextType {
-  shouldShowConfigurationNeeded: boolean;
-  providerOptions: WellKnownLLMProviderDescriptor[];
-  refreshProviderInfo: () => Promise<void>; // Add this line
+  refreshProviderInfo: () => Promise<void>;
+  llmProviders: LLMProviderDescriptor[] | undefined;
+  isLoadingProviders: boolean;
+  hasProviders: boolean;
 }
 
 const ProviderContext = createContext<ProviderContextType | undefined>(
@@ -26,39 +19,25 @@ export function ProviderContextProvider({
 }: {
   children: React.ReactNode;
 }) {
-  const { user } = useUser();
-  const router = useRouter();
+  const {
+    llmProviders,
+    isLoading: isLoadingProviders,
+    refetch: refetchProviders,
+  } = useLLMProviders();
 
-  const [validProviderExists, setValidProviderExists] = useState<boolean>(true);
-  const [providerOptions, setProviderOptions] = useState<
-    WellKnownLLMProviderDescriptor[]
-  >([]);
+  const hasProviders = (llmProviders?.length ?? 0) > 0;
 
-  const fetchProviderInfo = useCallback(async () => {
-    const { providers, options, defaultCheckSuccessful } =
-      await checkLlmProvider(user);
-
-    setValidProviderExists(providers.length > 0 && defaultCheckSuccessful);
-    setProviderOptions(options);
-  }, [user, setValidProviderExists, setProviderOptions]);
-
-  useEffect(() => {
-    fetchProviderInfo();
-  }, [router, user, fetchProviderInfo]);
-
-  const shouldShowConfigurationNeeded =
-    !validProviderExists && providerOptions.length > 0;
-
-  const refreshProviderInfo = async () => {
-    await fetchProviderInfo();
-  };
+  const refreshProviderInfo = useCallback(async () => {
+    await refetchProviders();
+  }, [refetchProviders]);
 
   return (
     <ProviderContext.Provider
       value={{
-        shouldShowConfigurationNeeded,
-        providerOptions,
-        refreshProviderInfo, // Add this line
+        refreshProviderInfo,
+        llmProviders,
+        isLoadingProviders,
+        hasProviders,
       }}
     >
       {children}

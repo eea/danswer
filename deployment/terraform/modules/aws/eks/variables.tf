@@ -37,6 +37,24 @@ variable "cluster_endpoint_public_access_cidrs" {
   default     = []
 }
 
+variable "main_node_instance_types" {
+  type        = list(string)
+  description = "Instance types for the main node group"
+  default     = ["m7i.4xlarge"]
+}
+
+variable "vespa_node_instance_types" {
+  type        = list(string)
+  description = "Instance types for the Vespa node group"
+  default     = ["m6i.2xlarge"]
+}
+
+variable "vespa_node_subnet_ids" {
+  type        = list(string)
+  description = "Subnet IDs for the Vespa node group (must be in same AZ as Vespa PV). If not specified, uses all cluster subnets."
+  default     = []
+}
+
 variable "eks_managed_node_groups" {
   type        = map(any)
   description = "EKS managed node groups with EBS volume configuration"
@@ -44,7 +62,7 @@ variable "eks_managed_node_groups" {
     # Main node group for all pods except Vespa
     main = {
       name           = "main-node-group"
-      instance_types = ["r7i.4xlarge"]
+      instance_types = null # Will be set from var.main_node_instance_types
       min_size       = 1
       max_size       = 5
       # EBS volume configuration
@@ -67,7 +85,7 @@ variable "eks_managed_node_groups" {
     # Vespa dedicated node group
     vespa = {
       name           = "vespa-node-group"
-      instance_types = ["m6i.2xlarge"]
+      instance_types = null # Will be set from var.vespa_node_instance_types
       min_size       = 1
       max_size       = 1
       # Larger EBS volume for Vespa storage
@@ -142,4 +160,26 @@ variable "rds_db_connect_arn" {
   type        = string
   description = "Full rds-db:connect ARN to allow (required when enable_rds_iam_for_service_account is true)"
   default     = null
+}
+
+variable "cluster_enabled_log_types" {
+  type        = list(string)
+  description = "EKS control plane log types to enable (valid: api, audit, authenticator, controllerManager, scheduler)"
+  default     = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
+
+  validation {
+    condition     = alltrue([for t in var.cluster_enabled_log_types : contains(["api", "audit", "authenticator", "controllerManager", "scheduler"], t)])
+    error_message = "Each entry must be one of: api, audit, authenticator, controllerManager, scheduler."
+  }
+}
+
+variable "cloudwatch_log_group_retention_in_days" {
+  type        = number
+  description = "Number of days to retain EKS control plane logs in CloudWatch (0 = never expire)"
+  default     = 30
+
+  validation {
+    condition     = contains([0, 1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653], var.cloudwatch_log_group_retention_in_days)
+    error_message = "Must be a valid CloudWatch retention value (0, 1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653)."
+  }
 }

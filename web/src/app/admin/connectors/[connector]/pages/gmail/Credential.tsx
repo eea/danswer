@@ -1,12 +1,14 @@
-import Button from "@/refresh-components/buttons/Button";
-import { PopupSpec } from "@/components/admin/connectors/Popup";
+import { Button } from "@opal/components";
+import { toast } from "@/hooks/useToast";
 import React, { useState, useEffect } from "react";
 import { useSWRConfig } from "swr";
 import * as Yup from "yup";
 import { useRouter } from "next/navigation";
+import type { Route } from "next";
 import { adminDeleteCredential } from "@/lib/credential";
 import { setupGmailOAuth } from "@/lib/gmail";
-import { GMAIL_AUTH_IS_ADMIN_COOKIE_NAME } from "@/lib/constants";
+import { DOCS_ADMINS_PATH } from "@/lib/constants";
+import { CRAFT_OAUTH_COOKIE_NAME } from "@/app/craft/v1/constants";
 import Cookies from "js-cookie";
 import { TextFormField, SectionHeader } from "@/components/Field";
 import { Form, Formik } from "formik";
@@ -18,19 +20,15 @@ import {
 } from "@/lib/connectors/credentials";
 import { refreshAllGoogleData } from "@/lib/googleConnector";
 import { ValidSources } from "@/lib/types";
+import { SWR_KEYS } from "@/lib/swr-keys";
 import { buildSimilarCredentialInfoURL } from "@/app/admin/connector/[ccPairId]/lib";
 import { FiFile, FiCheck, FiLink, FiAlertTriangle } from "react-icons/fi";
 import { cn, truncateString } from "@/lib/utils";
+import { Section } from "@/layouts/general-layouts";
 
 type GmailCredentialJsonTypes = "authorized_user" | "service_account";
 
-const GmailCredentialUpload = ({
-  setPopup,
-  onSuccess,
-}: {
-  setPopup: (popupSpec: PopupSpec | null) => void;
-  onSuccess?: () => void;
-}) => {
+const GmailCredentialUpload = ({ onSuccess }: { onSuccess?: () => void }) => {
   const { mutate } = useSWRConfig();
   const [isUploading, setIsUploading] = useState(false);
   const [fileName, setFileName] = useState<string | undefined>();
@@ -63,10 +61,7 @@ const GmailCredentialUpload = ({
           );
         }
       } catch (e) {
-        setPopup({
-          message: `Invalid file provided - ${e}`,
-          type: "error",
-        });
+        toast.error(`Invalid file provided - ${e}`);
         setIsUploading(false);
         return;
       }
@@ -83,20 +78,14 @@ const GmailCredentialUpload = ({
           }
         );
         if (response.ok) {
-          setPopup({
-            message: "Successfully uploaded app credentials",
-            type: "success",
-          });
-          mutate("/api/manage/admin/connector/gmail/app-credential");
+          toast.success("Successfully uploaded app credentials");
+          mutate(SWR_KEYS.googleConnectorAppCredential("gmail"));
           if (onSuccess) {
             onSuccess();
           }
         } else {
           const errorMsg = await response.text();
-          setPopup({
-            message: `Failed to upload app credentials - ${errorMsg}`,
-            type: "error",
-          });
+          toast.error(`Failed to upload app credentials - ${errorMsg}`);
         }
       }
 
@@ -112,20 +101,14 @@ const GmailCredentialUpload = ({
           }
         );
         if (response.ok) {
-          setPopup({
-            message: "Successfully uploaded service account key",
-            type: "success",
-          });
-          mutate("/api/manage/admin/connector/gmail/service-account-key");
+          toast.success("Successfully uploaded service account key");
+          mutate(SWR_KEYS.googleConnectorServiceAccountKey("gmail"));
           if (onSuccess) {
             onSuccess();
           }
         } else {
           const errorMsg = await response.text();
-          setPopup({
-            message: `Failed to upload service account key - ${errorMsg}`,
-            type: "error",
-          });
+          toast.error(`Failed to upload service account key - ${errorMsg}`);
         }
       }
       setIsUploading(false);
@@ -169,10 +152,7 @@ const GmailCredentialUpload = ({
       ) {
         handleFileUpload(file);
       } else {
-        setPopup({
-          message: "Please upload a JSON file",
-          type: "error",
-        });
+        toast.error("Please upload a JSON file");
       }
     }
   };
@@ -236,7 +216,6 @@ const GmailCredentialUpload = ({
 };
 
 interface GmailJsonUploadSectionProps {
-  setPopup: (popupSpec: PopupSpec | null) => void;
   appCredentialData?: { client_id: string };
   serviceAccountCredentialData?: { service_account_email: string };
   isAdmin: boolean;
@@ -245,7 +224,6 @@ interface GmailJsonUploadSectionProps {
 }
 
 export const GmailJsonUploadSection = ({
-  setPopup,
   appCredentialData,
   serviceAccountCredentialData,
   isAdmin,
@@ -253,7 +231,6 @@ export const GmailJsonUploadSection = ({
   existingAuthCredential,
 }: GmailJsonUploadSectionProps) => {
   const { mutate } = useSWRConfig();
-  const router = useRouter();
   const [localServiceAccountData, setLocalServiceAccountData] = useState(
     serviceAccountCredentialData
   );
@@ -298,7 +275,7 @@ export const GmailJsonUploadSection = ({
         <a
           className="text-primary hover:text-primary/80 flex items-center gap-1 text-sm"
           target="_blank"
-          href="https://docs.onyx.app/admin/connectors/official/gmail/overview"
+          href={`${DOCS_ADMINS_PATH}/connectors/official/gmail/overview`}
           rel="noreferrer"
         >
           <FiLink className="h-3 w-3" />
@@ -338,12 +315,12 @@ export const GmailJsonUploadSection = ({
           {isAdmin && !existingAuthCredential && (
             <div className="mt-2">
               <Button
-                danger
+                variant="danger"
                 onClick={async () => {
                   const endpoint =
                     localServiceAccountData?.service_account_email
-                      ? "/api/manage/admin/connector/gmail/service-account-key"
-                      : "/api/manage/admin/connector/gmail/app-credential";
+                      ? SWR_KEYS.googleConnectorServiceAccountKey("gmail")
+                      : SWR_KEYS.googleConnectorAppCredential("gmail");
 
                   const response = await fetch(endpoint, {
                     method: "DELETE",
@@ -355,22 +332,19 @@ export const GmailJsonUploadSection = ({
                     mutate(buildSimilarCredentialInfoURL(ValidSources.Gmail));
 
                     // Add additional mutations to refresh all credential-related endpoints
-                    mutate("/api/manage/admin/connector/gmail/credentials");
+                    mutate(SWR_KEYS.googleConnectorCredentials("gmail"));
+                    mutate(SWR_KEYS.googleConnectorPublicCredential("gmail"));
                     mutate(
-                      "/api/manage/admin/connector/gmail/public-credential"
-                    );
-                    mutate(
-                      "/api/manage/admin/connector/gmail/service-account-credential"
+                      SWR_KEYS.googleConnectorServiceAccountCredential("gmail")
                     );
 
-                    setPopup({
-                      message: `Successfully deleted ${
+                    toast.success(
+                      `Successfully deleted ${
                         localServiceAccountData
                           ? "service account key"
                           : "app credentials"
-                      }`,
-                      type: "success",
-                    });
+                      }`
+                    );
                     // Immediately update local state
                     if (localServiceAccountData) {
                       setLocalServiceAccountData(undefined);
@@ -380,10 +354,7 @@ export const GmailJsonUploadSection = ({
                     handleSuccess();
                   } else {
                     const errorMsg = await response.text();
-                    setPopup({
-                      message: `Failed to delete credentials - ${errorMsg}`,
-                      type: "error",
-                    });
+                    toast.error(`Failed to delete credentials - ${errorMsg}`);
                   }
                 }}
               >
@@ -397,9 +368,7 @@ export const GmailJsonUploadSection = ({
       {!(
         localServiceAccountData?.service_account_email ||
         localAppCredentialData?.client_id
-      ) && (
-        <GmailCredentialUpload setPopup={setPopup} onSuccess={handleSuccess} />
-      )}
+      ) && <GmailCredentialUpload onSuccess={handleSuccess} />}
     </div>
   );
 };
@@ -409,15 +378,20 @@ interface GmailCredentialSectionProps {
   gmailServiceAccountCredential?: Credential<GmailServiceAccountCredentialJson>;
   serviceAccountKeyData?: { service_account_email: string };
   appCredentialData?: { client_id: string };
-  setPopup: (popupSpec: PopupSpec | null) => void;
   refreshCredentials: () => void;
   connectorExists: boolean;
   user: User | null;
+  buildMode?: boolean;
+  onOAuthRedirect?: () => void;
+  onCredentialCreated?: (
+    credential: Credential<
+      GmailCredentialJson | GmailServiceAccountCredentialJson
+    >
+  ) => void;
 }
 
 async function handleRevokeAccess(
   connectorExists: boolean,
-  setPopup: (popupSpec: PopupSpec | null) => void,
   existingCredential:
     | Credential<GmailCredentialJson>
     | Credential<GmailServiceAccountCredentialJson>,
@@ -427,18 +401,12 @@ async function handleRevokeAccess(
     const message =
       "Cannot revoke the Gmail credential while any connector is still associated with the credential. " +
       "Please delete all associated connectors, then try again.";
-    setPopup({
-      message: message,
-      type: "error",
-    });
+    toast.error(message);
     return;
   }
 
   await adminDeleteCredential(existingCredential.id);
-  setPopup({
-    message: "Successfully revoked the Gmail credential!",
-    type: "success",
-  });
+  toast.success("Successfully revoked the Gmail credential!");
 
   refreshCredentials();
 }
@@ -448,10 +416,12 @@ export const GmailAuthSection = ({
   gmailServiceAccountCredential,
   serviceAccountKeyData,
   appCredentialData,
-  setPopup,
   refreshCredentials,
   connectorExists,
   user,
+  buildMode = false,
+  onOAuthRedirect,
+  onCredentialCreated,
 }: GmailCredentialSectionProps) => {
   const router = useRouter();
   const [isAuthenticating, setIsAuthenticating] = useState(false);
@@ -497,19 +467,25 @@ export const GmailAuthSection = ({
               </p>
             </div>
           </div>
-          <Button
-            danger
-            onClick={async () => {
-              handleRevokeAccess(
-                connectorExists,
-                setPopup,
-                existingCredential,
-                refreshCredentials
-              );
-            }}
-          >
-            Revoke Access
-          </Button>
+          <Section flexDirection="row" justifyContent="between" height="fit">
+            <Button
+              variant="danger"
+              onClick={async () => {
+                handleRevokeAccess(
+                  connectorExists,
+                  existingCredential,
+                  refreshCredentials
+                );
+              }}
+            >
+              Revoke Access
+            </Button>
+            {buildMode && onCredentialCreated && (
+              <Button onClick={() => onCredentialCreated(existingCredential)}>
+                Continue
+              </Button>
+            )}
+          </Section>
         </div>
       </div>
     );
@@ -566,23 +542,20 @@ export const GmailAuthSection = ({
                 );
 
                 if (response.ok) {
-                  setPopup({
-                    message: "Successfully created service account credential",
-                    type: "success",
-                  });
+                  toast.success(
+                    "Successfully created service account credential"
+                  );
                   refreshCredentials();
                 } else {
                   const errorMsg = await response.text();
-                  setPopup({
-                    message: `Failed to create service account credential - ${errorMsg}`,
-                    type: "error",
-                  });
+                  toast.error(
+                    `Failed to create service account credential - ${errorMsg}`
+                  );
                 }
               } catch (error) {
-                setPopup({
-                  message: `Failed to create service account credential - ${error}`,
-                  type: "error",
-                });
+                toast.error(
+                  `Failed to create service account credential - ${error}`
+                );
               } finally {
                 formikHelpers.setSubmitting(false);
               }
@@ -596,7 +569,7 @@ export const GmailAuthSection = ({
                   subtext="Enter the email of an admin/owner of the Google Organization that owns the Gmail account(s) you want to index."
                 />
                 <div className="flex">
-                  <Button type="submit" disabled={isSubmitting}>
+                  <Button disabled={isSubmitting} type="submit">
                     {isSubmitting ? "Creating..." : "Create Credential"}
                   </Button>
                 </div>
@@ -622,27 +595,24 @@ export const GmailAuthSection = ({
           onClick={async () => {
             setIsAuthenticating(true);
             try {
-              Cookies.set(GMAIL_AUTH_IS_ADMIN_COOKIE_NAME, "true", {
-                path: "/",
-              });
+              if (buildMode) {
+                Cookies.set(CRAFT_OAUTH_COOKIE_NAME, "true", {
+                  path: "/",
+                });
+              }
               const [authUrl, errorMsg] = await setupGmailOAuth({
                 isAdmin: true,
               });
 
               if (authUrl) {
-                router.push(authUrl);
+                onOAuthRedirect?.();
+                router.push(authUrl as Route);
               } else {
-                setPopup({
-                  message: errorMsg,
-                  type: "error",
-                });
+                toast.error(errorMsg);
                 setIsAuthenticating(false);
               }
             } catch (error) {
-              setPopup({
-                message: `Failed to authenticate with Gmail - ${error}`,
-                type: "error",
-              });
+              toast.error(`Failed to authenticate with Gmail - ${error}`);
               setIsAuthenticating(false);
             }
           }}

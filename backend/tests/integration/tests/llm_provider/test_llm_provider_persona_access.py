@@ -7,6 +7,7 @@ import os
 import pytest
 import requests
 
+from onyx.llm.constants import LlmProviderNames
 from tests.integration.common_utils.constants import API_SERVER_URL
 from tests.integration.common_utils.managers.llm_provider import LLMProviderManager
 from tests.integration.common_utils.managers.persona import PersonaManager
@@ -23,7 +24,7 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture()
 def users_and_groups(
-    reset: None,
+    reset: None,  # noqa: ARG001
 ) -> tuple[DATestUser, DATestUser, int, int]:
     """Create admin, basic user, and two user groups."""
     admin_user = UserManager.create(name="admin_user")
@@ -90,7 +91,7 @@ def test_authorized_persona_access_returns_filtered_providers(
     restricted_provider = LLMProviderManager.create(
         user_performing_action=admin_user,
         name="Restricted Provider",
-        provider="openai",
+        provider=LlmProviderNames.OPENAI,
         api_key="test-key",
         default_model_name="gpt-4o",
         is_public=False,
@@ -106,7 +107,7 @@ def test_authorized_persona_access_returns_filtered_providers(
 
     # Should succeed
     assert response.status_code == 200
-    providers = response.json()
+    providers = response.json()["providers"]
 
     # Should include the restricted provider since basic_user can access the persona
     provider_names = [p["name"] for p in providers]
@@ -123,7 +124,7 @@ def test_persona_id_zero_applies_rbac(
     restricted_provider = LLMProviderManager.create(
         user_performing_action=admin_user,
         name="Group2 Only Provider",
-        provider="openai",
+        provider=LlmProviderNames.OPENAI,
         api_key="test-key",
         default_model_name="gpt-4o",
         is_public=False,
@@ -139,7 +140,7 @@ def test_persona_id_zero_applies_rbac(
 
     # Should succeed (persona_id=0 refers to default persona, which is public)
     assert response.status_code == 200
-    providers = response.json()
+    providers = response.json()["providers"]
 
     # Should NOT include the restricted provider since basic_user is not in group2
     provider_names = [p["name"] for p in providers]
@@ -165,7 +166,7 @@ def test_admin_can_query_any_persona(
     restricted_provider = LLMProviderManager.create(
         user_performing_action=admin_user,
         name="Admin Test Provider",
-        provider="openai",
+        provider=LlmProviderNames.OPENAI,
         api_key="test-key",
         default_model_name="gpt-4o",
         is_public=False,
@@ -181,7 +182,7 @@ def test_admin_can_query_any_persona(
 
     # Should succeed - admins can access any persona
     assert response.status_code == 200
-    providers = response.json()
+    providers = response.json()["providers"]
 
     # Should include the restricted provider
     provider_names = [p["name"] for p in providers]
@@ -198,7 +199,7 @@ def test_public_persona_accessible_to_all(
     public_provider = LLMProviderManager.create(
         user_performing_action=admin_user,
         name="Public Provider",
-        provider="openai",
+        provider=LlmProviderNames.OPENAI,
         api_key="test-key",
         default_model_name="gpt-4o",
         is_public=True,
@@ -222,7 +223,7 @@ def test_public_persona_accessible_to_all(
 
     # Should succeed
     assert response.status_code == 200
-    providers = response.json()
+    providers = response.json()["providers"]
 
     # Should return the public provider
     assert len(providers) > 0

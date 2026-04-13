@@ -9,11 +9,13 @@ on:
 jobs:
   sync-foss:
     runs-on: ubuntu-latest
+    environment: ci-protected
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
       - name: Checkout main Onyx repo
-        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # ratchet:actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
         with:
           fetch-depth: 0
           persist-credentials: false

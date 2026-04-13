@@ -1,17 +1,16 @@
 "use client";
 
 import CardSection from "@/components/admin/CardSection";
-import { AdminPageTitle } from "@/components/admin/Title";
 import {
   DatePickerField,
   FieldLabel,
   TextArrayField,
   TextFormField,
 } from "@/components/Field";
-import { BrainIcon } from "@/components/icons/icons";
-import { Modal } from "@/components/Modal";
-import Button from "@/refresh-components/buttons/Button";
-import UnlabeledSwitchField from "@/refresh-components/formik-fields/UnlabeledSwitchField";
+import * as SettingsLayouts from "@/layouts/settings-layouts";
+import Modal from "@/refresh-components/Modal";
+import { Button } from "@opal/components";
+import SwitchField from "@/refresh-components/form/SwitchField";
 import { Form, Formik, FormikState, useFormikContext } from "formik";
 import { useState } from "react";
 import * as Yup from "yup";
@@ -23,14 +22,18 @@ import {
 import { sanitizeKGConfig } from "@/app/admin/kg/utils";
 import useSWR from "swr";
 import { errorHandlingFetcher } from "@/lib/fetcher";
-import { PopupSpec, usePopup } from "@/components/admin/connectors/Popup";
+import { SWR_KEYS } from "@/lib/swr-keys";
+import { toast } from "@/hooks/useToast";
 import Title from "@/components/ui/title";
 import { redirect } from "next/navigation";
 import { useIsKGExposed } from "@/app/admin/kg/utils";
 import KGEntityTypes from "@/app/admin/kg/KGEntityTypes";
 import Text from "@/refresh-components/texts/Text";
-import SvgSettings from "@/icons/settings";
 import { cn } from "@/lib/utils";
+import { SvgSettings } from "@opal/icons";
+import { ADMIN_ROUTES } from "@/lib/admin-routes";
+
+const route = ADMIN_ROUTES.KNOWLEDGE_GRAPH;
 
 function createDomainField(
   name: string,
@@ -74,12 +77,10 @@ const IgnoreDomains = createDomainField(
 function KGConfiguration({
   kgConfig,
   onSubmitSuccess,
-  setPopup,
   entityTypesMutate,
 }: {
   kgConfig: KGConfig;
   onSubmitSuccess?: () => void;
-  setPopup?: (spec: PopupSpec | null) => void;
   entityTypesMutate?: () => void;
 }) {
   const initialValues: KGConfig = {
@@ -139,17 +140,11 @@ function KGConfiguration({
     if (!response.ok) {
       const errorMsg = (await response.json()).detail;
       console.warn({ errorMsg });
-      setPopup?.({
-        message: "Failed to configure Knowledge Graph.",
-        type: "error",
-      });
+      toast.error("Failed to configure Knowledge Graph.");
       return;
     }
 
-    setPopup?.({
-      message: "Successfully configured Knowledge Graph.",
-      type: "success",
-    });
+    toast.success("Successfully configured Knowledge Graph.");
     resetForm({ values });
     onSubmitSuccess?.();
 
@@ -174,7 +169,7 @@ function KGConfiguration({
                 label="Enabled"
                 subtext="Enable or disable Knowledge Graph."
               />
-              <UnlabeledSwitchField
+              <SwitchField
                 name="enabled"
                 onCheckedChange={(state) => {
                   if (!state) props.resetForm();
@@ -205,7 +200,7 @@ function KGConfiguration({
                 disabled={!props.values.enabled}
               />
             </div>
-            <Button type="submit" disabled={!props.dirty}>
+            <Button disabled={!props.dirty} type="submit">
               Submit
             </Button>
           </div>
@@ -221,18 +216,17 @@ function Main() {
     data: configData,
     isLoading: configIsLoading,
     mutate: configMutate,
-  } = useSWR<KGConfigRaw>("/api/admin/kg/config", errorHandlingFetcher);
+  } = useSWR<KGConfigRaw>(SWR_KEYS.kgConfig, errorHandlingFetcher);
   const {
     data: sourceAndEntityTypesData,
     isLoading: entityTypesIsLoading,
     mutate: entityTypesMutate,
   } = useSWR<SourceAndEntityTypeView>(
-    "/api/admin/kg/entity-types",
+    SWR_KEYS.kgEntityTypes,
     errorHandlingFetcher
   );
 
   // Local State:
-  const { popup, setPopup } = usePopup();
   const [configureModalShown, setConfigureModalShown] = useState(false);
 
   if (
@@ -248,39 +242,40 @@ function Main() {
 
   return (
     <div className="flex flex-col py-4 gap-y-8">
-      {popup}
       <CardSection className="max-w-2xl shadow-01 rounded-08 flex flex-col gap-2">
-        <Text headingH2>Knowledge Graph Configuration (Private Beta)</Text>
+        <Text as="p" headingH2>
+          Knowledge Graph Configuration (Private Beta)
+        </Text>
         <div className="flex flex-col gap-y-6">
           <div>
-            <Text text03>
+            <Text as="p" text03>
               The Knowledge Graph feature lets you explore your data in new
               ways. Instead of searching through unstructured text, your data is
               organized as entities and their relationships, enabling powerful
               queries like:
             </Text>
             <div className="p-4">
-              <Text text03>
+              <Text as="p" text03>
                 - &quot;Summarize my last 3 calls with account XYZ&quot;
               </Text>
-              <Text text03>
+              <Text as="p" text03>
                 - &quot;How many open Jiras are assigned to John Smith, ranked
                 by priority&quot;
               </Text>
             </div>
-            <Text text03>
+            <Text as="p" text03>
               (To use Knowledge Graph queries, you&apos;ll need a dedicated
               Assistant configured in a specific way. Please contact the Onyx
               team for setup instructions.)
             </Text>
           </div>
-          <Text text03>
+          <Text as="p" text03>
             <Title>Getting Started:</Title>
             Begin by configuring some high-level attributes, and then define the
             entities you want to model afterwards.
           </Text>
           <Button
-            leftIcon={SvgSettings}
+            icon={SvgSettings}
             onClick={() => setConfigureModalShown(true)}
           >
             Configure Knowledge Graph
@@ -289,25 +284,31 @@ function Main() {
       </CardSection>
       {kgConfig.enabled && (
         <>
-          <Text headingH2>Entity Types</Text>
+          <Text as="p" headingH2>
+            Entity Types
+          </Text>
           <KGEntityTypes sourceAndEntityTypes={sourceAndEntityTypesData} />
         </>
       )}
       {configureModalShown && (
-        <Modal
-          title="Configure Knowledge Graph"
-          onOutsideClick={() => setConfigureModalShown(false)}
-          className="overflow-y-scroll"
-        >
-          <KGConfiguration
-            kgConfig={kgConfig}
-            setPopup={setPopup}
-            onSubmitSuccess={async () => {
-              await configMutate();
-              setConfigureModalShown(false);
-            }}
-            entityTypesMutate={entityTypesMutate}
-          />
+        <Modal open onOpenChange={() => setConfigureModalShown(false)}>
+          <Modal.Content>
+            <Modal.Header
+              icon={SvgSettings}
+              title="Configure Knowledge Graph"
+              onClose={() => setConfigureModalShown(false)}
+            />
+            <Modal.Body>
+              <KGConfiguration
+                kgConfig={kgConfig}
+                onSubmitSuccess={async () => {
+                  await configMutate();
+                  setConfigureModalShown(false);
+                }}
+                entityTypesMutate={entityTypesMutate}
+              />
+            </Modal.Body>
+          </Modal.Content>
         </Modal>
       )}
     </div>
@@ -326,12 +327,11 @@ export default function Page() {
   }
 
   return (
-    <div className="mx-auto container">
-      <AdminPageTitle
-        title="Knowledge Graph"
-        icon={<BrainIcon size={32} className="my-auto" />}
-      />
-      <Main />
-    </div>
+    <SettingsLayouts.Root>
+      <SettingsLayouts.Header icon={route.icon} title={route.title} separator />
+      <SettingsLayouts.Body>
+        <Main />
+      </SettingsLayouts.Body>
+    </SettingsLayouts.Root>
   );
 }

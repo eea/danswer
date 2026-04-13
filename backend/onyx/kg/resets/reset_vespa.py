@@ -3,7 +3,6 @@ from typing import Any
 
 from redis.lock import Lock as RedisLock
 
-from onyx.background.celery.tasks.kg_processing.utils import extend_lock
 from onyx.configs.constants import CELERY_GENERIC_BEAT_LOCK_TIMEOUT
 from onyx.configs.constants import DocumentSource
 from onyx.db.document import get_num_chunks_for_document
@@ -15,6 +14,7 @@ from onyx.document_index.document_index_utils import get_uuid_from_chunk_info
 from onyx.document_index.vespa.index import KGVespaChunkUpdateRequest
 from onyx.document_index.vespa.index import VespaIndex
 from onyx.document_index.vespa_constants import DOCUMENT_ID_ENDPOINT
+from onyx.kg.utils.lock_utils import extend_lock
 from onyx.utils.logger import setup_logger
 from shared_configs.configs import MULTI_TENANT
 
@@ -71,8 +71,7 @@ def reset_vespa_kg_index(
     or all documents from kg grounded sources if source_name is None.
     """
     logger.info(
-        f"Resetting kg vespa index {index_name} for tenant {tenant_id}, "
-        f"source: {source_name if source_name else 'all'}"
+        f"Resetting kg vespa index {index_name} for tenant {tenant_id}, source: {source_name if source_name else 'all'}"
     )
 
     last_lock_time = time.monotonic()
@@ -122,6 +121,5 @@ def reset_vespa_kg_index(
         )
 
     logger.info(
-        f"Finished resetting kg vespa index {index_name} for tenant {tenant_id}, "
-        f"source: {source_name if source_name else 'all'}"
+        f"Finished resetting kg vespa index {index_name} for tenant {tenant_id}, source: {source_name if source_name else 'all'}"
     )

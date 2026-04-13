@@ -1,10 +1,10 @@
-import Button from "@/refresh-components/buttons/Button";
-import Text from "@/components/ui/text";
+import { Button } from "@opal/components";
+import { Text } from "@opal/components";
 
 import { FaNewspaper, FaTrash } from "react-icons/fa";
 import { TextFormField, TypedFileUploadFormField } from "@/components/Field";
 import { Form, Formik, FormikHelpers } from "formik";
-import { PopupSpec } from "@/components/admin/connectors/Popup";
+import { toast } from "@/hooks/useToast";
 import {
   Credential,
   getDisplayNameForCredentialKey,
@@ -12,12 +12,10 @@ import {
 import { createEditingValidationSchema, createInitialValues } from "../lib";
 import { dictionaryType, formType } from "../types";
 import { isTypedFileField } from "@/lib/connectors/fileTypes";
-import SvgTrash from "@/icons/trash";
-
+import { SvgTrash } from "@opal/icons";
 export interface EditCredentialProps {
   credential: Credential<dictionaryType>;
   onClose: () => void;
-  setPopup: (popupSpec: PopupSpec | null) => void;
   onUpdate: (
     selectedCredentialId: Credential<any>,
     details: any,
@@ -28,7 +26,6 @@ export interface EditCredentialProps {
 export default function EditCredential({
   credential,
   onClose,
-  setPopup,
   onUpdate,
 }: EditCredentialProps) {
   const validationSchema = createEditingValidationSchema(
@@ -45,7 +42,7 @@ export default function EditCredential({
       await onUpdate(credential, values, onClose);
     } catch (error) {
       console.error("Error updating credential:", error);
-      setPopup({ message: "Error updating credential", type: "error" });
+      toast.error("Error updating credential");
     } finally {
       formikHelpers.setSubmitting(false);
     }
@@ -53,7 +50,7 @@ export default function EditCredential({
 
   return (
     <div className="flex flex-col gap-y-6">
-      <Text>
+      <Text as="p">
         Ensure that you update to a credential with the proper permissions!
       </Text>
 
@@ -96,15 +93,10 @@ export default function EditCredential({
               )
             )}
             <div className="flex justify-between w-full">
-              <Button onClick={() => resetForm()} leftIcon={SvgTrash}>
+              <Button onClick={() => resetForm()} icon={SvgTrash}>
                 Reset Changes
               </Button>
-              <Button
-                type="submit"
-                disabled={isSubmitting}
-                className="bg-indigo-500 hover:bg-indigo-400"
-                leftIcon={FaNewspaper}
-              >
+              <Button disabled={isSubmitting} type="submit" icon={FaNewspaper}>
                 Update
               </Button>
             </div>

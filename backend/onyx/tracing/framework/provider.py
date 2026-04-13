@@ -270,8 +270,7 @@ class DefaultTraceProvider(TraceProvider):
             current_trace = Scope.get_current_trace()
             if current_trace is None:
                 logger.error(
-                    "No active trace. Make sure to start a trace with `trace()` first "
-                    "Returning NoOpSpan."
+                    "No active trace. Make sure to start a trace with `trace()` first Returning NoOpSpan."
                 )
                 return NoOpSpan(span_data)
             elif isinstance(current_trace, NoOpTrace) or isinstance(
@@ -300,8 +299,6 @@ class DefaultTraceProvider(TraceProvider):
         else:
             # This should never happen, but mypy needs it
             raise ValueError(f"Invalid parent type: {type(parent)}")
-
-        logger.debug(f"Creating span {span_data} with id {span_id}")
 
         return SpanImpl(
             trace_id=trace_id,

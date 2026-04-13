@@ -42,11 +42,11 @@ def google_drive_test_env_setup() -> Generator[
     None,
 ]:
     # Creating an admin user (first user created is automatically an admin)
-    admin_user: DATestUser = UserManager.create(email="admin@onyx-test.com")
+    admin_user: DATestUser = UserManager.create(email="admin@example.com")
     # Creating a non-admin user
-    test_user_1: DATestUser = UserManager.create(email="test_user_1@onyx-test.com")
+    test_user_1: DATestUser = UserManager.create(email="test_user_1@example.com")
     # Creating a non-admin user
-    test_user_2: DATestUser = UserManager.create(email="test_user_2@onyx-test.com")
+    test_user_2: DATestUser = UserManager.create(email="test_user_2@example.com")
 
     service_account_key = os.environ["FULL_CONTROL_DRIVE_SERVICE_ACCOUNT"]
     drive_id: str | None = None
@@ -108,8 +108,8 @@ def google_drive_test_env_setup() -> Generator[
 
 @pytest.mark.xfail(reason="Needs to be tested for flakiness")
 def test_google_permission_sync(
-    reset: None,
-    vespa_client: vespa_fixture,
+    reset: None,  # noqa: ARG001
+    vespa_client: vespa_fixture,  # noqa: ARG001
     google_drive_test_env_setup: tuple[
         GoogleDriveService, str, DATestCCPair, DATestUser, DATestUser, DATestUser
     ],

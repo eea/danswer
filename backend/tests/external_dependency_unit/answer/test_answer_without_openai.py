@@ -6,28 +6,29 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from onyx.chat.models import AnswerStreamPart
-from onyx.chat.models import MessageResponseIDInfo
 from onyx.chat.models import StreamingError
-from onyx.chat.process_message import stream_chat_message_objects
-from onyx.context.search.models import RetrievalDetails
+from onyx.chat.process_message import handle_stream_message_objects
 from onyx.db.chat import create_chat_session
+from onyx.db.enums import LLMModelFlowType
 from onyx.db.llm import fetch_existing_llm_providers
 from onyx.db.llm import remove_llm_provider
 from onyx.db.llm import update_default_provider
 from onyx.db.llm import upsert_llm_provider
+from onyx.llm.constants import LlmProviderNames
 from onyx.server.manage.llm.models import LLMProviderUpsertRequest
 from onyx.server.manage.llm.models import ModelConfigurationUpsertRequest
-from onyx.server.query_and_chat.models import CreateChatMessageRequest
-from onyx.server.query_and_chat.streaming_models import MessageDelta
-from onyx.server.query_and_chat.streaming_models import MessageStart
+from onyx.server.query_and_chat.models import MessageResponseIDInfo
+from onyx.server.query_and_chat.models import SendMessageRequest
+from onyx.server.query_and_chat.streaming_models import AgentResponseDelta
+from onyx.server.query_and_chat.streaming_models import AgentResponseStart
 from onyx.server.query_and_chat.streaming_models import Packet
 from tests.external_dependency_unit.conftest import create_test_user
 
 
 def test_answer_with_only_anthropic_provider(
     db_session: Session,
-    full_deployment_setup: None,
-    mock_external_deps: None,
+    full_deployment_setup: None,  # noqa: ARG001
+    mock_external_deps: None,  # noqa: ARG001
 ) -> None:
     """Ensure chat still streams answers when only an Anthropic provider is configured."""
 
@@ -35,7 +36,7 @@ def test_answer_with_only_anthropic_provider(
     assert anthropic_api_key, "ANTHROPIC_API_KEY environment variable must be set"
 
     # Drop any existing providers so that only Anthropic is available.
-    for provider in fetch_existing_llm_providers(db_session):
+    for provider in fetch_existing_llm_providers(db_session, [LLMModelFlowType.CHAT]):
         remove_llm_provider(db_session, provider.id)
 
     anthropic_model = "claude-haiku-4-5-20251001"
@@ -44,10 +45,8 @@ def test_answer_with_only_anthropic_provider(
     anthropic_provider = upsert_llm_provider(
         LLMProviderUpsertRequest(
             name=provider_name,
-            provider="anthropic",
+            provider=LlmProviderNames.ANTHROPIC,
             api_key=anthropic_api_key,
-            default_model_name=anthropic_model,
-            fast_default_model_name=anthropic_model,
             is_public=True,
             groups=[],
             model_configurations=[
@@ -59,7 +58,7 @@ def test_answer_with_only_anthropic_provider(
     )
 
     try:
-        update_default_provider(anthropic_provider.id, db_session)
+        update_default_provider(anthropic_provider.id, anthropic_model, db_session)
 
         test_user = create_test_user(db_session, email_prefix="anthropic_only")
         chat_session = create_chat_session(
@@ -69,17 +68,13 @@ def test_answer_with_only_anthropic_provider(
             persona_id=0,
         )
 
-        chat_request = CreateChatMessageRequest(
-            chat_session_id=chat_session.id,
-            parent_message_id=None,
+        chat_request = SendMessageRequest(
             message="hello",
-            file_descriptors=[],
-            search_doc_ids=None,
-            retrieval_options=RetrievalDetails(),
+            chat_session_id=chat_session.id,
         )
 
         response_stream: list[AnswerStreamPart] = []
-        for packet in stream_chat_message_objects(
+        for packet in handle_stream_message_objects(
             new_msg_req=chat_request,
             user=test_user,
             db_session=db_session,
@@ -97,13 +92,13 @@ def test_answer_with_only_anthropic_provider(
         assert has_message_id, "Should include reserved assistant message ID"
 
         has_message_start = any(
-            isinstance(packet, Packet) and isinstance(packet.obj, MessageStart)
+            isinstance(packet, Packet) and isinstance(packet.obj, AgentResponseStart)
             for packet in response_stream
         )
         assert has_message_start, "Stream should have a MessageStart packet"
 
         has_message_delta = any(
-            isinstance(packet, Packet) and isinstance(packet.obj, MessageDelta)
+            isinstance(packet, Packet) and isinstance(packet.obj, AgentResponseDelta)
             for packet in response_stream
         )
         assert has_message_delta, "Stream should have a MessageDelta packet"

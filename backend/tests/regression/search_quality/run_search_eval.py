@@ -13,10 +13,10 @@ from threading import Lock
 from threading import Semaphore
 from typing import cast
 
-import matplotlib.pyplot as plt  # type: ignore
+import matplotlib.pyplot as plt
 import requests
 from dotenv import load_dotenv
-from matplotlib.patches import Patch  # type: ignore
+from matplotlib.patches import Patch
 from pydantic import ValidationError
 from requests.exceptions import RequestException
 from retry import retry
@@ -37,17 +37,12 @@ load_dotenv(env_path)
 # pylint: disable=E402
 # flake8: noqa: E402
 
-from onyx.server.query_and_chat.models import OneShotQARequest
-from onyx.server.query_and_chat.models import OneShotQAResponse
-from onyx.chat.models import ThreadMessage
+from ee.onyx.server.query_and_chat.models import SearchFullResponse
+from ee.onyx.server.query_and_chat.models import SendSearchQueryRequest
 from onyx.configs.app_configs import POSTGRES_API_SERVER_POOL_OVERFLOW
 from onyx.configs.app_configs import POSTGRES_API_SERVER_POOL_SIZE
-from onyx.configs.app_configs import AUTH_TYPE
-from onyx.configs.constants import AuthType
-from onyx.configs.constants import MessageType
-from onyx.context.search.enums import OptionalSearchSetting
-from onyx.context.search.models import IndexFilters
-from onyx.context.search.models import RetrievalDetails
+from onyx.context.search.models import BaseFilters
+from onyx.context.search.models import SavedSearchDoc
 from onyx.db.engine.sql_engine import get_session_with_tenant
 from onyx.db.engine.sql_engine import SqlEngine
 from onyx.utils.logger import setup_logger
@@ -212,9 +207,7 @@ class SearchAnswerAnalyzer:
                 accuracy = found_count / total_count * 100 if total_count > 0 else 0
 
                 print(
-                    f"\n{category.upper()}:"
-                    f"  total queries: {total_count}\n"
-                    f"  found: {found_count} ({accuracy:.1f}%)"
+                    f"\n{category.upper()}:  total queries: {total_count}\n  found: {found_count} ({accuracy:.1f}%)"
                 )
                 best_rank = metrics.best_rank if metrics.found_count > 0 else None
                 worst_rank = metrics.worst_rank if metrics.found_count > 0 else None
@@ -423,62 +416,59 @@ class SearchAnswerAnalyzer:
         return dataset
 
     @retry(tries=3, delay=1, backoff=2)
-    def _perform_oneshot_qa(self, query: str) -> OneshotQAResult:
-        """Perform a OneShot QA query against the Onyx API and time it."""
-        # create the OneShot QA request
-        messages = [ThreadMessage(message=query, sender=None, role=MessageType.USER)]
-        filters = IndexFilters(access_control_list=None, tenant_id=self.tenant_id)
-        qa_request = OneShotQARequest(
-            messages=messages,
-            persona_id=0,  # default persona
-            retrieval_options=RetrievalDetails(
-                run_search=OptionalSearchSetting.ALWAYS,
-                real_time=True,
-                filters=filters,
-                enable_auto_detect_filters=False,
-                limit=self.config.max_search_results,
-            ),
-            skip_gen_ai_answer_generation=self.config.search_only,
+    def _perform_search(self, query: str) -> OneshotQAResult:
+        """Perform a document search query against the Onyx API and time it."""
+        # create the search request
+        filters = BaseFilters()
+        search_request = SendSearchQueryRequest(
+            search_query=query,
+            filters=filters,
+            num_docs_fed_to_llm_selection=self.config.max_search_results,
+            run_query_expansion=False,
+            stream=False,
         )
 
         # send the request
         response = None
         try:
-            request_data = qa_request.model_dump()
+            request_data = search_request.model_dump()
             headers = GENERAL_HEADERS.copy()
-            if AUTH_TYPE != AuthType.DISABLED:
+            # Add API key if present
+            if os.environ.get("ONYX_API_KEY"):
                 headers["Authorization"] = f"Bearer {os.environ.get('ONYX_API_KEY')}"
 
             start_time = time.monotonic()
             response = requests.post(
-                url=f"{self.config.api_url}/query/answer-with-citation",
+                url=f"{self.config.api_url}/search/send-search-message",
                 json=request_data,
                 headers=headers,
                 timeout=self.config.request_timeout,
             )
             time_taken = time.monotonic() - start_time
             response.raise_for_status()
-            result = OneShotQAResponse.model_validate(response.json())
+            result = SearchFullResponse.model_validate(response.json())
 
-            # extract documents from the QA response
-            if result.docs:
-                top_documents = result.docs.top_documents
+            # extract documents from the search response
+            if result.search_docs:
+                top_documents = [
+                    SavedSearchDoc.from_search_doc(doc)
+                    for doc in result.search_docs[: self.config.max_search_results]
+                ]
                 return OneshotQAResult(
                     time_taken=time_taken,
                     top_documents=top_documents,
-                    answer=result.answer,
+                    answer=None,  # search endpoint doesn't generate answers
                 )
         except RequestException as e:
             raise RuntimeError(
-                f"OneShot QA failed for query '{query}': {e}."
-                f" Response: {response.json()}"
+                f"Search failed for query '{query}': {e}. Response: {response.json()}"
                 if response
                 else ""
             )
-        raise RuntimeError(f"OneShot QA returned no documents for query {query}")
+        raise RuntimeError(f"Search returned no documents for query {query}")
 
     def _run_and_analyze_one(self, test_case: TestQuery, total: int) -> AnalysisSummary:
-        result = self._perform_oneshot_qa(test_case.question)
+        result = self._perform_search(test_case.question)
 
         # compute rank
         rank = None
@@ -616,15 +606,13 @@ def run_search_eval(
     # check openai api key is set if doing answer eval (must be called that for ragas to recognize)
     if not config.search_only and not os.environ.get("OPENAI_API_KEY"):
         raise RuntimeError(
-            "OPENAI_API_KEY is required for answer evaluation. "
-            "Please add it to the root .vscode/.env file."
+            "OPENAI_API_KEY is required for answer evaluation. Please add it to the root .vscode/.env file."
         )
 
-    # check onyx api key is set if auth is enabled
-    if AUTH_TYPE != AuthType.DISABLED and not os.environ.get("ONYX_API_KEY"):
+    # check onyx api key is set (auth is always required)
+    if not os.environ.get("ONYX_API_KEY"):
         raise RuntimeError(
-            "ONYX_API_KEY is required if auth is enabled. "
-            "Please create one in the admin panel and add it to the root .vscode/.env file."
+            "ONYX_API_KEY is required. Please create one in the admin panel and add it to the root .vscode/.env file."
         )
 
     # check onyx is running

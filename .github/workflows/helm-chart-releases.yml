@@ -12,15 +12,16 @@ jobs:
     permissions:
       contents: write
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # ratchet:actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
         with:
           fetch-depth: 0
           persist-credentials: false
 
       - name: Install Helm CLI
-        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # ratchet:azure/setup-helm@v4
+        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # ratchet:azure/setup-helm@v5.0.0
         with:
           version: v3.12.1
 
@@ -28,9 +29,11 @@ jobs:
         run: |
           helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
           helm repo add onyx-vespa https://onyx-dot-app.github.io/vespa-helm-charts
+          helm repo add opensearch https://opensearch-project.github.io/helm-charts
           helm repo add cloudnative-pg https://cloudnative-pg.github.io/charts
           helm repo add ot-container-kit https://ot-container-kit.github.io/helm-charts
           helm repo add minio https://charts.min.io/
+          helm repo add code-interpreter https://onyx-dot-app.github.io/python-sandbox/
           helm repo update
 
       - name: Build chart dependencies
@@ -44,7 +47,8 @@ jobs:
           done
 
       - name: Publish Helm charts to gh-pages
-        uses: stefanprodan/helm-gh-pages@0ad2bb377311d61ac04ad9eb6f252fb68e207260 # ratchet:stefanprodan/helm-gh-pages@v1.7.0
+        # NOTE: HEAD of https://github.com/stefanprodan/helm-gh-pages/pull/43
+        uses: stefanprodan/helm-gh-pages@ad32ad3b8720abfeaac83532fd1e9bdfca5bbe27 # zizmor: ignore[impostor-commit]
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           charts_dir: deployment/helm/charts

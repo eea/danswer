@@ -10,13 +10,11 @@ import {
   DropdownMenuTrigger,
   DropdownMenuCheckboxItem,
 } from "@/components/ui/dropdown-menu";
-import Button from "@/refresh-components/buttons/Button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { AccessType, ValidStatuses } from "@/lib/types";
-import IconButton from "@/refresh-components/buttons/IconButton";
-import SvgFilter from "@/icons/filter";
-
+import { Button } from "@opal/components";
+import { SvgFilter } from "@opal/icons";
 export interface FilterOptions {
   accessType: AccessType[] | null;
   docsCountFilter: {
@@ -129,7 +127,11 @@ export const FilterComponent = forwardRef<
     <div className="relative">
       <DropdownMenu open={isOpen} onOpenChange={handleOpenChange}>
         <DropdownMenuTrigger asChild>
-          <IconButton icon={SvgFilter} secondary transient={isOpen} />
+          <Button
+            icon={SvgFilter}
+            prominence="secondary"
+            interaction={isOpen ? "hover" : "rest"}
+          />
         </DropdownMenuTrigger>
         <DropdownMenuContent
           align="end"
@@ -239,7 +241,7 @@ export const FilterComponent = forwardRef<
             >
               <div className="flex gap-2">
                 <Button
-                  secondary={docsOperator !== ">"}
+                  prominence={docsOperator !== ">" ? "secondary" : "primary"}
                   onClick={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
@@ -250,7 +252,7 @@ export const FilterComponent = forwardRef<
                   &gt;
                 </Button>
                 <Button
-                  secondary={docsOperator !== "<"}
+                  prominence={docsOperator !== "<" ? "secondary" : "primary"}
                   onClick={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
@@ -261,7 +263,7 @@ export const FilterComponent = forwardRef<
                   &lt;
                 </Button>
                 <Button
-                  secondary={docsOperator !== "="}
+                  prominence={docsOperator !== "=" ? "secondary" : "primary"}
                   onClick={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
@@ -283,7 +285,7 @@ export const FilterComponent = forwardRef<
             </div>
             <div className="px-2 py-1.5">
               <Button
-                className="w-full"
+                width="full"
                 onClick={(e) => {
                   e.preventDefault();
                   e.stopPropagation();

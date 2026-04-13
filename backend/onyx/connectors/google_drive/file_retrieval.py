@@ -3,10 +3,14 @@ from collections.abc import Iterator
 from datetime import datetime
 from datetime import timezone
 from enum import Enum
+from typing import cast
+from urllib.parse import parse_qs
+from urllib.parse import urlparse
 
 from googleapiclient.discovery import Resource  # type: ignore
 from googleapiclient.errors import HttpError  # type: ignore
 
+from onyx.access.models import ExternalAccess
 from onyx.connectors.google_drive.constants import DRIVE_FOLDER_TYPE
 from onyx.connectors.google_drive.constants import DRIVE_SHORTCUT_TYPE
 from onyx.connectors.google_drive.models import DriveRetrievalStage
@@ -22,6 +26,10 @@ from onyx.connectors.google_utils.google_utils import PAGE_TOKEN_KEY
 from onyx.connectors.google_utils.resources import GoogleDriveService
 from onyx.connectors.interfaces import SecondsSinceUnixEpoch
 from onyx.utils.logger import setup_logger
+from onyx.utils.variable_functionality import (
+    fetch_versioned_implementation_with_fallback,
+)
+from onyx.utils.variable_functionality import noop_fallback
 
 
 logger = setup_logger()
@@ -39,18 +47,24 @@ PERMISSION_FULL_DESCRIPTION = (
     "permissions(id, emailAddress, type, domain, allowFileDiscovery, permissionDetails)"
 )
 FILE_FIELDS = (
-    "nextPageToken, files(mimeType, id, name, "
+    "nextPageToken, files(mimeType, id, name, driveId, parents, "
     "modifiedTime, webViewLink, shortcutDetails, owners(emailAddress), size)"
 )
 FILE_FIELDS_WITH_PERMISSIONS = (
-    f"nextPageToken, files(mimeType, id, name, {PERMISSION_FULL_DESCRIPTION}, permissionIds, "
+    f"nextPageToken, files(mimeType, id, name, driveId, parents, {PERMISSION_FULL_DESCRIPTION}, permissionIds, "
     "modifiedTime, webViewLink, shortcutDetails, owners(emailAddress), size)"
 )
 SLIM_FILE_FIELDS = (
-    f"nextPageToken, files(mimeType, driveId, id, name, {PERMISSION_FULL_DESCRIPTION}, "
+    f"nextPageToken, files(mimeType, driveId, id, name, parents, {PERMISSION_FULL_DESCRIPTION}, "
     "permissionIds, webViewLink, owners(emailAddress), modifiedTime)"
 )
 FOLDER_FIELDS = "nextPageToken, files(id, name, permissions, modifiedTime, webViewLink, shortcutDetails)"
+
+HIERARCHY_FIELDS = "id, name, parents, webViewLink, mimeType, driveId"
+
+HIERARCHY_FIELDS_WITH_PERMISSIONS = (
+    "id, name, parents, webViewLink, mimeType, permissionIds, driveId"
+)
 
 
 def generate_time_range_filter(
@@ -108,6 +122,97 @@ def _get_folders_in_parent(
         q=query,
     ):
         yield file
+
+
+def get_folder_metadata(
+    service: Resource,
+    folder_id: str,
+    field_type: DriveFileFieldType,
+) -> GoogleDriveFileType | None:
+    """Fetch metadata for a folder by ID."""
+    fields = _get_hierarchy_fields_for_file_type(field_type)
+    try:
+        return (
+            service.files()
+            .get(
+                fileId=folder_id,
+                fields=fields,
+                supportsAllDrives=True,
+            )
+            .execute()
+        )
+    except HttpError as e:
+        if e.resp.status in (403, 404):
+            logger.debug(f"Cannot access folder {folder_id}: {e}")
+        else:
+            raise e
+    return None
+
+
+def _get_hierarchy_fields_for_file_type(field_type: DriveFileFieldType) -> str:
+    if field_type == DriveFileFieldType.WITH_PERMISSIONS:
+        return HIERARCHY_FIELDS_WITH_PERMISSIONS
+    else:
+        return HIERARCHY_FIELDS
+
+
+def get_shared_drive_name(
+    service: Resource,
+    drive_id: str,
+) -> str | None:
+    """Fetch the actual name of a shared drive via the drives().get() API.
+
+    The files().get() API returns 'Drive' as the name for shared drive root
+    folders. Only drives().get() returns the real user-assigned name.
+    """
+    try:
+        drive = service.drives().get(driveId=drive_id, fields="name").execute()
+        return drive.get("name")
+    except HttpError as e:
+        if e.resp.status in (403, 404):
+            logger.debug(f"Cannot access drive {drive_id}: {e}")
+        else:
+            raise
+    return None
+
+
+def get_external_access_for_folder(
+    folder: GoogleDriveFileType,
+    google_domain: str,
+    drive_service: GoogleDriveService,
+    add_prefix: bool = False,
+) -> ExternalAccess:
+    """
+    Extract ExternalAccess from a folder's permissions.
+
+    This fetches permissions using the Drive API (via permissionIds) and extracts
+    user emails, group emails, and public access status.
+
+    Uses the EE implementation if available, otherwise returns public access
+    (fallback for non-EE deployments).
+
+    Args:
+        folder: The folder metadata from Google Drive API (must include permissionIds field)
+        google_domain: The company's Google Workspace domain (e.g., "company.com")
+        drive_service: Google Drive service for fetching permission details
+        add_prefix: When True, prefix group IDs with source type (for indexing path).
+                   When False (default), leave unprefixed (for permission sync path
+                   where upsert_document_external_perms handles prefixing).
+
+    Returns:
+        ExternalAccess with extracted permission info
+    """
+    # Try to get the EE implementation
+    get_folder_access_fn = cast(
+        Callable[[GoogleDriveFileType, str, GoogleDriveService, bool], ExternalAccess],
+        fetch_versioned_implementation_with_fallback(
+            "onyx.external_permissions.google_drive.doc_sync",
+            "get_external_access_for_folder",
+            noop_fallback,
+        ),
+    )
+
+    return get_folder_access_fn(folder, google_domain, drive_service, add_prefix)
 
 
 def _get_fields_for_file_type(field_type: DriveFileFieldType) -> str:
@@ -392,4 +497,42 @@ def get_root_folder_id(service: Resource) -> str:
         service.files()
         .get(fileId="root", fields=GoogleFields.ID.value)
         .execute()[GoogleFields.ID.value]
+    )
+
+
+def _extract_file_id_from_web_view_link(web_view_link: str) -> str:
+    parsed = urlparse(web_view_link)
+    path_parts = [part for part in parsed.path.split("/") if part]
+
+    if "d" in path_parts:
+        idx = path_parts.index("d")
+        if idx + 1 < len(path_parts):
+            return path_parts[idx + 1]
+
+    query_params = parse_qs(parsed.query)
+    for key in ("id", "fileId"):
+        value = query_params.get(key)
+        if value and value[0]:
+            return value[0]
+
+    raise ValueError(
+        f"Unable to extract Drive file id from webViewLink: {web_view_link}"
+    )
+
+
+def get_file_by_web_view_link(
+    service: GoogleDriveService,
+    web_view_link: str,
+    fields: str,
+) -> GoogleDriveFileType:
+    """Retrieve a Google Drive file using its webViewLink."""
+    file_id = _extract_file_id_from_web_view_link(web_view_link)
+    return (
+        service.files()
+        .get(
+            fileId=file_id,
+            supportsAllDrives=True,
+            fields=fields,
+        )
+        .execute()
     )

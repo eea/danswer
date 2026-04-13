@@ -22,6 +22,10 @@ spec:
     metadata:
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- $pgIntoChecksum := include "onyx.pgInto.checksumAnnotation" . }}
+        {{- if $pgIntoChecksum }}
+        {{- $pgIntoChecksum | nindent 8 }}
+        {{- end }}
       {{- with .Values.api.podAnnotations }}
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -71,26 +75,41 @@ spec:
             - "/bin/sh"
             - "-c"
             - |
+              {{- if .Values.api.runUpdateCaCertificates }}
+              update-ca-certificates &&
+              {{- end }}
               alembic upgrade head &&
               echo "Starting Onyx Api Server" &&
-              uvicorn onyx.main:app --host 0.0.0.0 --port {{ .Values.api.containerPorts.server }}
+              uvicorn onyx.main:app --host {{ .Values.global.host }} --port {{ .Values.api.containerPorts.server }}
           ports:
             - name: api-server-port
               containerPort: {{ .Values.api.containerPorts.server }}
               protocol: TCP
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
+          {{- with .Values.api.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.api.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.api.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           envFrom:
             - configMapRef:
                 name: {{ .Values.config.envConfigMapName }}
           env:
             {{- include "onyx.envSecrets" . | nindent 12}}
-          {{- with .Values.api.volumeMounts }}
-          volumeMounts:
-            {{- toYaml . | nindent 12 }}
+          {{- $apiVolumeMounts := include "onyx.renderVolumeMounts" (dict "ctx" . "volumeMounts" .Values.api.volumeMounts) }}
+          {{- if $apiVolumeMounts }}
+          {{- $apiVolumeMounts | nindent 10 }}
           {{- end }}
-      {{- with .Values.api.volumes }}
-      volumes:
-        {{- toYaml . | nindent 8 }}
+      {{- $apiVolumes := include "onyx.renderVolumes" (dict "ctx" . "volumes" .Values.api.volumes) }}
+      {{- if $apiVolumes }}
+      {{- $apiVolumes | nindent 6 }}
       {{- end }}
 {{- end }}

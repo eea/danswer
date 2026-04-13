@@ -187,7 +187,6 @@ def on_worker_init(sender: Worker, **kwargs: Any) -> None:
 
             # Check if the Celery task actually exists
             try:
-
                 result: AsyncResult = AsyncResult(attempt.celery_task_id)
 
                 # If the task is not in PENDING state, it exists in Celery
@@ -208,8 +207,7 @@ def on_worker_init(sender: Worker, **kwargs: Any) -> None:
             except Exception:
                 # If we can't check the task status, be conservative and continue
                 logger.warning(
-                    f"Could not verify Celery task status on startup for attempt {attempt.id}, "
-                    f"task_id={attempt.celery_task_id}"
+                    f"Could not verify Celery task status on startup for attempt {attempt.id}, task_id={attempt.celery_task_id}"
                 )
 
 
@@ -245,7 +243,7 @@ class HubPeriodicTask(bootsteps.StartStopStep):
     # it's unclear to me whether using the hub's timer or the bootstep timer is better
     requires = {"celery.worker.components:Hub"}
 
-    def __init__(self, worker: Any, **kwargs: Any) -> None:
+    def __init__(self, worker: Any, **kwargs: Any) -> None:  # noqa: ARG002
         self.interval = CELERY_PRIMARY_WORKER_LOCK_TIMEOUT / 8  # Interval in seconds
         self.task_tref = None
 
@@ -279,8 +277,7 @@ class HubPeriodicTask(bootsteps.StartStopStep):
                 lock.reacquire()
             else:
                 task_logger.warning(
-                    "Full acquisition of primary worker lock. "
-                    "Reasons could be worker restart or lock expiration."
+                    "Full acquisition of primary worker lock. Reasons could be worker restart or lock expiration."
                 )
                 lock = r.lock(
                     OnyxRedisLocks.PRIMARY_WORKER,
@@ -301,7 +298,7 @@ class HubPeriodicTask(bootsteps.StartStopStep):
         except Exception:
             task_logger.exception("Periodic task failed.")
 
-    def stop(self, worker: Any) -> None:
+    def stop(self, worker: Any) -> None:  # noqa: ARG002
         # Cancel the scheduled task when the worker stops
         if self.task_tref:
             self.task_tref.cancel()
@@ -315,16 +312,17 @@ for bootstep in base_bootsteps:
     celery_app.steps["worker"].add(bootstep)
 
 celery_app.autodiscover_tasks(
-    [
-        "onyx.background.celery.tasks.connector_deletion",
-        "onyx.background.celery.tasks.docprocessing",
-        "onyx.background.celery.tasks.evals",
-        "onyx.background.celery.tasks.periodic",
-        "onyx.background.celery.tasks.pruning",
-        "onyx.background.celery.tasks.shared",
-        "onyx.background.celery.tasks.vespa",
-        "onyx.background.celery.tasks.llm_model_update",
-        "onyx.background.celery.tasks.kg_processing",
-        "onyx.background.celery.tasks.user_file_processing",
-    ]
+    app_base.filter_task_modules(
+        [
+            "onyx.background.celery.tasks.connector_deletion",
+            "onyx.background.celery.tasks.docprocessing",
+            "onyx.background.celery.tasks.evals",
+            "onyx.background.celery.tasks.hierarchyfetching",
+            "onyx.background.celery.tasks.pruning",
+            "onyx.background.celery.tasks.shared",
+            "onyx.background.celery.tasks.vespa",
+            "onyx.background.celery.tasks.llm_model_update",
+            "onyx.background.celery.tasks.user_file_processing",
+        ]
+    )
 )

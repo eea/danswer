@@ -7,19 +7,25 @@ from fastapi import HTTPException
 from fastapi import UploadFile
 from pydantic import BaseModel
 from pydantic import ConfigDict
+from pydantic import Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
+from starlette.background import BackgroundTasks
 
-from onyx.background.celery.versioned_apps.client import app as client_app
+from onyx.configs.app_configs import DISABLE_VECTOR_DB
+from onyx.configs.constants import CELERY_USER_FILE_PROCESSING_TASK_EXPIRES
 from onyx.configs.constants import FileOrigin
 from onyx.configs.constants import OnyxCeleryPriority
 from onyx.configs.constants import OnyxCeleryQueues
 from onyx.configs.constants import OnyxCeleryTask
+from onyx.db.enums import UserFileStatus
 from onyx.db.models import Project__UserFile
 from onyx.db.models import User
 from onyx.db.models import UserFile
 from onyx.db.models import UserProject
 from onyx.server.documents.connector import upload_files
 from onyx.server.features.projects.projects_file_utils import categorize_uploaded_files
+from onyx.server.features.projects.projects_file_utils import RejectedFile
 from onyx.utils.logger import setup_logger
 from shared_configs.contextvars import get_current_tenant_id
 
@@ -28,11 +34,20 @@ logger = setup_logger()
 
 class CategorizedFilesResult(BaseModel):
     user_files: list[UserFile]
-    non_accepted_files: list[str]
-    unsupported_files: list[str]
+    rejected_files: list[RejectedFile]
     id_to_temp_id: dict[str, str]
+    # Filenames that should be stored but not indexed.
+    skip_indexing_filenames: set[str] = Field(default_factory=set)
     # Allow SQLAlchemy ORM models inside this result container
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @property
+    def indexable_files(self) -> list[UserFile]:
+        return [
+            uf
+            for uf in self.user_files
+            if (uf.name or "") not in self.skip_indexing_filenames
+        ]
 
 
 def build_hashed_file_key(file: UploadFile) -> str:
@@ -43,20 +58,19 @@ def build_hashed_file_key(file: UploadFile) -> str:
 def create_user_files(
     files: List[UploadFile],
     project_id: int | None,
-    user: User | None,
+    user: User,
     db_session: Session,
     link_url: str | None = None,
     temp_id_map: dict[str, str] | None = None,
 ) -> CategorizedFilesResult:
 
     # Categorize the files
-    categorized_files = categorize_uploaded_files(files)
+    categorized_files = categorize_uploaded_files(files, db_session)
     # NOTE: At the moment, zip metadata is not used for user files.
     # Should revisit to decide whether this should be a feature.
     upload_response = upload_files(categorized_files.acceptable, FileOrigin.USER_FILE)
     user_files = []
-    non_accepted_files = categorized_files.non_accepted
-    unsupported_files = categorized_files.unsupported
+    rejected_files = categorized_files.rejected
     id_to_temp_id: dict[str, str] = {}
     # Pair returned storage paths with the same set of acceptable files we uploaded
     for file_path, file in zip(
@@ -68,11 +82,11 @@ def create_user_files(
         )
         if new_temp_id is not None:
             id_to_temp_id[str(new_id)] = new_temp_id
+        should_skip = (file.filename or "") in categorized_files.skip_indexing
         new_file = UserFile(
             id=new_id,
-            user_id=user.id if user else None,
+            user_id=user.id,
             file_id=file_path,
-            document_id=str(new_id),
             name=file.filename,
             token_count=categorized_files.acceptable_file_to_token_count[
                 file.filename or ""
@@ -80,6 +94,7 @@ def create_user_files(
             link_url=link_url,
             content_type=file.content_type,
             file_type=file.content_type,
+            status=UserFileStatus.SKIPPED if should_skip else UserFileStatus.PROCESSING,
             last_accessed_at=datetime.datetime.now(datetime.timezone.utc),
         )
         # Persist the UserFile first to satisfy FK constraints for association table
@@ -95,20 +110,20 @@ def create_user_files(
     db_session.commit()
     return CategorizedFilesResult(
         user_files=user_files,
-        non_accepted_files=non_accepted_files,
-        unsupported_files=unsupported_files,
+        rejected_files=rejected_files,
         id_to_temp_id=id_to_temp_id,
+        skip_indexing_filenames=categorized_files.skip_indexing,
     )
 
 
 def upload_files_to_user_files_with_indexing(
     files: List[UploadFile],
     project_id: int | None,
-    user: User | None,
+    user: User,
     temp_id_map: dict[str, str] | None,
     db_session: Session,
+    background_tasks: BackgroundTasks | None = None,
 ) -> CategorizedFilesResult:
-    # Validate project ownership if a project_id is provided
     if project_id is not None and user is not None:
         if not check_project_ownership(project_id, user.id, db_session):
             raise HTTPException(status_code=404, detail="Project not found")
@@ -121,33 +136,42 @@ def upload_files_to_user_files_with_indexing(
         temp_id_map=temp_id_map,
     )
     user_files = categorized_files_result.user_files
-    non_accepted_files = categorized_files_result.non_accepted_files
-    unsupported_files = categorized_files_result.unsupported_files
+    rejected_files = categorized_files_result.rejected_files
     id_to_temp_id = categorized_files_result.id_to_temp_id
+    indexable_files = categorized_files_result.indexable_files
     # Trigger per-file processing immediately for the current tenant
     tenant_id = get_current_tenant_id()
-    if non_accepted_files:
-        for filename in non_accepted_files:
-            logger.warning(f"Non-accepted file: {filename}")
-    if unsupported_files:
-        for filename in unsupported_files:
-            logger.warning(f"Unsupported file: {filename}")
-    for user_file in user_files:
-        task = client_app.send_task(
-            OnyxCeleryTask.PROCESS_SINGLE_USER_FILE,
-            kwargs={"user_file_id": user_file.id, "tenant_id": tenant_id},
-            queue=OnyxCeleryQueues.USER_FILE_PROCESSING,
-            priority=OnyxCeleryPriority.HIGH,
+    for rejected_file in rejected_files:
+        logger.warning(
+            f"File {rejected_file.filename} rejected for {rejected_file.reason}"
         )
-        logger.info(
-            f"Triggered indexing for user_file_id={user_file.id} with task_id={task.id}"
-        )
+
+    if DISABLE_VECTOR_DB and background_tasks is not None:
+        from onyx.background.task_utils import drain_processing_loop
+
+        background_tasks.add_task(drain_processing_loop, tenant_id)
+        for user_file in indexable_files:
+            logger.info(f"Queued in-process processing for user_file_id={user_file.id}")
+    else:
+        from onyx.background.celery.versioned_apps.client import app as client_app
+
+        for user_file in indexable_files:
+            task = client_app.send_task(
+                OnyxCeleryTask.PROCESS_SINGLE_USER_FILE,
+                kwargs={"user_file_id": user_file.id, "tenant_id": tenant_id},
+                queue=OnyxCeleryQueues.USER_FILE_PROCESSING,
+                priority=OnyxCeleryPriority.HIGH,
+                expires=CELERY_USER_FILE_PROCESSING_TASK_EXPIRES,
+            )
+            logger.info(
+                f"Triggered indexing for user_file_id={user_file.id} with task_id={task.id}"
+            )
 
     return CategorizedFilesResult(
         user_files=user_files,
-        non_accepted_files=non_accepted_files,
-        unsupported_files=unsupported_files,
+        rejected_files=rejected_files,
         id_to_temp_id=id_to_temp_id,
+        skip_indexing_filenames=categorized_files_result.skip_indexing_filenames,
     )
 
 
@@ -204,3 +228,28 @@ def get_project_instructions(db_session: Session, project_id: int | None) -> str
         return instructions or None
     except Exception:
         return None
+
+
+def get_project_token_count(
+    project_id: int | None,
+    user_id: UUID | None,
+    db_session: Session,
+) -> int:
+    """Return sum of token_count for all user files in the given project.
+
+    If project_id is None, returns 0.
+    """
+    if project_id is None:
+        return 0
+
+    total_tokens = (
+        db_session.query(func.coalesce(func.sum(UserFile.token_count), 0))
+        .filter(
+            UserFile.user_id == user_id,
+            UserFile.projects.any(id=project_id),
+        )
+        .scalar()
+        or 0
+    )
+
+    return int(total_tokens)

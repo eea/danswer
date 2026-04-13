@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { PopupSpec } from "@/components/admin/connectors/Popup";
+import { toast } from "@/hooks/useToast";
 import {
   Table,
   TableHead,
@@ -11,32 +11,22 @@ import CenteredPageSelector from "./CenteredPageSelector";
 import { ThreeDotsLoader } from "@/components/Loading";
 import { InvitedUserSnapshot } from "@/lib/types";
 import { TableHeader } from "@/components/ui/table";
-import Button from "@/refresh-components/buttons/Button";
+import { Button } from "@opal/components";
 import { ErrorCallout } from "@/components/ErrorCallout";
 import { FetchError } from "@/lib/fetcher";
-import { CheckIcon } from "lucide-react";
 import { ConfirmEntityModal } from "@/components/modals/ConfirmEntityModal";
-import SvgCheck from "@/icons/check";
-
+import { SvgCheck } from "@opal/icons";
 const USERS_PER_PAGE = 10;
 
 interface Props {
   users: InvitedUserSnapshot[];
-  setPopup: (spec: PopupSpec) => void;
   mutate: () => void;
   error: FetchError | null;
   isLoading: boolean;
   q: string;
 }
 
-const PendingUsersTable = ({
-  users,
-  setPopup,
-  mutate,
-  error,
-  isLoading,
-  q,
-}: Props) => {
+const PendingUsersTable = ({ users, mutate, error, isLoading, q }: Props) => {
   const [currentPageNum, setCurrentPageNum] = useState<number>(1);
   const [userToApprove, setUserToApprove] = useState<string | null>(null);
 
@@ -70,21 +60,19 @@ const PendingUsersTable = ({
   }
 
   const handleAcceptRequest = async (email: string) => {
+    const normalizedEmail = email.toLowerCase();
     try {
       await fetch("/api/tenants/users/invite/approve", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email: normalizedEmail }),
       });
       mutate();
       setUserToApprove(null);
     } catch (error) {
-      setPopup({
-        type: "error",
-        message: "Failed to approve user request",
-      });
+      toast.error("Failed to approve user request");
     }
   };
 
@@ -119,9 +107,9 @@ const PendingUsersTable = ({
                 <TableCell>
                   <div className="flex justify-end">
                     <Button
-                      secondary
-                      onClick={() => setUserToApprove(user.email)}
-                      leftIcon={SvgCheck}
+                      prominence="secondary"
+                      onClick={() => setUserToApprove(user.email.toLowerCase())}
+                      icon={SvgCheck}
                     >
                       Accept Join Request
                     </Button>

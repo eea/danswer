@@ -15,7 +15,7 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from ee.onyx.server.oauth.api_router import router
-from onyx.auth.users import current_admin_user
+from onyx.auth.permissions import require_permission
 from onyx.configs.app_configs import DEV_MODE
 from onyx.configs.app_configs import OAUTH_CONFLUENCE_CLOUD_CLIENT_ID
 from onyx.configs.app_configs import OAUTH_CONFLUENCE_CLOUD_CLIENT_SECRET
@@ -26,6 +26,7 @@ from onyx.db.credentials import create_credential
 from onyx.db.credentials import fetch_credential_by_id_for_user
 from onyx.db.credentials import update_credential_json
 from onyx.db.engine.sql_engine import get_session
+from onyx.db.enums import Permission
 from onyx.db.models import User
 from onyx.redis.redis_pool import get_redis_client
 from onyx.server.documents.models import CredentialBase
@@ -146,7 +147,7 @@ class ConfluenceCloudOAuth:
 def confluence_oauth_callback(
     code: str,
     state: str,
-    user: User = Depends(current_admin_user),
+    user: User = Depends(require_permission(Permission.FULL_ADMIN_PANEL_ACCESS)),
     db_session: Session = Depends(get_session),
     tenant_id: str | None = Depends(get_current_tenant_id),
 ) -> JSONResponse:
@@ -258,9 +259,9 @@ def confluence_oauth_callback(
 @router.get("/connector/confluence/accessible-resources")
 def confluence_oauth_accessible_resources(
     credential_id: int,
-    user: User = Depends(current_admin_user),
+    user: User = Depends(require_permission(Permission.FULL_ADMIN_PANEL_ACCESS)),
     db_session: Session = Depends(get_session),
-    tenant_id: str | None = Depends(get_current_tenant_id),
+    tenant_id: str | None = Depends(get_current_tenant_id),  # noqa: ARG001
 ) -> JSONResponse:
     """Atlassian's API is weird and does not supply us with enough info to be in a
     usable state after authorizing.  All API's require a cloud id. We have to list
@@ -270,7 +271,11 @@ def confluence_oauth_accessible_resources(
     if not credential:
         raise HTTPException(400, f"Credential {credential_id} not found.")
 
-    credential_dict = credential.credential_json
+    credential_dict = (
+        credential.credential_json.get_value(apply_mask=False)
+        if credential.credential_json
+        else {}
+    )
     access_token = credential_dict["confluence_access_token"]
 
     try:
@@ -321,9 +326,9 @@ def confluence_oauth_finalize(
     cloud_id: str,
     cloud_name: str,
     cloud_url: str,
-    user: User = Depends(current_admin_user),
+    user: User = Depends(require_permission(Permission.FULL_ADMIN_PANEL_ACCESS)),
     db_session: Session = Depends(get_session),
-    tenant_id: str | None = Depends(get_current_tenant_id),
+    tenant_id: str | None = Depends(get_current_tenant_id),  # noqa: ARG001
 ) -> JSONResponse:
     """Saves the info for the selected cloud site to the credential.
     This is the final step in the confluence oauth flow where after the traditional
@@ -337,7 +342,12 @@ def confluence_oauth_finalize(
             detail=f"Confluence Cloud OAuth failed - credential {credential_id} not found.",
         )
 
-    new_credential_json: dict[str, Any] = dict(credential.credential_json)
+    existing_credential_json = (
+        credential.credential_json.get_value(apply_mask=False)
+        if credential.credential_json
+        else {}
+    )
+    new_credential_json: dict[str, Any] = dict(existing_credential_json)
     new_credential_json["cloud_id"] = cloud_id
     new_credential_json["cloud_name"] = cloud_name
     new_credential_json["wiki_base"] = cloud_url

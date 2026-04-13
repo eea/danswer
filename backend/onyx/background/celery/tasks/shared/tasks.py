@@ -25,7 +25,7 @@ from onyx.db.document_set import fetch_document_sets_for_document
 from onyx.db.engine.sql_engine import get_session_with_current_tenant
 from onyx.db.relationships import delete_document_references_from_kg
 from onyx.db.search_settings import get_active_search_settings
-from onyx.document_index.factory import get_default_document_index
+from onyx.document_index.factory import get_all_document_indices
 from onyx.document_index.interfaces import VespaDocumentFields
 from onyx.httpx.httpx_pool import HttpxPool
 from onyx.redis.redis_pool import get_redis_client
@@ -95,16 +95,19 @@ def document_by_cc_pair_cleanup_task(
     try:
         with get_session_with_current_tenant() as db_session:
             action = "skip"
-            chunks_affected = 0
 
             active_search_settings = get_active_search_settings(db_session)
-            doc_index = get_default_document_index(
+            # This flow is for updates and deletion so we get all indices.
+            document_indices = get_all_document_indices(
                 active_search_settings.primary,
                 active_search_settings.secondary,
                 httpx_client=HttpxPool.get("vespa"),
             )
 
-            retry_index = RetryDocumentIndex(doc_index)
+            retry_document_indices: list[RetryDocumentIndex] = [
+                RetryDocumentIndex(document_index)
+                for document_index in document_indices
+            ]
 
             count = get_document_connector_count(db_session, document_id)
             if count == 1:
@@ -114,11 +117,12 @@ def document_by_cc_pair_cleanup_task(
 
                 chunk_count = fetch_chunk_count_for_document(document_id, db_session)
 
-                chunks_affected = retry_index.delete_single(
-                    document_id,
-                    tenant_id=tenant_id,
-                    chunk_count=chunk_count,
-                )
+                for retry_document_index in retry_document_indices:
+                    _ = retry_document_index.delete_single(
+                        document_id,
+                        tenant_id=tenant_id,
+                        chunk_count=chunk_count,
+                    )
 
                 delete_document_references_from_kg(
                     db_session=db_session,
@@ -156,14 +160,18 @@ def document_by_cc_pair_cleanup_task(
                     hidden=doc.hidden,
                 )
 
-                # update Vespa. OK if doc doesn't exist. Raises exception otherwise.
-                chunks_affected = retry_index.update_single(
-                    document_id,
-                    tenant_id=tenant_id,
-                    chunk_count=doc.chunk_count,
-                    fields=fields,
-                    user_fields=None,
-                )
+                for retry_document_index in retry_document_indices:
+                    # TODO(andrei): Previously there was a comment here saying
+                    # it was ok if a doc did not exist in the document index. I
+                    # don't agree with that claim, so keep an eye on this task
+                    # to see if this raises.
+                    retry_document_index.update_single(
+                        document_id,
+                        tenant_id=tenant_id,
+                        chunk_count=doc.chunk_count,
+                        fields=fields,
+                        user_fields=None,
+                    )
 
                 # there are still other cc_pair references to the doc, so just resync to Vespa
                 delete_document_by_connector_credential_pair__no_commit(
@@ -184,11 +192,7 @@ def document_by_cc_pair_cleanup_task(
 
             elapsed = time.monotonic() - start
             task_logger.info(
-                f"doc={document_id} "
-                f"action={action} "
-                f"refcount={count} "
-                f"chunks={chunks_affected} "
-                f"elapsed={elapsed:.2f}"
+                f"doc={document_id} action={action} refcount={count} elapsed={elapsed:.2f}"
             )
     except SoftTimeLimitExceeded:
         task_logger.info(f"SoftTimeLimitExceeded exception. doc={document_id}")
@@ -211,9 +215,7 @@ def document_by_cc_pair_cleanup_task(
             if isinstance(e, httpx.HTTPStatusError):
                 if e.response.status_code == HTTPStatus.BAD_REQUEST:
                     task_logger.exception(
-                        f"Non-retryable HTTPStatusError: "
-                        f"doc={document_id} "
-                        f"status={e.response.status_code}"
+                        f"Non-retryable HTTPStatusError: doc={document_id} status={e.response.status_code}"
                     )
                 completion_status = (
                     OnyxCeleryTaskCompletionStatus.NON_RETRYABLE_EXCEPTION
@@ -232,8 +234,7 @@ def document_by_cc_pair_cleanup_task(
                 # This is the last attempt! mark the document as dirty in the db so that it
                 # eventually gets fixed out of band via stale document reconciliation
                 task_logger.warning(
-                    f"Max celery task retries reached. Marking doc as dirty for reconciliation: "
-                    f"doc={document_id}"
+                    f"Max celery task retries reached. Marking doc as dirty for reconciliation: doc={document_id}"
                 )
                 with get_session_with_current_tenant() as db_session:
                     # delete the cc pair relationship now and let reconciliation clean it up
@@ -269,7 +270,7 @@ def document_by_cc_pair_cleanup_task(
 
 
 @shared_task(name=OnyxCeleryTask.CELERY_BEAT_HEARTBEAT, ignore_result=True, bind=True)
-def celery_beat_heartbeat(self: Task, *, tenant_id: str) -> None:
+def celery_beat_heartbeat(self: Task, *, tenant_id: str) -> None:  # noqa: ARG001
     """When this task runs, it writes a key to Redis with a TTL.
 
     An external observer can check this key to figure out if the celery beat is still running.
@@ -278,4 +279,4 @@ def celery_beat_heartbeat(self: Task, *, tenant_id: str) -> None:
     r: Redis = get_redis_client()
     r.set(ONYX_CELERY_BEAT_HEARTBEAT_KEY, 1, ex=600)
     time_elapsed = time.monotonic() - time_start
-    task_logger.info(f"celery_beat_heartbeat finished: " f"elapsed={time_elapsed:.2f}")
+    task_logger.info(f"celery_beat_heartbeat finished: elapsed={time_elapsed:.2f}")

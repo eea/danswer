@@ -22,9 +22,6 @@ describe("Email/Password Login Workflow", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     fetchSpy = jest.spyOn(global, "fetch");
-    // Mock window.location.href for redirect testing
-    delete (window as any).location;
-    window.location = { href: "" } as any;
   });
 
   afterEach(() => {
@@ -44,7 +41,7 @@ describe("Email/Password Login Workflow", () => {
 
     // User fills out the form using placeholder text
     const emailInput = screen.getByPlaceholderText(/email@yourcompany.com/i);
-    const passwordInput = screen.getByPlaceholderText(/\*/);
+    const passwordInput = screen.getByPlaceholderText(/∗/);
 
     await user.type(emailInput, "test@example.com");
     await user.type(passwordInput, "password123");
@@ -53,9 +50,9 @@ describe("Email/Password Login Workflow", () => {
     const loginButton = screen.getByRole("button", { name: /sign in/i });
     await user.click(loginButton);
 
-    // After successful login, user should be redirected to /chat
+    // Verify success message is shown after login
     await waitFor(() => {
-      expect(window.location.href).toBe("/chat");
+      expect(screen.getByText(/signed in successfully\./i)).toBeInTheDocument();
     });
 
     // Verify API was called with correct credentials
@@ -90,7 +87,7 @@ describe("Email/Password Login Workflow", () => {
 
     // User fills out form with invalid credentials
     const emailInput = screen.getByPlaceholderText(/email@yourcompany.com/i);
-    const passwordInput = screen.getByPlaceholderText(/\*/);
+    const passwordInput = screen.getByPlaceholderText(/∗/);
 
     await user.type(emailInput, "wrong@example.com");
     await user.type(passwordInput, "wrongpassword");
@@ -114,9 +111,6 @@ describe("Email/Password Signup Workflow", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     fetchSpy = jest.spyOn(global, "fetch");
-    // Mock window.location.href
-    delete (window as any).location;
-    window.location = { href: "" } as any;
   });
 
   afterEach(() => {
@@ -142,7 +136,7 @@ describe("Email/Password Signup Workflow", () => {
 
     // User fills out the signup form
     const emailInput = screen.getByPlaceholderText(/email@yourcompany.com/i);
-    const passwordInput = screen.getByPlaceholderText(/\*/);
+    const passwordInput = screen.getByPlaceholderText(/∗/);
 
     await user.type(emailInput, "newuser@example.com");
     await user.type(passwordInput, "securepassword123");
@@ -189,7 +183,7 @@ describe("Email/Password Signup Workflow", () => {
     // Verify success message is shown
     await waitFor(() => {
       expect(
-        screen.getByText(/account created successfully/i)
+        screen.getByText(/account created\. signing in/i)
       ).toBeInTheDocument();
     });
   });
@@ -208,7 +202,7 @@ describe("Email/Password Signup Workflow", () => {
 
     // User fills out form with existing email
     const emailInput = screen.getByPlaceholderText(/email@yourcompany.com/i);
-    const passwordInput = screen.getByPlaceholderText(/\*/);
+    const passwordInput = screen.getByPlaceholderText(/∗/);
 
     await user.type(emailInput, "existing@example.com");
     await user.type(passwordInput, "password123");
@@ -243,7 +237,7 @@ describe("Email/Password Signup Workflow", () => {
 
     // User fills out form
     const emailInput = screen.getByPlaceholderText(/email@yourcompany.com/i);
-    const passwordInput = screen.getByPlaceholderText(/\*/);
+    const passwordInput = screen.getByPlaceholderText(/∗/);
 
     await user.type(emailInput, "user@example.com");
     await user.type(passwordInput, "password123");

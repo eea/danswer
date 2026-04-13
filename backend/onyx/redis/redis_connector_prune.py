@@ -33,6 +33,7 @@ class RedisConnectorPrune:
     PREFIX = "connectorpruning"
 
     FENCE_PREFIX = f"{PREFIX}_fence"
+    FENCE_TTL = 7 * 24 * 60 * 60  # 7 days - defensive TTL to prevent memory leaks
 
     # phase 1 - geneartor task and progress signals
     GENERATORTASK_PREFIX = f"{PREFIX}+generator"  # connectorpruning+generator
@@ -44,6 +45,7 @@ class RedisConnectorPrune:
     )  # connectorpruning_generator_complete
 
     TASKSET_PREFIX = f"{PREFIX}_taskset"  # connectorpruning_taskset
+    TASKSET_TTL = FENCE_TTL
     SUBTASK_PREFIX = f"{PREFIX}+sub"  # connectorpruning+sub
 
     # used to signal the overall workflow is still active
@@ -115,7 +117,7 @@ class RedisConnectorPrune:
             self.redis.delete(self.fence_key)
             return
 
-        self.redis.set(self.fence_key, payload.model_dump_json())
+        self.redis.set(self.fence_key, payload.model_dump_json(), ex=self.FENCE_TTL)
         self.redis.sadd(OnyxRedisConstants.ACTIVE_FENCES, self.fence_key)
 
     def set_active(self) -> None:
@@ -148,7 +150,7 @@ class RedisConnectorPrune:
             self.redis.delete(self.generator_complete_key)
             return
 
-        self.redis.set(self.generator_complete_key, payload)
+        self.redis.set(self.generator_complete_key, payload, ex=self.FENCE_TTL)
 
     def generate_tasks(
         self,
@@ -183,6 +185,7 @@ class RedisConnectorPrune:
 
             # add to the tracking taskset in redis BEFORE creating the celery task.
             self.redis.sadd(self.taskset_key, custom_task_id)
+            self.redis.expire(self.taskset_key, self.TASKSET_TTL)
 
             # Priority on sync's triggered by new indexing should be medium
             result = celery_app.send_task(

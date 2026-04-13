@@ -1,58 +1,79 @@
 "use client";
 
-import { useRef } from "react";
-import Button from "@/refresh-components/buttons/Button";
-import SvgFolderPlus from "@/icons/folder-plus";
-import DefaultModalLayout from "@/refresh-components/layouts/DefaultModalLayout";
-import { useProjectsContext } from "@/app/chat/projects/ProjectsContext";
+import { useState, useEffect } from "react";
+import { Button } from "@opal/components";
+import { useProjectsContext } from "@/providers/ProjectsContext";
 import { useKeyPress } from "@/hooks/useKeyPress";
-import FieldInput from "@/refresh-components/inputs/FieldInput";
+import * as InputLayouts from "@/layouts/input-layouts";
 import { useAppRouter } from "@/hooks/appNavigation";
 import { useModal } from "@/refresh-components/contexts/ModalContext";
+import { SvgFolderPlus } from "@opal/icons";
+import Modal from "@/refresh-components/Modal";
+import InputTypeIn from "@/refresh-components/inputs/InputTypeIn";
+import { toast } from "@/hooks/useToast";
 
-export default function CreateProjectModal() {
+interface CreateProjectModalProps {
+  initialProjectName?: string;
+}
+
+export default function CreateProjectModal({
+  initialProjectName,
+}: CreateProjectModalProps) {
   const { createProject } = useProjectsContext();
   const modal = useModal();
-  const fieldInputRef = useRef<HTMLInputElement>(null);
   const route = useAppRouter();
+  const [projectName, setProjectName] = useState(initialProjectName ?? "");
+
+  // Reset when prop changes (modal reopens with different value)
+  useEffect(() => {
+    setProjectName(initialProjectName ?? "");
+  }, [initialProjectName]);
 
   async function handleSubmit() {
-    if (!fieldInputRef.current) return;
-    const name = fieldInputRef.current.value.trim();
+    const name = projectName.trim();
     if (!name) return;
 
     try {
       const newProject = await createProject(name);
       route({ projectId: newProject.id });
+      modal.toggle(false);
     } catch (e) {
-      console.error(`Failed to create the project ${name}`);
+      toast.error(`Failed to create the project ${name}`);
     }
-
-    modal.toggle(false);
   }
 
   useKeyPress(handleSubmit, "Enter");
 
   return (
-    <DefaultModalLayout
-      icon={SvgFolderPlus}
-      title="Create New Project"
-      description="Use projects to organize your files and chats in one place, and add custom instructions for ongoing work."
-      mini
-    >
-      <div className="flex flex-col p-4 bg-background-tint-01">
-        <FieldInput
-          label="Project Name"
-          placeholder="What are you working on?"
-          ref={fieldInputRef}
-        />
-      </div>
-      <div className="flex flex-row justify-end gap-2 p-4">
-        <Button secondary onClick={() => modal.toggle(false)}>
-          Cancel
-        </Button>
-        <Button onClick={handleSubmit}>Create Project</Button>
-      </div>
-    </DefaultModalLayout>
+    <>
+      <Modal open={modal.isOpen} onOpenChange={modal.toggle}>
+        <Modal.Content width="sm">
+          <Modal.Header
+            icon={SvgFolderPlus}
+            title="Create New Project"
+            description="Use projects to organize your files and chats in one place, and add custom instructions for ongoing work."
+            onClose={() => modal.toggle(false)}
+          />
+          <Modal.Body>
+            <InputLayouts.Vertical title="Project Name">
+              <InputTypeIn
+                value={projectName}
+                onChange={(e) => setProjectName(e.target.value)}
+                placeholder="What are you working on?"
+                showClearButton
+              />
+            </InputLayouts.Vertical>
+          </Modal.Body>
+          <Modal.Footer>
+            <Button prominence="secondary" onClick={() => modal.toggle(false)}>
+              Cancel
+            </Button>
+            <Button disabled={!projectName.trim()} onClick={handleSubmit}>
+              Create Project
+            </Button>
+          </Modal.Footer>
+        </Modal.Content>
+      </Modal>
+    </>
   );
 }

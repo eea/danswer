@@ -6,9 +6,9 @@ export const TOOL_IDS = {
   actionToggle: '[data-testid="action-management-toggle"]',
   options: '[data-testid="tool-options"]',
   // These IDs are derived from tool.name in the app
-  searchOption: '[data-testid="tool-option-SearchTool"]',
-  webSearchOption: '[data-testid="tool-option-WebSearchTool"]',
-  imageGenerationOption: '[data-testid="tool-option-ImageGenerationTool"]',
+  searchOption: '[data-testid="tool-option-internal_search"]',
+  webSearchOption: '[data-testid="tool-option-web_search"]',
+  imageGenerationOption: '[data-testid="tool-option-generate_image"]',
   // Generic toggle selector used inside tool options
   toggleInput: 'input[type="checkbox"], input[type="radio"], [role="switch"]',
 } as const;
@@ -26,12 +26,51 @@ export async function waitForUnifiedGreeting(page: Page): Promise<string> {
 
 // Ensure the Action Management popover is open
 export async function openActionManagement(page: Page): Promise<void> {
-  await page.click(TOOL_IDS.actionToggle);
-  await page.waitForSelector(TOOL_IDS.options, { timeout: 5000 });
+  const actionToggle = page.locator(TOOL_IDS.actionToggle);
+  await actionToggle.waitFor();
+  await actionToggle.click();
+  await page.locator(TOOL_IDS.options).waitFor();
 }
 
 // Check presence of the Action Management toggle
 export async function isActionTogglePresent(page: Page): Promise<boolean> {
   const el = await page.$(TOOL_IDS.actionToggle);
   return !!el;
+}
+
+/**
+ * Click the disable/enable (slash) button on a tool line item.
+ * The button is hidden until hover; we hover first, then force-click
+ * using aria-label which matches the button's current state.
+ */
+export async function toggleToolDisabled(
+  page: Page,
+  toolSelector: string
+): Promise<void> {
+  const toolOption = page.locator(toolSelector);
+  await toolOption.hover();
+  const slashButton = toolOption.locator(
+    'button[aria-label="Disable"], button[aria-label="Enable"]'
+  );
+  await slashButton.first().click({ force: true });
+}
+
+/**
+ * Open the source management secondary view for the internal search tool.
+ * Assumes the ActionsPopover is already open.
+ */
+export async function openSourceManagement(page: Page): Promise<void> {
+  const searchOption = page.locator(TOOL_IDS.searchOption);
+  await searchOption
+    .locator('button[aria-label="Configure Connectors"]')
+    .click();
+  // Wait for the source list Back button (indicates secondary view is open)
+  await page.locator('button[aria-label="Back"]').waitFor({ timeout: 5000 });
+}
+
+/**
+ * Get a source toggle Switch in the source management view by display name.
+ */
+export function getSourceToggle(page: Page, sourceName: string) {
+  return page.locator(`[aria-label="Toggle ${sourceName}"]`);
 }

@@ -1,8 +1,9 @@
 "use client";
 
-import React, { useState, useEffect, useMemo } from "react";
-import { FieldArray, useFormikContext, ErrorMessage, Field } from "formik";
-import { CCPairDescriptor, DocumentSetSummary } from "@/lib/types";
+import { useState, useEffect, useMemo } from "react";
+import { FieldArray, useFormikContext, ErrorMessage } from "formik";
+import { DocumentSetSummary } from "@/lib/types";
+import { toast } from "@/hooks/useToast";
 import {
   Label,
   SelectorFormField,
@@ -10,16 +11,17 @@ import {
   TextArrayField,
   TextFormField,
 } from "@/components/Field";
-import Button from "@/refresh-components/buttons/Button";
-import { MinimalPersonaSnapshot } from "@/app/admin/assistants/interfaces";
-import { DocumentSetSelectable } from "@/components/documentSet/DocumentSetSelectable";
-import CollapsibleSection from "@/app/admin/assistants/CollapsibleSection";
+import { Button } from "@opal/components";
+import { MinimalPersonaSnapshot } from "@/app/admin/agents/interfaces";
+import DocumentSetCard from "@/sections/cards/DocumentSetCard";
+import CollapsibleSection from "@/app/admin/agents/CollapsibleSection";
 import { StandardAnswerCategoryResponse } from "@/components/standardAnswers/getStandardAnswerCategoriesIfEE";
 import { StandardAnswerCategoryDropdownField } from "@/components/standardAnswers/StandardAnswerCategoryDropdown";
 import { RadioGroup } from "@/components/ui/radio-group";
 import { RadioGroupItemField } from "@/components/ui/RadioGroupItemField";
 import { AlertCircle } from "lucide-react";
 import { useRouter } from "next/navigation";
+import type { Route } from "next";
 import {
   Tooltip,
   TooltipContent,
@@ -28,7 +30,7 @@ import {
 import { TooltipProvider } from "@radix-ui/react-tooltip";
 import { SourceIcon } from "@/components/SourceIcon";
 import Link from "next/link";
-import AgentIcon from "@/refresh-components/AgentIcon";
+import AgentAvatar from "@/refresh-components/avatars/AgentAvatar";
 import { Badge } from "@/components/ui/badge";
 import {
   Accordion,
@@ -37,20 +39,15 @@ import {
   AccordionTrigger,
 } from "@/components/ui/accordion";
 import Separator from "@/refresh-components/Separator";
-
-import { CheckboxField as CheckFormField } from "@/refresh-components/formik-fields/CheckboxField";
+import { CheckboxField } from "@/refresh-components/form/LabeledCheckboxField";
 
 export interface SlackChannelConfigFormFieldsProps {
   isUpdate: boolean;
   isDefault: boolean;
   documentSets: DocumentSetSummary[];
-  searchEnabledAssistants: MinimalPersonaSnapshot[];
-  nonSearchAssistants: MinimalPersonaSnapshot[];
+  searchEnabledAgents: MinimalPersonaSnapshot[];
+  nonSearchAgents: MinimalPersonaSnapshot[];
   standardAnswerCategoryResponse: StandardAnswerCategoryResponse;
-  setPopup: (popup: {
-    message: string;
-    type: "error" | "success" | "warning";
-  }) => void;
   slack_bot_id: number;
   formikProps: any;
 }
@@ -59,18 +56,16 @@ export function SlackChannelConfigFormFields({
   isUpdate,
   isDefault,
   documentSets,
-  searchEnabledAssistants,
-  nonSearchAssistants,
+  searchEnabledAgents,
+  nonSearchAgents,
   standardAnswerCategoryResponse,
-  setPopup,
   slack_bot_id,
   formikProps,
 }: SlackChannelConfigFormFieldsProps) {
   const router = useRouter();
   const { values, setFieldValue } = useFormikContext<any>();
   const [viewUnselectableSets, setViewUnselectableSets] = useState(false);
-  const [viewSyncEnabledAssistants, setViewSyncEnabledAssistants] =
-    useState(false);
+  const [viewSyncEnabledAgents, setViewSyncEnabledAgents] = useState(false);
 
   // Helper function to check if a document set contains sync connectors
   const documentSetContainsSync = (documentSet: DocumentSetSummary) => {
@@ -91,11 +86,11 @@ export function SlackChannelConfigFormFields({
     return documentSet.cc_pair_summaries;
   };
 
-  const [syncEnabledAssistants, availableAssistants] = useMemo(() => {
+  const [syncEnabledAgents, availableAgents] = useMemo(() => {
     const sync: MinimalPersonaSnapshot[] = [];
     const available: MinimalPersonaSnapshot[] = [];
 
-    searchEnabledAssistants.forEach((persona) => {
+    searchEnabledAgents.forEach((persona) => {
       const hasSyncSet = persona.document_sets.some(documentSetContainsSync);
       if (hasSyncSet) {
         sync.push(persona);
@@ -105,7 +100,7 @@ export function SlackChannelConfigFormFields({
     });
 
     return [sync, available];
-  }, [searchEnabledAssistants]);
+  }, [searchEnabledAgents]);
 
   const unselectableSets = useMemo(() => {
     return documentSets.filter(documentSetContainsSync);
@@ -142,13 +137,11 @@ export function SlackChannelConfigFormFields({
           (dsId: number) => !invalidSelected.includes(dsId)
         )
       );
-      setPopup({
-        message:
-          "We removed one or more document sets from your selection because they are no longer valid. Please review and update your configuration.",
-        type: "warning",
-      });
+      toast.warning(
+        "We removed one or more document sets from your selection because they are no longer valid. Please review and update your configuration."
+      );
     }
-  }, [unselectableSets, values.document_sets, setFieldValue, setPopup]);
+  }, [unselectableSets, values.document_sets, setFieldValue]);
 
   const shouldShowPrivacyAlert = useMemo(() => {
     if (values.knowledge_source === "document_sets") {
@@ -157,10 +150,10 @@ export function SlackChannelConfigFormFields({
       );
       return selectedSets.some((ds) => documentSetContainsPrivate(ds));
     } else if (values.knowledge_source === "assistant") {
-      const chosenAssistant = searchEnabledAssistants.find(
+      const chosenAgent = searchEnabledAgents.find(
         (p) => p.id == values.persona_id
       );
-      return chosenAssistant?.document_sets.some((ds) =>
+      return chosenAgent?.document_sets.some((ds) =>
         documentSetContainsPrivate(ds)
       );
     }
@@ -181,7 +174,7 @@ export function SlackChannelConfigFormFields({
               messages (DMs) in your Slack workspace.
             </p>
             <div className="mt-4 p-4 bg-background rounded-md border border-neutral-300">
-              <CheckFormField
+              <CheckboxField
                 name="disabled"
                 label="Disable Default Configuration"
                 labelClassName="text-text"
@@ -230,14 +223,14 @@ export function SlackChannelConfigFormFields({
             <RadioGroupItemField
               value="assistant"
               id="assistant"
-              label="Search Assistant"
+              label="Search Agent"
               sublabel="Control both the documents and the prompt to use for answering questions"
             />
             <RadioGroupItemField
-              value="non_search_assistant"
-              id="non_search_assistant"
-              label="Non-Search Assistant"
-              sublabel="Chat with an assistant that does not use documents"
+              value="non_search_agent"
+              id="non_search_agent"
+              label="Non-Search Agent"
+              sublabel="Chat with an agent that does not use documents"
             />
           </RadioGroup>
         </div>
@@ -286,16 +279,13 @@ export function SlackChannelConfigFormFields({
                           const isSelected = selectedIndex !== -1;
 
                           return (
-                            <DocumentSetSelectable
+                            <DocumentSetCard
                               key={documentSet.id}
                               documentSet={documentSet}
                               isSelected={isSelected}
-                              onSelect={() => {
-                                if (isSelected) {
-                                  arrayHelpers.remove(selectedIndex);
-                                } else {
-                                  arrayHelpers.push(documentSet.id);
-                                }
+                              onSelectToggle={(selected) => {
+                                if (selected) arrayHelpers.push(documentSet.id);
+                                else arrayHelpers.remove(selectedIndex);
                               }}
                             />
                           );
@@ -311,13 +301,12 @@ export function SlackChannelConfigFormFields({
                         </p>
                         <div className="mb-3 mt-2 flex gap-2 flex-wrap text-sm">
                           {unselectableSets.map((documentSet) => (
-                            <DocumentSetSelectable
+                            <DocumentSetCard
                               key={documentSet.id}
                               documentSet={documentSet}
                               disabled
                               disabledTooltip="Unable to use this document set because it contains a connector with auto-sync permissions. OnyxBot's responses in this channel are visible to all Slack users, so mirroring the asker's permissions could inadvertently expose private information."
                               isSelected={false}
-                              onSelect={() => {}}
                             />
                           ))}
                         </div>
@@ -337,29 +326,28 @@ export function SlackChannelConfigFormFields({
           <div className="mt-4">
             <SubLabel>
               <>
-                Select the search-enabled assistant OnyxBot will use while
-                answering questions in Slack.
-                {syncEnabledAssistants.length > 0 && (
+                Select the search-enabled agent OnyxBot will use while answering
+                questions in Slack.
+                {syncEnabledAgents.length > 0 && (
                   <>
                     <br />
                     <span className="text-sm text-text-dark/80">
-                      Note: Some of your assistants have auto-synced connectors
-                      in their document sets. You cannot select these assistants
-                      as they will not be able to answer questions in Slack.{" "}
+                      Note: Some of your agents have auto-synced connectors in
+                      their document sets. You cannot select these agents as
+                      they will not be able to answer questions in Slack.{" "}
                       <button
                         type="button"
                         onClick={() =>
-                          setViewSyncEnabledAssistants(
-                            (viewSyncEnabledAssistants) =>
-                              !viewSyncEnabledAssistants
+                          setViewSyncEnabledAgents(
+                            (viewSyncEnabledAgents) => !viewSyncEnabledAgents
                           )
                         }
                         className="text-sm text-action-link-05"
                       >
-                        {viewSyncEnabledAssistants
+                        {viewSyncEnabledAgents
                           ? "Hide un-selectable "
                           : "View all "}
-                        assistants
+                        agents
                       </button>
                     </span>
                   </>
@@ -369,64 +357,61 @@ export function SlackChannelConfigFormFields({
 
             <SelectorFormField
               name="persona_id"
-              options={availableAssistants.map((persona) => ({
+              options={availableAgents.map((persona) => ({
                 name: persona.name,
                 value: persona.id,
               }))}
             />
-            {viewSyncEnabledAssistants && syncEnabledAssistants.length > 0 && (
+            {viewSyncEnabledAgents && syncEnabledAgents.length > 0 && (
               <div className="mt-4">
                 <p className="text-sm text-text-dark/80">
-                  Un-selectable assistants:
+                  Un-selectable agents:
                 </p>
                 <div className="mb-3 mt-2 flex gap-2 flex-wrap text-sm">
-                  {syncEnabledAssistants.map(
-                    (persona: MinimalPersonaSnapshot) => (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          router.push(`/admin/assistants/${persona.id}`)
-                        }
-                        key={persona.id}
-                        className="p-2 bg-background-100 cursor-pointer rounded-md flex items-center gap-2"
-                      >
-                        <AgentIcon agent={persona} size={16} />
-                        {persona.name}
-                      </button>
-                    )
-                  )}
+                  {syncEnabledAgents.map((persona: MinimalPersonaSnapshot) => (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        router.push(`/app/agents/edit/${persona.id}` as Route)
+                      }
+                      key={persona.id}
+                      className="p-2 bg-background-100 cursor-pointer rounded-md flex items-center gap-2"
+                    >
+                      <AgentAvatar agent={persona} size={16} />
+                      {persona.name}
+                    </button>
+                  ))}
                 </div>
               </div>
             )}
           </div>
         )}
-        {values.knowledge_source === "non_search_assistant" && (
+        {values.knowledge_source === "non_search_agent" && (
           <div className="mt-4">
             <SubLabel>
               <>
-                Select the non-search assistant OnyxBot will use while answering
+                Select the non-search agent OnyxBot will use while answering
                 questions in Slack.
-                {syncEnabledAssistants.length > 0 && (
+                {syncEnabledAgents.length > 0 && (
                   <>
                     <br />
                     <span className="text-sm text-text-dark/80">
-                      Note: Some of your assistants have auto-synced connectors
-                      in their document sets. You cannot select these assistants
-                      as they will not be able to answer questions in Slack.{" "}
+                      Note: Some of your agents have auto-synced connectors in
+                      their document sets. You cannot select these agents as
+                      they will not be able to answer questions in Slack.{" "}
                       <button
                         type="button"
                         onClick={() =>
-                          setViewSyncEnabledAssistants(
-                            (viewSyncEnabledAssistants) =>
-                              !viewSyncEnabledAssistants
+                          setViewSyncEnabledAgents(
+                            (viewSyncEnabledAgents) => !viewSyncEnabledAgents
                           )
                         }
                         className="text-sm text-action-link-05"
                       >
-                        {viewSyncEnabledAssistants
+                        {viewSyncEnabledAgents
                           ? "Hide un-selectable "
                           : "View all "}
-                        assistants
+                        agents
                       </button>
                     </span>
                   </>
@@ -436,7 +421,7 @@ export function SlackChannelConfigFormFields({
 
             <SelectorFormField
               name="persona_id"
-              options={nonSearchAssistants.map((persona) => ({
+              options={nonSearchAgents.map((persona) => ({
                 name: persona.name,
                 value: persona.id,
               }))}
@@ -446,13 +431,13 @@ export function SlackChannelConfigFormFields({
       </div>
       <Separator className="my-4" />
       <Accordion type="multiple" className="gap-y-2 w-full">
-        {values.knowledge_source !== "non_search_assistant" && (
+        {values.knowledge_source !== "non_search_agent" && (
           <AccordionItem value="search-options">
             <AccordionTrigger className="text-text">
               Search Configuration
             </AccordionTrigger>
             <AccordionContent>
-              <div className="space-y-4">
+              <div className="space-y-4 pb-3">
                 <div className="w-64">
                   <SelectorFormField
                     name="response_type"
@@ -464,13 +449,7 @@ export function SlackChannelConfigFormFields({
                     ]}
                   />
                 </div>
-                <CheckFormField
-                  name="enable_auto_filters"
-                  label="Enable LLM Autofiltering"
-                  tooltip="If set, the LLM will generate source and time filters based on the user's query"
-                />
-
-                <CheckFormField
+                <CheckboxField
                   name="answer_validity_check_enabled"
                   label="Only respond if citations found"
                   tooltip="If set, will only answer questions where the model successfully produces citations"
@@ -484,13 +463,13 @@ export function SlackChannelConfigFormFields({
           <AccordionTrigger>General Configuration</AccordionTrigger>
           <AccordionContent className="overflow-visible">
             <div className="space-y-4">
-              <CheckFormField
+              <CheckboxField
                 name="show_continue_in_web_ui"
                 label="Show Continue in Web UI button"
                 tooltip="If set, will show a button at the bottom of the response that allows the user to continue the conversation in the Onyx Web UI"
               />
 
-              <CheckFormField
+              <CheckboxField
                 name="still_need_help_enabled"
                 onChange={(checked: boolean) => {
                   setFieldValue("still_need_help_enabled", checked);
@@ -521,26 +500,26 @@ export function SlackChannelConfigFormFields({
                 </CollapsibleSection>
               )}
 
-              <CheckFormField
+              <CheckboxField
                 name="questionmark_prefilter_enabled"
                 label="Only respond to questions"
                 tooltip="If set, OnyxBot will only respond to messages that contain a question mark"
               />
-              <CheckFormField
+              <CheckboxField
                 name="respond_tag_only"
                 label="Respond to @OnyxBot Only"
                 tooltip="If set, OnyxBot will only respond when directly tagged"
               />
-              <CheckFormField
+              <CheckboxField
                 name="respond_to_bots"
                 label="Respond to Bot messages"
                 tooltip="If not set, OnyxBot will always ignore messages from Bots"
               />
-              <CheckFormField
+              <CheckboxField
                 name="is_ephemeral"
                 label="Respond to user in a private (ephemeral) message"
                 tooltip="If set, OnyxBot will respond only to the user in a private (ephemeral) message. If you also
-                chose 'Search' Assistant above, selecting this option will make documents that are private to the user
+                chose 'Search' Agent above, selecting this option will make documents that are private to the user
                 available for their queries."
               />
 
@@ -619,7 +598,7 @@ export function SlackChannelConfigFormFields({
           </TooltipProvider>
         )}
         <Button type="submit">{isUpdate ? "Update" : "Create"}</Button>
-        <Button secondary onClick={() => router.back()}>
+        <Button prominence="secondary" onClick={() => router.back()}>
           Cancel
         </Button>
       </div>

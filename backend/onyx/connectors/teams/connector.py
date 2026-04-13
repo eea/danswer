@@ -18,16 +18,18 @@ from onyx.connectors.exceptions import ConnectorValidationError
 from onyx.connectors.exceptions import CredentialExpiredError
 from onyx.connectors.exceptions import InsufficientPermissionsError
 from onyx.connectors.exceptions import UnexpectedValidationError
-from onyx.connectors.interfaces import CheckpointedConnector
+from onyx.connectors.interfaces import CheckpointedConnectorWithPermSync
 from onyx.connectors.interfaces import CheckpointOutput
 from onyx.connectors.interfaces import GenerateSlimDocumentOutput
 from onyx.connectors.interfaces import SecondsSinceUnixEpoch
 from onyx.connectors.interfaces import SlimConnectorWithPermSync
+from onyx.connectors.microsoft_graph_env import resolve_microsoft_environment
 from onyx.connectors.models import ConnectorCheckpoint
 from onyx.connectors.models import ConnectorFailure
 from onyx.connectors.models import ConnectorMissingCredentialError
 from onyx.connectors.models import Document
 from onyx.connectors.models import EntityFailure
+from onyx.connectors.models import HierarchyNode
 from onyx.connectors.models import SlimDocument
 from onyx.connectors.models import TextSection
 from onyx.connectors.teams.models import Message
@@ -49,12 +51,15 @@ class TeamsCheckpoint(ConnectorCheckpoint):
     todo_team_ids: list[str] | None = None
 
 
+DEFAULT_AUTHORITY_HOST = "https://login.microsoftonline.com"
+DEFAULT_GRAPH_API_HOST = "https://graph.microsoft.com"
+
+
 class TeamsConnector(
-    CheckpointedConnector[TeamsCheckpoint],
+    CheckpointedConnectorWithPermSync[TeamsCheckpoint],
     SlimConnectorWithPermSync,
 ):
     MAX_WORKERS = 10
-    AUTHORITY_URL_PREFIX = "https://login.microsoftonline.com/"
 
     def __init__(
         self,
@@ -62,11 +67,18 @@ class TeamsConnector(
         # are not necessarily guaranteed to be unique
         teams: list[str] = [],
         max_workers: int = MAX_WORKERS,
+        authority_host: str = DEFAULT_AUTHORITY_HOST,
+        graph_api_host: str = DEFAULT_GRAPH_API_HOST,
     ) -> None:
         self.graph_client: GraphClient | None = None
         self.msal_app: msal.ConfidentialClientApplication | None = None
         self.max_workers = max_workers
         self.requested_team_list: list[str] = teams
+
+        resolved_env = resolve_microsoft_environment(graph_api_host, authority_host)
+        self._azure_environment = resolved_env.environment
+        self.authority_host = resolved_env.authority_host
+        self.graph_api_host = resolved_env.graph_host
 
     # impls for BaseConnector
 
@@ -75,7 +87,7 @@ class TeamsConnector(
         teams_client_secret = credentials["teams_client_secret"]
         teams_directory_id = credentials["teams_directory_id"]
 
-        authority_url = f"{TeamsConnector.AUTHORITY_URL_PREFIX}{teams_directory_id}"
+        authority_url = f"{self.authority_host}/{teams_directory_id}"
         self.msal_app = msal.ConfidentialClientApplication(
             authority=authority_url,
             client_id=teams_client_id,
@@ -90,7 +102,7 @@ class TeamsConnector(
                 raise RuntimeError("MSAL app is not initialized")
 
             token = self.msal_app.acquire_token_for_client(
-                scopes=["https://graph.microsoft.com/.default"]
+                scopes=[f"{self.graph_api_host}/.default"]
             )
 
             if not isinstance(token, dict):
@@ -98,7 +110,9 @@ class TeamsConnector(
 
             return token
 
-        self.graph_client = GraphClient(_acquire_token_func)
+        self.graph_client = GraphClient(
+            _acquire_token_func, environment=self._azure_environment
+        )
         return None
 
     def validate_connector_settings(self) -> None:
@@ -185,7 +199,7 @@ class TeamsConnector(
     def load_from_checkpoint(
         self,
         start: SecondsSinceUnixEpoch,
-        end: SecondsSinceUnixEpoch,
+        end: SecondsSinceUnixEpoch,  # noqa: ARG002
         checkpoint: TeamsCheckpoint,
     ) -> CheckpointOutput[TeamsCheckpoint]:
         if self.graph_client is None:
@@ -247,13 +261,23 @@ class TeamsConnector(
             has_more=bool(todos),
         )
 
+    def load_from_checkpoint_with_perm_sync(
+        self,
+        start: SecondsSinceUnixEpoch,
+        end: SecondsSinceUnixEpoch,
+        checkpoint: TeamsCheckpoint,
+    ) -> CheckpointOutput[TeamsCheckpoint]:
+        # Teams already fetches external_access (permissions) for each document
+        # in _convert_thread_to_document, so we can just delegate to load_from_checkpoint
+        return self.load_from_checkpoint(start, end, checkpoint)
+
     # impls for SlimConnectorWithPermSync
 
     def retrieve_all_slim_docs_perm_sync(
         self,
         start: SecondsSinceUnixEpoch | None = None,
-        _end: SecondsSinceUnixEpoch | None = None,
-        _callback: IndexingHeartbeatInterface | None = None,
+        end: SecondsSinceUnixEpoch | None = None,  # noqa: ARG002
+        callback: IndexingHeartbeatInterface | None = None,
     ) -> GenerateSlimDocumentOutput:
         start = start or 0
 
@@ -291,7 +315,7 @@ class TeamsConnector(
                     start=start,
                 )
 
-                slim_doc_buffer = []
+                slim_doc_buffer: list[SlimDocument | HierarchyNode] = []
 
                 for message in messages:
                     slim_doc_buffer.append(
@@ -302,6 +326,12 @@ class TeamsConnector(
                     )
 
                     if len(slim_doc_buffer) >= _SLIM_DOC_BATCH_SIZE:
+                        if callback:
+                            if callback.should_stop():
+                                raise RuntimeError(
+                                    "retrieve_all_slim_docs_perm_sync: Stop signal detected"
+                                )
+                            callback.progress("retrieve_all_slim_docs_perm_sync", 1)
                         yield slim_doc_buffer
                         slim_doc_buffer = []
 
@@ -397,8 +427,7 @@ def _construct_semantic_identifier(channel: Channel, top_message: Message) -> st
 
     except Exception:
         logger.exception(
-            f"Error parsing snippet for message "
-            f"{top_message.id} with url {top_message.web_url}"
+            f"Error parsing snippet for message {top_message.id} with url {top_message.web_url}"
         )
         snippet = ""
 
@@ -798,7 +827,7 @@ def _collect_documents_for_channel(
 
 
 if __name__ == "__main__":
-    from tests.daily.connectors.utils import load_everything_from_checkpoint_connector
+    from tests.daily.connectors.utils import load_all_from_connector
 
     app_id = os.environ["TEAMS_APPLICATION_ID"]
     dir_id = os.environ["TEAMS_DIRECTORY_ID"]
@@ -820,9 +849,9 @@ if __name__ == "__main__":
     for slim_doc in teams_connector.retrieve_all_slim_docs_perm_sync():
         ...
 
-    for doc in load_everything_from_checkpoint_connector(
+    for doc in load_all_from_connector(
         connector=teams_connector,
         start=0.0,
         end=datetime.now(tz=timezone.utc).timestamp(),
-    ):
+    ).documents:
         print(doc)

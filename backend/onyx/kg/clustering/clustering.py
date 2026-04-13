@@ -7,7 +7,6 @@ from redis.lock import Lock as RedisLock
 from sqlalchemy import func
 from sqlalchemy import text
 
-from onyx.background.celery.tasks.kg_processing.utils import extend_lock
 from onyx.configs.constants import CELERY_GENERIC_BEAT_LOCK_TIMEOUT
 from onyx.configs.kg_configs import KG_CLUSTERING_RETRIEVE_THRESHOLD
 from onyx.configs.kg_configs import KG_CLUSTERING_THRESHOLD
@@ -32,6 +31,7 @@ from onyx.document_index.vespa.kg_interactions import (
 from onyx.document_index.vespa.kg_interactions import update_kg_chunks_vespa_info
 from onyx.kg.models import KGGroundingType
 from onyx.kg.utils.formatting_utils import make_relationship_id
+from onyx.kg.utils.lock_utils import extend_lock
 from onyx.utils.logger import setup_logger
 from onyx.utils.threadpool_concurrency import run_functions_tuples_in_parallel
 from shared_configs.configs import POSTGRES_DEFAULT_SCHEMA
@@ -336,7 +336,7 @@ def kg_clustering(
     # NOTE: we assume every entity is transferred, as we currently only have grounded entities
     time_delta = time.monotonic() - start_time
     logger.info(
-        f"Finished transferring {i_batch+1} entity batches in {time_delta:.2f}s"
+        f"Finished transferring {i_batch + 1} entity batches in {time_delta:.2f}s"
     )
 
     # Create parent-child relationships in parallel
@@ -373,7 +373,7 @@ def kg_clustering(
         # logger.debug(f"Transferred relationship types batch {i}")
     time_delta = time.monotonic() - start_time
     logger.info(
-        f"Finished transferring {i_batch+1} relationship type batches in {time_delta:.2f}s"
+        f"Finished transferring {i_batch + 1} relationship type batches in {time_delta:.2f}s"
     )
 
     # Transfer the relationships in parallel
@@ -394,7 +394,7 @@ def kg_clustering(
         # logger.debug(f"Transferred relationships batch {i}")
     time_delta = time.monotonic() - start_time
     logger.info(
-        f"Finished transferring {i_batch+1} relationship batches in {time_delta:.2f}s"
+        f"Finished transferring {i_batch + 1} relationship batches in {time_delta:.2f}s"
     )
 
     # Update vespa for each document
@@ -419,7 +419,9 @@ def kg_clustering(
         )
         # logger.debug(f"Updated vespa for documents batch {i}")
     time_delta = time.monotonic() - start_time
-    logger.info(f"Finished updating {i_batch+1} document batches in {time_delta:.2f}s")
+    logger.info(
+        f"Finished updating {i_batch + 1} document batches in {time_delta:.2f}s"
+    )
 
     # Delete the transferred objects from the staging tables
     try:

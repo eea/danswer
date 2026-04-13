@@ -16,7 +16,7 @@ from tests.integration.common_utils.managers.user_group import UserGroupManager
     os.environ.get("ENABLE_PAID_ENTERPRISE_EDITION_FEATURES", "").lower() != "true",
     reason="Curator and user group tests are enterprise only",
 )
-def test_doc_set_permissions_setup(reset: None) -> None:
+def test_doc_set_permissions_setup(reset: None) -> None:  # noqa: ARG001
     # Creating an admin user (first user created is automatically an admin)
     admin_user: DATestUser = UserManager.create(name="admin_user")
 
@@ -70,10 +70,11 @@ def test_doc_set_permissions_setup(reset: None) -> None:
 
     """Tests for things Curators/Admins should not be able to do"""
 
-    # Test that curator cannot create a document set for the group they don't curate
+    # Test that curator cannot create a non-public document set for the group they don't curate
     with pytest.raises(HTTPError):
         DocumentSetManager.create(
             name="Invalid Document Set 1",
+            is_public=False,
             groups=[user_group_2.id],
             cc_pair_ids=[public_cc_pair.id],
             user_performing_action=curator,

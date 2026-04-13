@@ -1,10 +1,17 @@
-import { test, expect } from "@chromatic-com/playwright";
+import { test, expect } from "@playwright/test";
 import type { Page, Browser, Locator } from "@playwright/test";
-import { loginAs, loginWithCredentials } from "../utils/auth";
-import { OnyxApiClient } from "../utils/onyxApiClient";
-import { startMcpOauthServer, McpServerProcess } from "../utils/mcpServer";
-import { TEST_ADMIN_CREDENTIALS } from "../constants";
-import { logPageState } from "../utils/pageStateLogger";
+import { loginAs, loginAsWorkerUser, apiLogin } from "@tests/e2e/utils/auth";
+import { OnyxApiClient } from "@tests/e2e/utils/onyxApiClient";
+import {
+  startMcpOauthServer,
+  McpServerProcess,
+} from "@tests/e2e/utils/mcpServer";
+import { TEST_ADMIN_CREDENTIALS } from "@tests/e2e/constants";
+import { logPageState } from "@tests/e2e/utils/pageStateLogger";
+import {
+  getPacketObjectsByType,
+  sendMessageAndCaptureStreamPackets,
+} from "@tests/e2e/utils/chatStream";
 
 const REQUIRED_ENV_VARS = [
   "MCP_OAUTH_CLIENT_ID",
@@ -40,6 +47,12 @@ const IDP_HOST = new URL(process.env.MCP_OAUTH_ISSUER!).host;
 const QUICK_CONFIRM_CONNECTED_TIMEOUT_MS = Number(
   process.env.MCP_OAUTH_QUICK_CONFIRM_TIMEOUT_MS || 2000
 );
+const POST_CLICK_URL_CHANGE_WAIT_MS = Number(
+  process.env.MCP_OAUTH_POST_CLICK_URL_CHANGE_WAIT_MS || 5000
+);
+const MCP_OAUTH_FLOW_TEST_TIMEOUT_MS = Number(
+  process.env.MCP_OAUTH_TEST_TIMEOUT_MS || 300_000
+);
 
 type Credentials = {
   email: string;
@@ -49,28 +62,31 @@ type Credentials = {
 type FlowArtifacts = {
   serverId: number;
   serverName: string;
-  assistantId: number;
-  assistantName: string;
+  agentId: number;
+  agentName: string;
   toolName: string;
+  toolId: number | null;
 };
 
+type StepLogger = (message: string) => void;
+
 const DEFAULT_USERNAME_SELECTORS = [
+  'input[name="identifier"]',
+  "#identifier-input",
   'input[name="username"]',
   "#okta-signin-username",
   "#idp-discovery-username",
   'input[id="idp-discovery-username"]',
   'input[name="email"]',
   'input[type="email"]',
-  'input[name="identifier"]',
-  "#identifier-input",
   "#username",
   'input[name="user"]',
 ];
 
 const DEFAULT_PASSWORD_SELECTORS = [
+  'input[name="credentials.passcode"]',
   'input[name="password"]',
   "#okta-signin-password",
-  'input[name="credentials.passcode"]',
   'input[type="password"]',
   "#password",
 ];
@@ -127,12 +143,160 @@ const logOauthEvent = (page: Page | null, message: string) => {
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+async function clickAndWaitForPossibleUrlChange(
+  page: Page,
+  clickAction: () => Promise<void>,
+  context: string
+) {
+  const startingUrl = page.url();
+  const urlChangePromise = page
+    .waitForURL(
+      (url) => {
+        const href = typeof url === "string" ? url : url.toString();
+        return href !== startingUrl;
+      },
+      { timeout: POST_CLICK_URL_CHANGE_WAIT_MS }
+    )
+    .then(() => true)
+    .catch(() => false);
+
+  await clickAction();
+  const changed = await urlChangePromise;
+  if (changed) {
+    logOauthEvent(page, `${context}: observed URL change after click`);
+  } else {
+    logOauthEvent(
+      page,
+      `${context}: no immediate URL change; continuing OAuth flow`
+    );
+  }
+}
+
 function createStepLogger(testName: string) {
   const start = Date.now();
   return (message: string) => {
     const elapsed = ((Date.now() - start) / 1000).toFixed(1);
     console.log(`[mcp-oauth-step][${testName}] ${message} (+${elapsed}s)`);
   };
+}
+
+const getToolName = (packetObject: Record<string, unknown>): string | null => {
+  const value = packetObject.tool_name;
+  return typeof value === "string" ? value : null;
+};
+
+async function verifyToolInvocationFromChat(
+  page: Page,
+  toolName: string,
+  contextLabel: string,
+  forcedToolId?: number | null
+) {
+  const prompt = [
+    `Call the MCP tool "${toolName}" now.`,
+    `Pass {"name":"playwright-${Date.now()}"} as the arguments.`,
+    "Return the exact tool output.",
+  ].join(" ");
+
+  const packets = await sendMessageAndCaptureStreamPackets(page, prompt, {
+    mockLlmResponse: JSON.stringify({
+      name: toolName,
+      arguments: { name: `playwright-${Date.now()}` },
+    }),
+    payloadOverrides:
+      forcedToolId != null
+        ? {
+            forced_tool_id: forcedToolId,
+            forced_tool_ids: [forcedToolId],
+          }
+        : undefined,
+    waitForAiMessage: false,
+  });
+  const startPackets = getPacketObjectsByType(
+    packets,
+    "custom_tool_start"
+  ).filter((packetObject) => getToolName(packetObject) === toolName);
+  const deltaPackets = getPacketObjectsByType(
+    packets,
+    "custom_tool_delta"
+  ).filter((packetObject) => getToolName(packetObject) === toolName);
+  const debugPackets = getPacketObjectsByType(
+    packets,
+    "tool_call_debug"
+  ).filter((packetObject) => getToolName(packetObject) === toolName);
+
+  expect(startPackets.length).toBeGreaterThan(0);
+  expect(deltaPackets.length).toBeGreaterThan(0);
+  expect(debugPackets.length).toBeGreaterThan(0);
+
+  console.log(
+    `[mcp-oauth-test] ${contextLabel}: tool invocation packets received for ${toolName}`
+  );
+}
+
+async function fetchMcpToolIdByName(
+  page: Page,
+  serverId: number,
+  toolName: string,
+  timeoutMs: number = 15_000
+): Promise<number | null> {
+  const start = Date.now();
+  let visibleToolNames: string[] = [];
+
+  while (Date.now() - start < timeoutMs) {
+    const response = await page.request.get(
+      `/api/admin/mcp/server/${serverId}/db-tools`
+    );
+    if (!response.ok()) {
+      await page.waitForTimeout(500);
+      continue;
+    }
+
+    const data = (await response.json()) as {
+      tools?: Array<Record<string, unknown>>;
+    };
+    const tools = Array.isArray(data.tools) ? data.tools : [];
+    visibleToolNames = tools
+      .map((tool) => {
+        const value =
+          tool.name ??
+          tool.display_name ??
+          tool.in_code_tool_id ??
+          tool.displayName;
+        return typeof value === "string" ? value : "";
+      })
+      .filter(Boolean);
+
+    const matchedTool = tools.find((tool) => {
+      const candidates = [
+        tool.name,
+        tool.display_name,
+        tool.in_code_tool_id,
+        tool.displayName,
+      ].filter((value): value is string => typeof value === "string");
+      return candidates.includes(toolName);
+    });
+    if (matchedTool) {
+      const id = matchedTool.id;
+      if (typeof id === "number") {
+        return id;
+      }
+      if (typeof id === "string") {
+        const parsed = Number(id);
+        if (!Number.isNaN(parsed)) {
+          return parsed;
+        }
+      }
+    }
+
+    await page.waitForTimeout(500);
+  }
+
+  console.warn(
+    `[mcp-oauth-test] Could not resolve tool id for ${toolName} on server ${serverId}. Visible tools: ${visibleToolNames.join(
+      ", "
+    )}`
+  );
+  return null;
 }
 
 async function logoutSession(page: Page, contextLabel: string) {
@@ -272,7 +436,7 @@ async function waitForAnySelector(
         continue;
       }
     }
-    await page.waitForTimeout(100);
+    await page.waitForTimeout(50);
   }
   return false;
 }
@@ -344,7 +508,7 @@ async function performIdpLogin(page: Page): Promise<void> {
   if (usernameFilled) {
     logOauthEvent(page, "Filled username");
     await clickFirstVisible(page, nextSelectors, { optional: true });
-    await page.waitForTimeout(500);
+    await waitForAnySelector(page, passwordSelectors, { timeout: 2000 });
   }
 
   const submitPasswordAttempt = async (attemptLabel: string) => {
@@ -387,7 +551,7 @@ async function performIdpLogin(page: Page): Promise<void> {
     await page
       .waitForLoadState("domcontentloaded", { timeout: 15000 })
       .catch(() => {});
-    await page.waitForTimeout(1000);
+    await page.waitForTimeout(300);
     return true;
   };
 
@@ -410,7 +574,7 @@ async function performIdpLogin(page: Page): Promise<void> {
 
   const MAX_PASSWORD_RETRIES = 3;
   for (let retry = 1; retry <= MAX_PASSWORD_RETRIES; retry++) {
-    await page.waitForTimeout(750);
+    await page.waitForTimeout(250);
     if (!isOnIdpHost(page.url())) {
       break;
     }
@@ -427,7 +591,7 @@ async function performIdpLogin(page: Page): Promise<void> {
   await clickFirstVisible(page, consentSelectors, { optional: true });
   logOauthEvent(page, "Handled consent prompt if present");
   await page
-    .waitForLoadState("networkidle", { timeout: 15000 })
+    .waitForLoadState("networkidle", { timeout: 10000 })
     .catch(() => {});
 }
 
@@ -444,6 +608,22 @@ async function completeOauthFlow(
     `Completing OAuth flow with options: ${JSON.stringify(options)}`
   );
   const returnSubstring = options.expectReturnPathContains;
+  const matchesExpectedReturnPath = (url: string) => {
+    if (!isOnAppHost(url)) {
+      return false;
+    }
+    if (url.includes(returnSubstring)) {
+      return true;
+    }
+    // Re-auth flows can return to a chat session URL instead of agentId URL.
+    if (
+      returnSubstring.includes("/app?agentId=") &&
+      url.includes("/app?chatId=")
+    ) {
+      return true;
+    }
+    return false;
+  };
 
   logOauthEvent(page, `Current page URL: ${page.url()}`);
 
@@ -553,8 +733,7 @@ async function completeOauthFlow(
   };
 
   if (
-    isOnAppHost(page.url()) &&
-    page.url().includes(returnSubstring) &&
+    matchesExpectedReturnPath(page.url()) &&
     (await tryConfirmConnected(true))
   ) {
     return;
@@ -580,8 +759,7 @@ async function completeOauthFlow(
       "OAuth callback",
       60000,
       (url) =>
-        url.includes("/mcp/oauth/callback") ||
-        (isOnAppHost(url) && url.includes(returnSubstring))
+        url.includes("/mcp/oauth/callback") || matchesExpectedReturnPath(url)
     );
   }
 
@@ -591,8 +769,7 @@ async function completeOauthFlow(
       "OAuth callback",
       60000,
       (url) =>
-        url.includes("/mcp/oauth/callback") ||
-        (isOnAppHost(url) && url.includes(returnSubstring))
+        url.includes("/mcp/oauth/callback") || matchesExpectedReturnPath(url)
     );
   }
 
@@ -607,10 +784,8 @@ async function completeOauthFlow(
     }ms`
   );
 
-  await waitForUrlOrRedirect(
-    `return path ${returnSubstring}`,
-    60000,
-    (url) => isOnAppHost(url) && url.includes(returnSubstring)
+  await waitForUrlOrRedirect(`return path ${returnSubstring}`, 60000, (url) =>
+    matchesExpectedReturnPath(url)
   );
   const returnLoadStart = Date.now();
   await page
@@ -622,7 +797,7 @@ async function completeOauthFlow(
       Date.now() - returnLoadStart
     }ms`
   );
-  if (!page.url().includes(returnSubstring)) {
+  if (!matchesExpectedReturnPath(page.url())) {
     throw new Error(
       `Redirected but final URL (${page.url()}) does not contain expected substring ${returnSubstring}`
     );
@@ -636,52 +811,26 @@ async function completeOauthFlow(
   await tryConfirmConnected(false);
 }
 
-async function ensurePublicAssistant(page: Page) {
-  const publicRow = page
-    .locator("div.flex.items-center")
-    .filter({ hasText: "Organization Public" })
-    .first();
-  const switchLocator = publicRow.locator('[role="switch"]').first();
-  const state = await switchLocator.getAttribute("aria-checked");
-  if (state !== "true") {
-    await switchLocator.click();
-  }
-}
-
-async function selectMcpTools(
-  page: Page,
-  serverId: number,
-  toolNames: string[]
-) {
-  const sectionLocator = page.getByTestId(`mcp-server-section-${serverId}`);
-  const sectionExists = await sectionLocator.count();
-  if (sectionExists === 0) {
+async function selectMcpTools(page: Page, serverId: number) {
+  // Find the server toggle switch by its name attribute
+  const toggleButton = page.locator(
+    `button[role="switch"][name="mcp_server_${serverId}.enabled"]`
+  );
+  const toggleExists = await toggleButton.count();
+  if (toggleExists === 0) {
     throw new Error(
       `MCP server section ${serverId} not found in assistant form`
     );
   }
-  const toggleButton = page.getByTestId(`mcp-server-toggle-${serverId}`);
-  const dataState = await toggleButton.getAttribute("aria-expanded");
-  if (dataState === "false") {
+
+  // Check if the server is enabled (switch is checked)
+  const isEnabled = await toggleButton.getAttribute("aria-checked");
+  if (isEnabled !== "true") {
     await toggleButton.click();
   }
 
-  for (const toolName of toolNames) {
-    const checkboxLocator = sectionLocator.getByLabel(
-      `mcp-server-tool-checkbox-${toolName}`
-    );
-    if ((await checkboxLocator.count()) > 0) {
-      const isChecked = await checkboxLocator
-        .first()
-        .getAttribute("aria-checked");
-      if (isChecked !== "true") {
-        await checkboxLocator.first().click();
-      }
-      continue;
-    }
-
-    throw new Error(`Unable to locate MCP tool checkbox for ${toolName}`);
-  }
+  // Individual tools are automatically enabled when the server switch is turned on
+  // The new AgentEditorPage enables all tools when the server is enabled
 }
 
 const escapeRegex = (value: string): string =>
@@ -730,21 +879,15 @@ async function findMcpToolLineItemButton(
   const toolRegex = new RegExp(escapeRegex(toolName), "i");
 
   while (Date.now() < deadline) {
-    const lineItems = page
+    const lineItem = page
       .locator(
         `${ACTION_POPOVER_SELECTOR} [data-testid^="tool-option-"] ${LINE_ITEM_SELECTOR}, ` +
           `${ACTION_POPOVER_SELECTOR} ${LINE_ITEM_SELECTOR}`
       )
-      .filter({ hasText: toolRegex });
-    const count = await lineItems.count();
-    for (let i = 0; i < count; i++) {
-      const lineItem = lineItems.nth(i);
-      const textContent = await lineItem.evaluate(
-        (el) => el.textContent?.trim().replace(/\s+/g, " ") || ""
-      );
-      if (toolRegex.test(textContent)) {
-        return lineItem;
-      }
+      .filter({ hasText: toolRegex })
+      .first();
+    if ((await lineItem.count()) > 0) {
+      return lineItem;
     }
     await page.waitForTimeout(200);
   }
@@ -754,9 +897,21 @@ async function findMcpToolLineItemButton(
 
 async function logActionPopoverHtml(page: Page, context: string) {
   try {
-    const html = await page
-      .locator(ACTION_POPOVER_SELECTOR)
-      .evaluate((node) => node.innerHTML || "");
+    const popover = page.locator(ACTION_POPOVER_SELECTOR);
+    if ((await popover.count()) === 0) {
+      console.log(
+        `[mcp-oauth-debug] ${context} action-popover-html="<unavailable>" reason=popover-missing`
+      );
+      return;
+    }
+    const isVisible = await popover.isVisible().catch(() => false);
+    if (!isVisible) {
+      console.log(
+        `[mcp-oauth-debug] ${context} action-popover-html="<unavailable>" reason=popover-hidden`
+      );
+      return;
+    }
+    const html = await popover.evaluate((node) => node.innerHTML || "");
     const snippet = html.replace(/\s+/g, " ").slice(0, 2000);
     console.log(
       `[mcp-oauth-debug] ${context} action-popover-html=${JSON.stringify(
@@ -773,6 +928,10 @@ async function logActionPopoverHtml(page: Page, context: string) {
 }
 
 async function closeActionsPopover(page: Page) {
+  if (page.isClosed()) {
+    return;
+  }
+
   const popover = page.locator(ACTION_POPOVER_SELECTOR);
   if ((await popover.count()) === 0) {
     return;
@@ -785,10 +944,54 @@ async function closeActionsPopover(page: Page) {
   const backButton = popover.getByRole("button", { name: /Back/i }).first();
   if ((await backButton.count()) > 0) {
     await backButton.click().catch(() => {});
-    await page.waitForTimeout(200);
+    await page.waitForTimeout(200).catch(() => {});
   }
 
-  await page.keyboard.press("Escape").catch(() => {});
+  if (!page.isClosed()) {
+    await page.keyboard.press("Escape").catch(() => {});
+  }
+}
+
+async function openActionsPopover(page: Page) {
+  const popover = page.locator(ACTION_POPOVER_SELECTOR);
+  const isVisible = await popover.isVisible().catch(() => false);
+  if (!isVisible) {
+    await page.locator('[data-testid="action-management-toggle"]').click();
+    await popover.waitFor({ state: "visible", timeout: 10000 });
+  }
+  await ensureActionPopoverInPrimaryView(page);
+}
+
+async function restoreAssistantContext(page: Page, agentId: number) {
+  const assistantPath = `/app?agentId=${agentId}`;
+  logOauthEvent(
+    page,
+    `Restoring assistant context for agentId=${agentId} (current url=${page.url()})`
+  );
+
+  // Clear chat-focused URL state first, then explicitly reselect assistant.
+  await page.goto(`${APP_BASE_URL}/app`, { waitUntil: "domcontentloaded" });
+  await page
+    .waitForLoadState("networkidle", { timeout: 10000 })
+    .catch(() => {});
+
+  const assistantLink = page.locator(`a[href*="agentId=${agentId}"]`).first();
+  if ((await assistantLink.count()) > 0) {
+    await clickAndWaitForPossibleUrlChange(
+      page,
+      () => assistantLink.click(),
+      `Restore assistant ${agentId} from sidebar`
+    );
+  } else {
+    await page.goto(`${APP_BASE_URL}${assistantPath}`, {
+      waitUntil: "domcontentloaded",
+    });
+  }
+
+  await page
+    .waitForLoadState("networkidle", { timeout: 10000 })
+    .catch(() => {});
+  logOauthEvent(page, `Assistant context restore landed on ${page.url()}`);
 }
 
 function getServerRowLocator(page: Page, serverName: string) {
@@ -837,7 +1040,7 @@ async function waitForServerRow(
     .catch(() => {});
 
   const locator = getServerRowLocator(page, serverName);
-  const pollInterval = 250;
+  const pollInterval = 100;
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
@@ -848,6 +1051,61 @@ async function waitForServerRow(
   }
 
   return null;
+}
+
+async function clickServerRowAndWaitForPossibleUrlChangeWithRetry(
+  page: Page,
+  serverName: string,
+  actionName: string,
+  timeoutMs: number = 15_000
+): Promise<boolean> {
+  let serverLocator: Locator | null = await waitForServerRow(
+    page,
+    serverName,
+    timeoutMs
+  );
+  if (!serverLocator) {
+    return false;
+  }
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    if (!serverLocator) {
+      const refreshedServerLocator = await waitForServerRow(
+        page,
+        serverName,
+        5000
+      );
+      if (!refreshedServerLocator) {
+        continue;
+      }
+      serverLocator = refreshedServerLocator;
+    }
+    const locatorToClick = serverLocator;
+    try {
+      await clickAndWaitForPossibleUrlChange(
+        page,
+        () => locatorToClick.click({ force: true, timeout: 3000 }),
+        actionName
+      );
+      return true;
+    } catch {
+      if (attempt === 4) {
+        break;
+      }
+      await page.waitForTimeout(150);
+      await ensureActionPopoverInPrimaryView(page);
+      const refreshedServerLocator = await waitForServerRow(
+        page,
+        serverName,
+        5000
+      );
+      if (refreshedServerLocator) {
+        serverLocator = refreshedServerLocator;
+      }
+    }
+  }
+
+  return false;
 }
 
 async function ensureToolOptionVisible(
@@ -871,7 +1129,7 @@ async function ensureToolOptionVisible(
   }
 
   await ensureActionPopoverInPrimaryView(page);
-  const serverLocator = await waitForServerRow(page, serverName, 10_000);
+  let serverLocator = await waitForServerRow(page, serverName, 10_000);
   if (!serverLocator) {
     const entries = await collectActionPopoverEntries(page);
     await logPageStateWithTag(
@@ -883,12 +1141,61 @@ async function ensureToolOptionVisible(
     throw new Error(`Unable to locate MCP server row for ${serverName}`);
   }
 
-  await serverLocator.click();
+  let serverClicked = false;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await serverLocator.click({ force: true, timeout: 3000 });
+      serverClicked = true;
+      break;
+    } catch (error) {
+      if (attempt === 2) {
+        throw error;
+      }
+      await page.waitForTimeout(150);
+      await ensureActionPopoverInPrimaryView(page);
+      const refreshedServerLocator = await waitForServerRow(
+        page,
+        serverName,
+        5000
+      );
+      if (refreshedServerLocator) {
+        serverLocator = refreshedServerLocator;
+      }
+    }
+  }
+  if (!serverClicked) {
+    throw new Error(`Unable to click MCP server row for ${serverName}`);
+  }
+
   await waitForMcpSecondaryView(page);
 
-  const mcpToolButton = await findMcpToolLineItemButton(page, toolName, 7000);
-  if (mcpToolButton) {
-    return mcpToolButton;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const mcpToolButton = await findMcpToolLineItemButton(
+      page,
+      toolName,
+      10000
+    );
+    if (mcpToolButton) {
+      const isVisible = await mcpToolButton.isVisible().catch(() => false);
+      if (isVisible) {
+        return mcpToolButton;
+      }
+    }
+    if (attempt < 2) {
+      await closeActionsPopover(page);
+      await openActionsPopover(page);
+      await ensureActionPopoverInPrimaryView(page);
+      const refreshedServerLocator = await waitForServerRow(
+        page,
+        serverName,
+        7000
+      );
+      if (!refreshedServerLocator) {
+        break;
+      }
+      await refreshedServerLocator.click({ force: true, timeout: 3000 });
+      await waitForMcpSecondaryView(page);
+    }
   }
 
   await logPageStateWithTag(
@@ -909,10 +1216,39 @@ async function verifyMcpToolRowVisible(
   serverName: string,
   toolName: string
 ) {
-  await page.locator('[data-testid="action-management-toggle"]').click();
-  await ensureActionPopoverInPrimaryView(page);
+  await openActionsPopover(page);
   const toolButton = await ensureToolOptionVisible(page, toolName, serverName);
   await expect(toolButton).toBeVisible({ timeout: 5000 });
+  await closeActionsPopover(page);
+}
+
+async function ensureMcpToolEnabledInActions(
+  page: Page,
+  serverName: string,
+  toolName: string
+) {
+  await openActionsPopover(page);
+  const toolButton = await ensureToolOptionVisible(page, toolName, serverName);
+  await expect(toolButton).toBeVisible({ timeout: 5000 });
+
+  let toolToggle = toolButton.getByRole("switch").first();
+  if ((await toolToggle.count()) === 0) {
+    toolToggle = page.getByLabel(`Toggle ${toolName}`).first();
+  }
+  await expect(toolToggle).toBeVisible({ timeout: 5000 });
+
+  const isToggleChecked = async () => {
+    const dataState = await toolToggle.getAttribute("data-state");
+    if (typeof dataState === "string") {
+      return dataState === "checked";
+    }
+    return (await toolToggle.getAttribute("aria-checked")) === "true";
+  };
+
+  if (!(await isToggleChecked())) {
+    await toolToggle.click();
+  }
+  await expect.poll(isToggleChecked, { timeout: 5000 }).toBe(true);
   await closeActionsPopover(page);
 }
 
@@ -921,42 +1257,104 @@ async function reauthenticateFromChat(
   serverName: string,
   returnSubstring: string
 ) {
-  await page.locator('[data-testid="action-management-toggle"]').click();
-  await ensureActionPopoverInPrimaryView(page);
-  const serverLineItem = await waitForServerRow(page, serverName, 15_000);
-  if (!serverLineItem) {
+  await openActionsPopover(page);
+  const beforeClickUrl = page.url();
+  const clickedServerRow =
+    await clickServerRowAndWaitForPossibleUrlChangeWithRetry(
+      page,
+      serverName,
+      "Re-authenticate server row click",
+      15_000
+    );
+  if (!clickedServerRow) {
     const entries = await collectActionPopoverEntries(page);
     await logPageStateWithTag(
       page,
-      `reauthenticateFromChat could not find ${serverName}; visible entries: ${JSON.stringify(
+      `reauthenticateFromChat could not click ${serverName}; visible entries: ${JSON.stringify(
         entries
       )}`
     );
     throw new Error(
-      `Unable to locate MCP server row ${serverName} while reauthenticating`
+      `Unable to click MCP server row ${serverName} while reauthenticating`
     );
   }
-  await expect(serverLineItem).toBeVisible({ timeout: 15000 });
-  await serverLineItem.click();
 
+  // Some MCP rows trigger OAuth directly instead of showing a footer action.
+  if (page.url() !== beforeClickUrl || !isOnAppHost(page.url())) {
+    await completeOauthFlow(page, {
+      expectReturnPathContains: returnSubstring,
+    });
+    return;
+  }
+
+  await waitForMcpSecondaryView(page);
   const reauthItem = page.getByText("Re-Authenticate").first();
+  let reauthVisible = await reauthItem.isVisible().catch(() => false);
+  if (!reauthVisible) {
+    // Popover state can rerender; retry selection once before failing.
+    await closeActionsPopover(page);
+    await openActionsPopover(page);
+    const retryBeforeClickUrl = page.url();
+    const clickedRetry =
+      await clickServerRowAndWaitForPossibleUrlChangeWithRetry(
+        page,
+        serverName,
+        "Re-authenticate server row click retry",
+        10_000
+      );
+    if (!clickedRetry) {
+      const entries = await collectActionPopoverEntries(page);
+      await logPageStateWithTag(
+        page,
+        `reauthenticateFromChat retry could not click ${serverName}; visible entries: ${JSON.stringify(
+          entries
+        )}`
+      );
+      throw new Error(
+        `Unable to click MCP server row ${serverName} on reauth retry`
+      );
+    }
+
+    if (page.url() !== retryBeforeClickUrl || !isOnAppHost(page.url())) {
+      await completeOauthFlow(page, {
+        expectReturnPathContains: returnSubstring,
+      });
+      return;
+    }
+
+    await waitForMcpSecondaryView(page);
+    reauthVisible = await reauthItem.isVisible().catch(() => false);
+  }
+
   await expect(reauthItem).toBeVisible({ timeout: 15000 });
-  const navigationPromise = page
-    .waitForNavigation({ waitUntil: "load" })
-    .catch(() => null);
-  await reauthItem.click();
-  await navigationPromise;
+  await clickAndWaitForPossibleUrlChange(
+    page,
+    () => reauthItem.click(),
+    "Re-authenticate click"
+  );
   await completeOauthFlow(page, {
     expectReturnPathContains: returnSubstring,
   });
 }
 
-async function ensureServerVisibleInActions(page: Page, serverName: string) {
-  await page.locator('[data-testid="action-management-toggle"]').click();
-  await ensureActionPopoverInPrimaryView(page);
-  const locatorToUse = await waitForServerRow(page, serverName, 15_000);
+async function ensureServerVisibleInActions(
+  page: Page,
+  serverName: string,
+  options?: {
+    agentId?: number;
+  }
+) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await page.keyboard.press("Escape").catch(() => {});
+    await openActionsPopover(page);
+    const locatorToUse = await waitForServerRow(page, serverName, 15_000);
 
-  if (!locatorToUse) {
+    if (locatorToUse) {
+      await expect(locatorToUse).toBeVisible({ timeout: 15000 });
+      await page.keyboard.press("Escape").catch(() => {});
+      return;
+    }
+
     const entries = await collectActionPopoverEntries(page);
     await logPageStateWithTag(
       page,
@@ -964,11 +1362,19 @@ async function ensureServerVisibleInActions(page: Page, serverName: string) {
         entries
       )}`
     );
+    await page.keyboard.press("Escape").catch(() => {});
+
+    if (attempt === 0 && options?.agentId) {
+      logOauthEvent(
+        page,
+        `Server ${serverName} missing in actions, retrying after restoring assistant ${options.agentId} context`
+      );
+      await restoreAssistantContext(page, options.agentId);
+      continue;
+    }
+
     throw new Error(`Server ${serverName} not visible in actions popover`);
   }
-
-  await expect(locatorToUse).toBeVisible({ timeout: 15000 });
-  await page.keyboard.press("Escape").catch(() => {});
 }
 
 async function waitForUserRecord(
@@ -989,12 +1395,12 @@ async function waitForUserRecord(
 
 async function waitForAssistantByName(
   client: OnyxApiClient,
-  assistantName: string,
+  agentName: string,
   timeoutMs: number = 20_000
 ) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    const assistant = await client.findAssistantByName(assistantName, {
+    const assistant = await client.findAgentByName(agentName, {
       getEditable: true,
     });
     if (assistant) {
@@ -1002,18 +1408,18 @@ async function waitForAssistantByName(
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  throw new Error(`Timed out waiting for assistant ${assistantName}`);
+  throw new Error(`Timed out waiting for assistant ${agentName}`);
 }
 
 async function waitForAssistantTools(
   client: OnyxApiClient,
-  assistantName: string,
+  agentName: string,
   requiredToolNames: string[],
   timeoutMs: number = 30_000
 ) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    const assistant = await client.findAssistantByName(assistantName, {
+    const assistant = await client.findAgentByName(agentName, {
       getEditable: true,
     });
     if (
@@ -1033,22 +1439,243 @@ async function waitForAssistantTools(
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   throw new Error(
-    `Timed out waiting for assistant ${assistantName} to include tools: ${requiredToolNames.join(
+    `Timed out waiting for assistant ${agentName} to include tools: ${requiredToolNames.join(
       ", "
     )}`
   );
 }
 
+async function mockEmptyOauthStatus(page: Page): Promise<void> {
+  await page.route("**/api/mcp/oauth/status*", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ statuses: [] }),
+    })
+  );
+}
+
+function getNumericQueryParam(
+  urlString: string,
+  paramName: string
+): number | null {
+  try {
+    const value = new URL(urlString).searchParams.get(paramName);
+    if (!value) {
+      return null;
+    }
+    const parsed = Number(value);
+    return Number.isNaN(parsed) ? null : parsed;
+  } catch {
+    return null;
+  }
+}
+
+async function configureOauthServerAndEnableTool(
+  page: Page,
+  options: {
+    serverName: string;
+    serverDescription: string;
+    serverUrl: string;
+    toolName: string;
+    connectContext: string;
+    logStep: StepLogger;
+  }
+): Promise<number> {
+  const { serverName, serverDescription, serverUrl, toolName, connectContext } =
+    options;
+
+  await page.goto("/admin/actions/mcp");
+  await page.waitForURL("**/admin/actions/mcp**", { timeout: 15000 });
+  options.logStep("Opened MCP actions page");
+
+  await page.getByRole("button", { name: /Add MCP Server/i }).click();
+  await expect(page.locator("input#name")).toBeVisible({ timeout: 10000 });
+  options.logStep("Opened Add MCP Server modal");
+
+  await page.locator("input#name").fill(serverName);
+  await page.locator("textarea#description").fill(serverDescription);
+  await page.locator("input#server_url").fill(serverUrl);
+  options.logStep(`Filled server URL: ${serverUrl}`);
+
+  await page.getByRole("button", { name: "Add Server" }).click();
+  await expect(page.getByTestId("mcp-auth-method-select")).toBeVisible({
+    timeout: 10000,
+  });
+  options.logStep("Created MCP server, auth modal opened");
+
+  const authMethodSelect = page.getByTestId("mcp-auth-method-select");
+  await authMethodSelect.click();
+  await page.getByRole("option", { name: "OAuth" }).click();
+  options.logStep("Selected OAuth authentication method");
+
+  await page.locator('input[name="oauth_client_id"]').fill(CLIENT_ID);
+  await page.locator('input[name="oauth_client_secret"]').fill(CLIENT_SECRET);
+  options.logStep("Filled OAuth credentials");
+
+  const connectButton = page.getByTestId("mcp-auth-connect-button");
+  await clickAndWaitForPossibleUrlChange(
+    page,
+    () => connectButton.click(),
+    connectContext
+  );
+  options.logStep("Triggered OAuth connection");
+
+  let serverId: number | null = null;
+  await completeOauthFlow(page, {
+    expectReturnPathContains: "/admin/actions/mcp",
+    confirmConnected: async () => {
+      serverId = getNumericQueryParam(page.url(), "server_id");
+      if (serverId === null) {
+        throw new Error("Missing or invalid server_id in OAuth return URL");
+      }
+      await expect(
+        page.getByText(serverName, { exact: false }).first()
+      ).toBeVisible({ timeout: 15000 });
+    },
+    scrollToBottomOnReturn: false,
+  });
+  options.logStep("Completed OAuth flow for MCP server");
+
+  if (serverId === null) {
+    serverId = getNumericQueryParam(page.url(), "server_id");
+  }
+  if (serverId === null) {
+    throw new Error("Expected numeric server_id in URL after OAuth flow");
+  }
+
+  await expect(
+    page.getByText(serverName, { exact: false }).first()
+  ).toBeVisible({
+    timeout: 20000,
+  });
+  const toolToggles = page.getByLabel(`tool-toggle-${toolName}`);
+  await expect(toolToggles.first()).toBeVisible({ timeout: 20000 });
+  options.logStep("Verified server card and tool toggles are visible");
+
+  const toggleCount = await toolToggles.count();
+  options.logStep(`Found ${toggleCount} instance(s) of ${toolName}`);
+  for (let i = 0; i < toggleCount; i++) {
+    const toggle = toolToggles.nth(i);
+    const isEnabled = await toggle.getAttribute("aria-checked");
+    if (isEnabled !== "true") {
+      await toggle.click();
+      await expect(toggle).toHaveAttribute("aria-checked", "true", {
+        timeout: 5000,
+      });
+      options.logStep(`Enabled tool instance ${i + 1}: ${toolName}`);
+    }
+  }
+  options.logStep("Tools auto-fetched and enabled via UI");
+
+  return serverId;
+}
+
+async function openAssistantEditor(
+  page: Page,
+  options: {
+    logStep: StepLogger;
+    onLoginRedirect?: () => Promise<void>;
+  }
+): Promise<void> {
+  const assistantEditorUrl = `${APP_BASE_URL}/app/agents/create?admin=true`;
+  let assistantPageLoaded = false;
+
+  for (let attempt = 0; attempt < 2 && !assistantPageLoaded; attempt++) {
+    await page.goto(assistantEditorUrl);
+    try {
+      await page.waitForURL("**/app/agents/create**", {
+        timeout: 15000,
+      });
+      assistantPageLoaded = true;
+    } catch (error) {
+      const currentUrl = page.url();
+      if (currentUrl.includes("/app/agents/create")) {
+        assistantPageLoaded = true;
+        break;
+      }
+      if (currentUrl.includes("/app?from=login") && options.onLoginRedirect) {
+        await options.onLoginRedirect();
+        continue;
+      }
+      await logPageStateWithTag(
+        page,
+        "Timed out waiting for /app/agents/create"
+      );
+      throw error;
+    }
+  }
+
+  if (!assistantPageLoaded) {
+    throw new Error("Unable to navigate to /app/agents/create");
+  }
+  options.logStep("Assistant editor loaded");
+}
+
+async function createAgentAndWaitForTool(
+  page: Page,
+  options: {
+    apiClient: OnyxApiClient;
+    agentName: string;
+    instructions: string;
+    description: string;
+    serverId: number;
+    toolName: string;
+    logStep: StepLogger;
+  }
+): Promise<number> {
+  const {
+    apiClient,
+    agentName,
+    instructions,
+    description,
+    serverId,
+    toolName,
+    logStep,
+  } = options;
+
+  await page.locator('input[name="name"]').fill(agentName);
+  await page.locator('textarea[name="instructions"]').fill(instructions);
+  await page.locator('textarea[name="description"]').fill(description);
+  await selectMcpTools(page, serverId);
+
+  await page.getByRole("button", { name: "Create" }).click();
+  await page.waitForURL(
+    (url) => {
+      const href = typeof url === "string" ? url : url.toString();
+      return /\/app\?agentId=\d+/.test(href) || href.includes("/admin/agents");
+    },
+    { timeout: 20000 }
+  );
+
+  let agentId = getNumericQueryParam(page.url(), "agentId");
+  if (agentId === null) {
+    const assistantRecord = await waitForAssistantByName(apiClient, agentName);
+    agentId = assistantRecord.id;
+    await page.goto(`/app?agentId=${agentId}`);
+    await page.waitForURL(/\/app\?agentId=\d+/, { timeout: 20000 });
+  }
+  if (agentId === null) {
+    throw new Error("Assistant ID could not be determined");
+  }
+  logStep(`Assistant created with id ${agentId}`);
+
+  await waitForAssistantTools(apiClient, agentName, [toolName]);
+  logStep("Confirmed assistant tools are available");
+  return agentId;
+}
+
 test.describe("MCP OAuth flows", () => {
   test.describe.configure({ mode: "serial" });
+  test.setTimeout(MCP_OAUTH_FLOW_TEST_TIMEOUT_MS);
 
   let serverProcess: McpServerProcess | null = null;
   let adminArtifacts: FlowArtifacts | null = null;
   let curatorArtifacts: FlowArtifacts | null = null;
   let curatorCredentials: Credentials | null = null;
   let curatorTwoCredentials: Credentials | null = null;
-  let curatorGroupId: string | null = null;
-  let curatorTwoGroupId: string | null = null;
+  let curatorGroupId: number | null = null;
+  let curatorTwoGroupId: number | null = null;
 
   test.beforeAll(async ({ browser }, workerInfo) => {
     if (workerInfo.project.name !== "admin") {
@@ -1078,7 +1705,7 @@ test.describe("MCP OAuth flows", () => {
       storageState: "admin_auth.json",
     });
     const adminPage = await adminContext.newPage();
-    const adminClient = new OnyxApiClient(adminPage);
+    const adminClient = new OnyxApiClient(adminPage.request);
     try {
       const existingServers = await adminClient.listMcpServers();
       for (const server of existingServers) {
@@ -1092,7 +1719,7 @@ test.describe("MCP OAuth flows", () => {
 
     const basePassword = "TestPassword123!";
     curatorCredentials = {
-      email: `pw-curator-${Date.now()}@test.com`,
+      email: `pw-curator-${Date.now()}@example.com`,
       password: basePassword,
     };
     await adminClient.registerUser(
@@ -1103,17 +1730,17 @@ test.describe("MCP OAuth flows", () => {
       adminClient,
       curatorCredentials.email
     );
-    const curatorGroup = await adminClient.createUserGroup(
+    curatorGroupId = await adminClient.createUserGroup(
       `Playwright Curator Group ${Date.now()}`,
       [curatorRecord.id]
     );
     await adminClient.setCuratorStatus(
-      curatorGroup.toString(),
+      String(curatorGroupId),
       curatorRecord.id,
       true
     );
     curatorTwoCredentials = {
-      email: `pw-curator-${Date.now()}-b@test.com`,
+      email: `pw-curator-${Date.now()}-b@example.com`,
       password: basePassword,
     };
     await adminClient.registerUser(
@@ -1124,12 +1751,12 @@ test.describe("MCP OAuth flows", () => {
       adminClient,
       curatorTwoCredentials.email
     );
-    const curatorTwoGroupId = await adminClient.createUserGroup(
+    curatorTwoGroupId = await adminClient.createUserGroup(
       `Playwright Curator Group ${Date.now()}-2`,
       [curatorTwoRecord.id]
     );
     await adminClient.setCuratorStatus(
-      curatorTwoGroupId.toString(),
+      String(curatorTwoGroupId),
       curatorTwoRecord.id,
       true
     );
@@ -1150,17 +1777,17 @@ test.describe("MCP OAuth flows", () => {
       storageState: "admin_auth.json",
     });
     const adminPage = await adminContext.newPage();
-    const adminClient = new OnyxApiClient(adminPage);
+    const adminClient = new OnyxApiClient(adminPage.request);
 
-    if (adminArtifacts?.assistantId) {
-      await adminClient.deleteAssistant(adminArtifacts.assistantId);
+    if (adminArtifacts?.agentId) {
+      await adminClient.deleteAgent(adminArtifacts.agentId);
     }
     if (adminArtifacts?.serverId) {
       await adminClient.deleteMcpServer(adminArtifacts.serverId);
     }
 
-    if (curatorArtifacts?.assistantId) {
-      await adminClient.deleteAssistant(curatorArtifacts.assistantId);
+    if (curatorArtifacts?.agentId) {
+      await adminClient.deleteAgent(curatorArtifacts.agentId);
     }
     if (curatorArtifacts?.serverId) {
       await adminClient.deleteMcpServer(curatorArtifacts.serverId);
@@ -1179,6 +1806,7 @@ test.describe("MCP OAuth flows", () => {
   test("Admin can configure OAuth MCP server and use tools end-to-end", async ({
     page,
   }, testInfo) => {
+    test.setTimeout(MCP_OAUTH_FLOW_TEST_TIMEOUT_MS);
     const logStep = createStepLogger("AdminFlow");
     test.skip(
       testInfo.project.name !== "admin",
@@ -1186,13 +1814,7 @@ test.describe("MCP OAuth flows", () => {
     );
     logStep("Starting admin MCP OAuth flow");
 
-    await page.route("**/api/mcp/oauth/status*", (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ statuses: [] }),
-      })
-    );
+    await mockEmptyOauthStatus(page);
 
     await page.context().clearCookies();
     logStep("Cleared cookies");
@@ -1202,290 +1824,98 @@ test.describe("MCP OAuth flows", () => {
       { email: TEST_ADMIN_CREDENTIALS.email, role: "admin" },
       "AdminFlow primary login"
     );
-    const adminApiClient = new OnyxApiClient(page);
+    const adminApiClient = new OnyxApiClient(page.request);
     logStep("Logged in as admin");
 
     const serverName = `PW MCP Admin ${Date.now()}`;
-    const assistantName = `PW Admin Assistant ${Date.now()}`;
+    const agentName = `PW Admin Assistant ${Date.now()}`;
 
-    await page.goto("http://localhost:3000/admin/actions/edit-mcp");
-    await page.waitForURL("**/admin/actions/edit-mcp**", { timeout: 15000 });
-    logStep("Opened MCP edit page");
+    const serverId = await configureOauthServerAndEnableTool(page, {
+      serverName,
+      serverDescription: "Playwright MCP OAuth server (admin)",
+      serverUrl: runtimeMcpServerUrl,
+      toolName: TOOL_NAMES.admin,
+      connectContext: "Admin connect click",
+      logStep,
+    });
 
-    await page.locator('input[name="name"]').fill(serverName);
-    await page
-      .locator('input[name="description"]')
-      .fill("Playwright MCP OAuth server (admin)");
-    await page.locator('input[name="server_url"]').fill(runtimeMcpServerUrl);
-    logStep(`Filled server URL: ${runtimeMcpServerUrl}`);
-
-    await page.getByTestId("auth-type-select").click();
-    await page.getByRole("option", { name: "OAuth" }).click();
-
-    await page.locator("#oauth_client_id").fill(CLIENT_ID);
-    await page.locator("#oauth_client_secret").fill(CLIENT_SECRET);
-
-    const connectButton = page.getByTestId("connect-oauth-button");
-    const navPromise = page
-      .waitForNavigation({ waitUntil: "load" })
-      .catch(() => null);
-    await connectButton.click();
-    await navPromise;
-    logStep("Triggered OAuth connection");
-    await completeOauthFlow(page, {
-      expectReturnPathContains: "/admin/actions/edit-mcp",
-      confirmConnected: async () => {
-        await expect(page.getByTestId("connect-oauth-button")).toContainText(
-          "OAuth Connected",
-          { timeout: 15000 }
+    await openAssistantEditor(page, {
+      logStep,
+      onLoginRedirect: async () => {
+        await loginAs(page, "admin");
+        await verifySessionUser(
+          page,
+          { email: TEST_ADMIN_CREDENTIALS.email, role: "admin" },
+          "AdminFlow assistant editor relogin"
         );
       },
-      scrollToBottomOnReturn: true,
     });
-    logStep("Completed OAuth flow for MCP server");
 
-    await page.getByRole("button", { name: "List Actions" }).click();
-    await page.waitForURL("**listing_tools=true**", { timeout: 15000 });
-    await scrollToBottom(page);
-    await expect(page.getByText("Available Tools")).toBeVisible({
-      timeout: 15000,
+    const agentId = await createAgentAndWaitForTool(page, {
+      apiClient: adminApiClient,
+      agentName,
+      instructions: "Assist with MCP OAuth testing.",
+      description: "Playwright admin MCP assistant.",
+      serverId,
+      toolName: TOOL_NAMES.admin,
+      logStep,
     });
-    logStep("Listed available tools");
-
-    const currentUrl = new URL(page.url());
-    const serverIdParam = currentUrl.searchParams.get("server_id");
-    if (!serverIdParam) {
-      throw new Error("Expected server_id in URL after listing tools");
-    }
-    const serverId = Number(serverIdParam);
-    if (Number.isNaN(serverId)) {
-      throw new Error(
-        `Invalid server_id parsed from URL: ${currentUrl.searchParams.get(
-          "server_id"
-        )}`
-      );
-    }
-
-    const toolSearchInput = page.getByPlaceholder("Search tools...");
-    await toolSearchInput.fill(TOOL_NAMES.admin);
-    await page.waitForTimeout(500); // allow filtering to apply
-
-    const adminToolCheckboxLocator = page
-      .getByLabel(`tool-checkbox-${TOOL_NAMES.admin}`)
-      .first();
-    const checkboxCount = await adminToolCheckboxLocator.count();
-
-    if (checkboxCount === 0) {
-      await toolSearchInput.fill("");
-      await page.waitForTimeout(500);
-      const selectAllCheckbox = page
-        .getByLabel("tool-checkbox-select-all")
-        .first();
-      const isChecked = await selectAllCheckbox.getAttribute("aria-checked");
-      if (isChecked !== "true") {
-        await selectAllCheckbox.click();
-      }
-      await expect(selectAllCheckbox).toHaveAttribute("aria-checked", "true", {
-        timeout: 10000,
-      });
-      logStep("Selected tool via select-all fallback");
-    } else {
-      await adminToolCheckboxLocator.waitFor({
-        state: "visible",
-        timeout: 10000,
-      });
-      // Ensure the tool ends up selected before proceeding
-      if (
-        (await adminToolCheckboxLocator.getAttribute("aria-checked")) !== "true"
-      ) {
-        await adminToolCheckboxLocator.click();
-      }
-      await expect(adminToolCheckboxLocator).toHaveAttribute(
-        "aria-checked",
-        "true",
-        {
-          timeout: 10000,
-        }
-      );
-      logStep("Selected tool via direct checkbox");
-    }
-
-    await expect(page.getByText(/tool(s)? selected/i).first()).toContainText(
-      "tool",
-      { timeout: 10000 }
+    const createdAgent = await adminApiClient.getAssistant(agentId);
+    expect(createdAgent.is_public).toBe(false);
+    logStep("Verified newly created agent is private by default");
+    const adminToolId = await fetchMcpToolIdByName(
+      page,
+      serverId,
+      TOOL_NAMES.admin
     );
 
-    const createActionsButtonLocator = page.getByRole("button", {
-      name: /(?:Create|Update) MCP Server Actions/,
-    });
-    const createButtonCount = await createActionsButtonLocator.count();
-    if (createButtonCount === 0) {
-      await logPageStateWithTag(
-        page,
-        "(Create|Update) MCP Server Actions button not found"
-      );
-      throw new Error("(Create|Update) MCP Server Actions button not found");
-    }
-    await expect(createActionsButtonLocator).toBeVisible({ timeout: 15000 });
-    await expect(createActionsButtonLocator).toBeEnabled({ timeout: 15000 });
-    try {
-      await createActionsButtonLocator.click();
-    } catch (error) {
-      await logPageStateWithTag(
-        page,
-        "Failed to click Create MCP Server Actions button"
-      );
-      throw error;
-    }
+    await ensureServerVisibleInActions(page, serverName, { agentId });
+    await verifyMcpToolRowVisible(page, serverName, TOOL_NAMES.admin);
+    await ensureMcpToolEnabledInActions(page, serverName, TOOL_NAMES.admin);
+    logStep("Verified admin MCP tool row visible before reauth");
+    await verifyToolInvocationFromChat(
+      page,
+      TOOL_NAMES.admin,
+      "AdminFlow pre-reauth",
+      adminToolId
+    );
+    logStep("Verified admin MCP tool invocation before reauth");
 
-    await page.waitForURL("**/admin/actions**", { timeout: 20000 });
+    await reauthenticateFromChat(page, serverName, `/app?agentId=${agentId}`);
+    await ensureServerVisibleInActions(page, serverName, { agentId });
+    await verifyMcpToolRowVisible(page, serverName, TOOL_NAMES.admin);
+    await ensureMcpToolEnabledInActions(page, serverName, TOOL_NAMES.admin);
+    logStep("Verified admin MCP tool row visible after reauth");
+    await verifyToolInvocationFromChat(
+      page,
+      TOOL_NAMES.admin,
+      "AdminFlow post-reauth",
+      adminToolId
+    );
+    logStep("Verified admin MCP tool invocation after reauth");
+
+    // Verify server card still shows the server and tools
+    await page.goto("/admin/actions/mcp");
+    await page.waitForURL("**/admin/actions/mcp**", { timeout: 15000 });
     await expect(
       page.getByText(serverName, { exact: false }).first()
-    ).toBeVisible({ timeout: 20000 });
-    logStep("Created/updated MCP server actions");
+    ).toBeVisible({ timeout: 15000 });
+    logStep("Verified MCP server card is still visible on actions page");
 
-    const assistantEditorUrl =
-      "http://localhost:3000/assistants/new?admin=true";
-    let assistantPageLoaded = false;
-    for (let attempt = 0; attempt < 2 && !assistantPageLoaded; attempt++) {
-      await page.goto(assistantEditorUrl);
-      try {
-        await page.waitForURL("**/assistants/new**", {
-          timeout: 15000,
-        });
-        assistantPageLoaded = true;
-      } catch (error) {
-        const currentUrl = page.url();
-        if (currentUrl.includes("/assistants/new")) {
-          assistantPageLoaded = true;
-          break;
-        }
-        if (currentUrl.includes("/chat?from=login")) {
-          await loginAs(page, "admin");
-          await verifySessionUser(
-            page,
-            { email: TEST_ADMIN_CREDENTIALS.email, role: "admin" },
-            "AdminFlow assistant editor relogin"
-          );
-          continue;
-        }
-        await logPageStateWithTag(
-          page,
-          "Timed out waiting for /assistants/new"
-        );
-        throw error;
-      }
-    }
-    if (!assistantPageLoaded) {
-      throw new Error("Unable to navigate to /assistants/new");
-    }
-    logStep("Assistant editor loaded");
-
-    await page.locator('input[name="name"]').fill(assistantName);
-    await page
-      .locator('textarea[name="system_prompt"]')
-      .fill("Assist with MCP OAuth testing.");
-    await page
-      .locator('input[name="description"]')
-      .fill("Playwright admin MCP assistant.");
-
-    await page
-      .getByRole("button", { name: /Advanced Options/i })
-      .click()
-      .catch(() => {});
-    await ensurePublicAssistant(page);
-    await selectMcpTools(page, serverId, [TOOL_NAMES.admin]);
-
-    await page.getByRole("button", { name: "Create" }).click();
-    await page.waitForURL(
-      (url) => {
-        const href = typeof url === "string" ? url : url.toString();
-        return (
-          /\/chat\?assistantId=\d+/.test(href) ||
-          href.includes("/admin/assistants")
-        );
-      },
-      { timeout: 20000 }
-    );
-
-    let assistantId: number | null = null;
-    if (/\/chat\?assistantId=\d+/.test(page.url())) {
-      const chatUrl = new URL(page.url());
-      const assistantIdParam = chatUrl.searchParams.get("assistantId");
-      if (!assistantIdParam) {
-        throw new Error("Assistant ID missing from chat redirect URL");
-      }
-      assistantId = Number(assistantIdParam);
-      if (Number.isNaN(assistantId)) {
-        throw new Error(`Invalid assistantId ${assistantIdParam}`);
-      }
-    } else {
-      const assistantRecord = await waitForAssistantByName(
-        adminApiClient,
-        assistantName
-      );
-      assistantId = assistantRecord.id;
-      await page.goto(`http://localhost:3000/chat?assistantId=${assistantId}`);
-      await page.waitForURL(/\/chat\?assistantId=\d+/, { timeout: 20000 });
-    }
-    if (assistantId === null) {
-      throw new Error("Assistant ID could not be determined");
-    }
-    logStep(`Assistant created with id ${assistantId}`);
-
-    await waitForAssistantTools(adminApiClient, assistantName, [
-      TOOL_NAMES.admin,
-    ]);
-    logStep("Confirmed assistant tools are available");
-
-    await ensureServerVisibleInActions(page, serverName);
-    await verifyMcpToolRowVisible(page, serverName, TOOL_NAMES.admin);
-    logStep("Verified admin MCP tool row visible before reauth");
-
-    await reauthenticateFromChat(
-      page,
-      serverName,
-      `/chat?assistantId=${assistantId}`
-    );
-    await ensureServerVisibleInActions(page, serverName);
-    await verifyMcpToolRowVisible(page, serverName, TOOL_NAMES.admin);
-    logStep("Verified admin MCP tool row visible after reauth");
-
-    await page.goto(
-      `http://localhost:3000/admin/actions/edit-mcp?server_id=${serverId}`
-    );
-    await page.waitForURL("**listing_tools=true**", { timeout: 15000 });
-    await scrollToBottom(page);
-    await expect(page.getByText("Available Tools")).toBeVisible({
-      timeout: 15000,
+    await adminApiClient.updateAgentSharing(agentId, {
+      isPublic: true,
+      userIds: createdAgent.users.map((user) => user.id),
+      groupIds: createdAgent.groups,
     });
-    const retentionCheckbox = page
-      .getByLabel(`tool-checkbox-${TOOL_NAMES.admin}`)
-      .first();
-    if ((await retentionCheckbox.count()) > 0) {
-      const isVisible = await retentionCheckbox.isVisible().catch(() => false);
-      if (isVisible) {
-        await expect(retentionCheckbox).toHaveAttribute("aria-checked", "true");
-        logStep(
-          "Verified MCP server retains tool selection (checkbox visible)"
-        );
-      } else {
-        logStep(
-          "Checkbox was found but not visible; skipping state assertion due to layout"
-        );
-      }
-    } else {
-      logStep(
-        "Tool checkbox not found after returning to edit page; skipping state assertion"
-      );
-    }
+    logStep("Published agent explicitly for end-user MCP flow");
 
     adminArtifacts = {
       serverId,
       serverName,
-      assistantId,
-      assistantName,
+      agentId,
+      agentName,
       toolName: TOOL_NAMES.admin,
+      toolId: adminToolId,
     };
   });
 
@@ -1493,19 +1923,14 @@ test.describe("MCP OAuth flows", () => {
     page,
     browser,
   }, testInfo) => {
+    test.setTimeout(MCP_OAUTH_FLOW_TEST_TIMEOUT_MS);
     const logStep = createStepLogger("CuratorFlow");
     test.skip(
       testInfo.project.name !== "admin",
       "MCP OAuth flows run only in admin project"
     );
     logStep("Starting curator MCP OAuth flow");
-    await page.route("**/api/mcp/oauth/status*", (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ statuses: [] }),
-      })
-    );
+    await mockEmptyOauthStatus(page);
 
     if (!curatorCredentials || !curatorTwoCredentials) {
       test.skip(true, "Curator credentials were not initialized");
@@ -1513,7 +1938,7 @@ test.describe("MCP OAuth flows", () => {
 
     await page.context().clearCookies();
     logStep("Cleared cookies");
-    await loginWithCredentials(
+    await apiLogin(
       page,
       curatorCredentials!.email,
       curatorCredentials!.password
@@ -1524,10 +1949,10 @@ test.describe("MCP OAuth flows", () => {
       "CuratorFlow primary login"
     );
     logStep("Logged in as curator");
-    const curatorApiClient = new OnyxApiClient(page);
+    const curatorApiClient = new OnyxApiClient(page.request);
 
     const serverName = `PW MCP Curator ${Date.now()}`;
-    const assistantName = `PW Curator Assistant ${Date.now()}`;
+    const agentName = `PW Curator Assistant ${Date.now()}`;
 
     let curatorServerProcess: McpServerProcess | null = null;
     let curatorRuntimeMcpServerUrl = runtimeMcpServerUrl;
@@ -1542,173 +1967,43 @@ test.describe("MCP OAuth flows", () => {
         curatorRuntimeMcpServerUrl = `http://${host}:${port}/mcp`;
       }
 
-      await page.goto("http://localhost:3000/admin/actions/edit-mcp");
-      await page.waitForURL("**/admin/actions/edit-mcp**", { timeout: 15000 });
-      logStep("Opened MCP edit page (curator)");
-
-      await page.locator('input[name="name"]').fill(serverName);
-      await page
-        .locator('input[name="description"]')
-        .fill("Playwright MCP OAuth server (curator)");
-      await page
-        .locator('input[name="server_url"]')
-        .fill(curatorRuntimeMcpServerUrl);
-
-      await page.getByTestId("auth-type-select").click();
-      await page.getByRole("option", { name: "OAuth" }).click();
-
-      await page.locator("#oauth_client_id").fill(CLIENT_ID);
-      await page.locator("#oauth_client_secret").fill(CLIENT_SECRET);
-
-      const connectButton = page.getByTestId("connect-oauth-button");
-      const navPromise = page
-        .waitForNavigation({ waitUntil: "load" })
-        .catch(() => null);
-      await connectButton.click();
-      await navPromise;
-      logStep("Triggered OAuth connect button");
-      await completeOauthFlow(page, {
-        expectReturnPathContains: "/admin/actions/edit-mcp",
-        confirmConnected: async () => {
-          await expect(page.getByTestId("connect-oauth-button")).toContainText(
-            "OAuth Connected",
-            { timeout: 15000 }
-          );
-        },
+      const serverId = await configureOauthServerAndEnableTool(page, {
+        serverName,
+        serverDescription: "Playwright MCP OAuth server (curator)",
+        serverUrl: curatorRuntimeMcpServerUrl,
+        toolName: TOOL_NAMES.curator,
+        connectContext: "Curator connect click",
+        logStep,
       });
 
-      await page.getByRole("button", { name: "List Actions" }).click();
-      await page.waitForURL("**listing_tools=true**", { timeout: 15000 });
-      await scrollToBottom(page);
-      await expect(page.getByText("Available Tools")).toBeVisible({
-        timeout: 15000,
+      await openAssistantEditor(page, { logStep });
+
+      const agentId = await createAgentAndWaitForTool(page, {
+        apiClient: curatorApiClient,
+        agentName,
+        instructions: "Curator MCP OAuth assistant.",
+        description: "Playwright curator MCP assistant.",
+        serverId,
+        toolName: TOOL_NAMES.curator,
+        logStep,
       });
 
-      const currentUrl = new URL(page.url());
-      const serverIdParam = currentUrl.searchParams.get("server_id");
-      if (!serverIdParam) {
-        throw new Error("Expected server_id in URL after listing tools");
-      }
-      const serverId = Number(serverIdParam);
-      if (Number.isNaN(serverId)) {
-        throw new Error(`Invalid server_id ${serverIdParam}`);
-      }
-
-      // Click the checkbox and wait for it to be checked
-      const curatorCheckbox = page.getByLabel(
-        `tool-checkbox-${TOOL_NAMES.curator}`
-      );
-      await curatorCheckbox.waitFor({ state: "visible", timeout: 10000 });
-      await curatorCheckbox.click();
-
-      // Verify the checkbox is actually checked
-      await expect(curatorCheckbox).toHaveAttribute("aria-checked", "true", {
-        timeout: 10000,
-      });
-
-      // Verify the selection count updated to show 1 tool selected
-      await expect(page.getByText("1 tool selected")).toBeVisible({
-        timeout: 10000,
-      });
-      logStep("Selected curator tool checkbox");
-
-      await scrollToBottom(page);
-
-      // Wait for the button to be enabled before clicking
-      const createButton = page.getByRole("button", {
-        name: /(?:Create|Update) MCP Server Actions/,
-      });
-      await expect(createButton).toBeEnabled({ timeout: 10000 });
-      await createButton.click();
-      logStep("Created MCP server actions (curator)");
-
-      await page.waitForURL("**/admin/actions**", { timeout: 20000 });
-      await expect(
-        page.getByText(serverName, { exact: false }).first()
-      ).toBeVisible({ timeout: 20000 });
-
-      await page.goto("http://localhost:3000/assistants/new?admin=true");
-      await page.waitForURL("**/assistants/new**", { timeout: 15000 });
-      logStep("Assistant editor loaded (curator)");
-
-      await page.locator('input[name="name"]').fill(assistantName);
-      await page
-        .locator('textarea[name="system_prompt"]')
-        .fill("Curator MCP OAuth assistant.");
-      await page
-        .locator('input[name="description"]')
-        .fill("Playwright curator MCP assistant.");
-
-      await page
-        .getByRole("button", { name: /Advanced Options/i })
-        .click()
-        .catch(() => {});
-      await ensurePublicAssistant(page);
-      await selectMcpTools(page, serverId, [TOOL_NAMES.curator]);
-
-      await page.getByRole("button", { name: "Create" }).click();
-      await page.waitForURL(
-        (url) => {
-          const href = typeof url === "string" ? url : url.toString();
-          return (
-            /\/chat\?assistantId=\d+/.test(href) ||
-            href.includes("/admin/assistants")
-          );
-        },
-        { timeout: 20000 }
-      );
-
-      let assistantId: number | null = null;
-      if (/\/chat\?assistantId=\d+/.test(page.url())) {
-        const chatUrl = new URL(page.url());
-        const assistantIdParam = chatUrl.searchParams.get("assistantId");
-        if (!assistantIdParam) {
-          throw new Error("Assistant ID missing from chat redirect URL");
-        }
-        assistantId = Number(assistantIdParam);
-        if (Number.isNaN(assistantId)) {
-          throw new Error(`Invalid assistantId ${assistantIdParam}`);
-        }
-      } else {
-        const assistantRecord = await waitForAssistantByName(
-          curatorApiClient,
-          assistantName
-        );
-        assistantId = assistantRecord.id;
-        await page.goto(
-          `http://localhost:3000/chat?assistantId=${assistantId}`
-        );
-        await page.waitForURL(/\/chat\?assistantId=\d+/, { timeout: 20000 });
-      }
-      if (assistantId === null) {
-        throw new Error("Assistant ID could not be determined");
-      }
-
-      logStep(`Curator assistant created with id ${assistantId}`);
-
-      await waitForAssistantTools(curatorApiClient, assistantName, [
-        TOOL_NAMES.curator,
-      ]);
-
-      await ensureServerVisibleInActions(page, serverName);
+      await ensureServerVisibleInActions(page, serverName, { agentId });
       await verifyMcpToolRowVisible(page, serverName, TOOL_NAMES.curator);
       logStep("Verified curator MCP tool row visible before reauth");
 
-      await reauthenticateFromChat(
-        page,
-        serverName,
-        `/chat?assistantId=${assistantId}`
-      );
-      await ensureServerVisibleInActions(page, serverName);
+      await reauthenticateFromChat(page, serverName, `/app?agentId=${agentId}`);
+      await ensureServerVisibleInActions(page, serverName, { agentId });
       await verifyMcpToolRowVisible(page, serverName, TOOL_NAMES.curator);
       logStep("Verified curator MCP tool row visible after reauth");
 
       curatorArtifacts = {
         serverId,
         serverName,
-        assistantId,
-        assistantName,
+        agentId,
+        agentName,
         toolName: TOOL_NAMES.curator,
+        toolId: null,
       };
 
       // Verify isolation: second curator must not be able to edit first curator's server
@@ -1718,7 +2013,7 @@ test.describe("MCP OAuth flows", () => {
         curatorTwoPage,
         "CuratorFlow secondary pre-login logout"
       );
-      await loginWithCredentials(
+      await apiLogin(
         curatorTwoPage,
         curatorTwoCredentials!.email,
         curatorTwoCredentials!.password
@@ -1728,15 +2023,14 @@ test.describe("MCP OAuth flows", () => {
         { email: curatorTwoCredentials!.email, role: "curator" },
         "CuratorFlow secondary login"
       );
-      await curatorTwoPage.goto("http://localhost:3000/admin/actions");
+      await curatorTwoPage.goto("/admin/actions/mcp");
       const serverLocator = curatorTwoPage.getByText(serverName, {
         exact: false,
       });
-      const visibleCount = await serverLocator.count();
-      await expect(visibleCount).toBeGreaterThan(0);
+      await expect(serverLocator).not.toHaveCount(0, { timeout: 15000 });
 
       const editResponse = await curatorTwoPage.request.get(
-        `http://localhost:3000/api/admin/mcp/servers/${serverId}`
+        `${APP_BASE_URL}/api/admin/mcp/servers/${serverId}`
       );
       expect(editResponse.status()).toBe(403);
       await curatorTwoContext.close();
@@ -1748,38 +2042,33 @@ test.describe("MCP OAuth flows", () => {
   test("End user can authenticate and invoke MCP tools via chat", async ({
     page,
   }, testInfo) => {
+    test.setTimeout(MCP_OAUTH_FLOW_TEST_TIMEOUT_MS);
     const logStep = createStepLogger("UserFlow");
     test.skip(
       testInfo.project.name !== "admin",
       "MCP OAuth flows run only in admin project"
     );
     logStep("Starting end-user MCP OAuth flow");
-    await page.route("**/api/mcp/oauth/status*", (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ statuses: [] }),
-      })
-    );
+    await mockEmptyOauthStatus(page);
 
     test.skip(!adminArtifacts, "Admin flow must complete before user test");
 
     await page.context().clearCookies();
     logStep("Cleared cookies");
-    await loginAs(page, "user");
-    logStep("Logged in as user");
+    await loginAsWorkerUser(page, testInfo.workerIndex);
+    logStep("Logged in as worker user");
 
-    const assistantId = adminArtifacts!.assistantId;
+    const agentId = adminArtifacts!.agentId;
     const serverName = adminArtifacts!.serverName;
     const toolName = adminArtifacts!.toolName;
 
-    await page.goto(`http://localhost:3000/chat?assistantId=${assistantId}`, {
+    await page.goto(`/app?agentId=${agentId}`, {
       waitUntil: "load",
     });
-    await ensureServerVisibleInActions(page, serverName);
+    await ensureServerVisibleInActions(page, serverName, { agentId });
     logStep("Opened chat as user and ensured server visible");
 
-    await page.locator('[data-testid="action-management-toggle"]').click();
+    await openActionsPopover(page);
     const serverLineItem = await waitForServerRow(page, serverName, 15_000);
     if (!serverLineItem) {
       const entries = await collectActionPopoverEntries(page);
@@ -1795,17 +2084,41 @@ test.describe("MCP OAuth flows", () => {
     }
     await expect(serverLineItem).toBeVisible({ timeout: 15000 });
 
-    const navPromise = page
-      .waitForNavigation({ waitUntil: "load" })
-      .catch(() => null);
-    await serverLineItem.click();
-    await navPromise;
+    const clickedServerRow =
+      await clickServerRowAndWaitForPossibleUrlChangeWithRetry(
+        page,
+        serverName,
+        "End-user reauth click",
+        15_000
+      );
+    if (!clickedServerRow) {
+      const entries = await collectActionPopoverEntries(page);
+      await logPageStateWithTag(
+        page,
+        `UserFlow reauth click failed for ${serverName}; visible entries: ${JSON.stringify(
+          entries
+        )}`
+      );
+      throw new Error(
+        `Unable to click MCP server row ${serverName} for user reauth`
+      );
+    }
+
     await completeOauthFlow(page, {
-      expectReturnPathContains: `/chat?assistantId=${assistantId}`,
+      expectReturnPathContains: `/app?agentId=${agentId}`,
     });
     logStep("Completed user OAuth reauthentication");
 
+    await ensureServerVisibleInActions(page, serverName, { agentId });
     await verifyMcpToolRowVisible(page, serverName, toolName);
+    await ensureMcpToolEnabledInActions(page, serverName, toolName);
     logStep("Verified user MCP tool row visible after reauth");
+    await verifyToolInvocationFromChat(
+      page,
+      toolName,
+      "UserFlow post-reauth",
+      adminArtifacts!.toolId
+    );
+    logStep("Verified user MCP tool invocation after reauth");
   });
 });

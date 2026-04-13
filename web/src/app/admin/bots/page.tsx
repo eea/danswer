@@ -3,14 +3,16 @@
 import { ErrorCallout } from "@/components/ErrorCallout";
 import { ThreeDotsLoader } from "@/components/Loading";
 import { InstantSSRAutoRefresh } from "@/components/SSRAutoRefresh";
-import { AdminPageTitle } from "@/components/admin/Title";
-import { SourceIcon } from "@/components/SourceIcon";
 import { SlackBotTable } from "./SlackBotTable";
 import { useSlackBots } from "./[bot-id]/hooks";
-import { ValidSources } from "@/lib/types";
+import * as SettingsLayouts from "@/layouts/settings-layouts";
+import { ADMIN_ROUTES } from "@/lib/admin-routes";
 import CreateButton from "@/refresh-components/buttons/CreateButton";
+import { DOCS_ADMINS_PATH } from "@/lib/constants";
 
-const Main = () => {
+const route = ADMIN_ROUTES.SLACK_BOTS;
+
+function Main() {
   const {
     data: slackBots,
     isLoading: isSlackBotsLoading,
@@ -34,8 +36,6 @@ const Main = () => {
 
   return (
     <div className="mb-8">
-      {/* {popup} */}
-
       <p className="mb-2 text-sm text-muted-foreground">
         Setup Slack bots that connect to Onyx. Once setup, you will be able to
         ask questions to Onyx directly from Slack. Additionally, you can:
@@ -60,7 +60,7 @@ const Main = () => {
         Follow the{" "}
         <a
           className="text-blue-500 hover:underline"
-          href="https://docs.onyx.app/admin/getting_started/slack_bot_setup"
+          href={`${DOCS_ADMINS_PATH}/getting_started/slack_bot_setup`}
           target="_blank"
           rel="noopener noreferrer"
         >
@@ -74,20 +74,16 @@ const Main = () => {
       <SlackBotTable slackBots={slackBots} />
     </div>
   );
-};
+}
 
-const Page = () => {
+export default function Page() {
   return (
-    <div className="container mx-auto">
-      <AdminPageTitle
-        icon={<SourceIcon iconSize={36} sourceType={ValidSources.Slack} />}
-        title="Slack Bots"
-      />
-      <InstantSSRAutoRefresh />
-
-      <Main />
-    </div>
+    <SettingsLayouts.Root>
+      <SettingsLayouts.Header icon={route.icon} title={route.title} separator />
+      <SettingsLayouts.Body>
+        <InstantSSRAutoRefresh />
+        <Main />
+      </SettingsLayouts.Body>
+    </SettingsLayouts.Root>
   );
-};
-
-export default Page;
+}

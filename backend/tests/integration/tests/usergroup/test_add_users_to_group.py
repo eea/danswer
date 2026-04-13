@@ -5,7 +5,6 @@ import pytest
 import requests
 
 from tests.integration.common_utils.constants import API_SERVER_URL
-from tests.integration.common_utils.constants import GENERAL_HEADERS
 from tests.integration.common_utils.managers.user import UserManager
 from tests.integration.common_utils.managers.user_group import UserGroupManager
 from tests.integration.common_utils.test_models import DATestUser
@@ -16,7 +15,7 @@ from tests.integration.common_utils.test_models import DATestUserGroup
     os.environ.get("ENABLE_PAID_ENTERPRISE_EDITION_FEATURES", "").lower() != "true",
     reason="User group tests are enterprise only",
 )
-def test_add_users_to_group(reset: None) -> None:
+def test_add_users_to_group(reset: None) -> None:  # noqa: ARG001
     admin_user: DATestUser = UserManager.create(name="admin_for_add_user")
     user_to_add: DATestUser = UserManager.create(name="basic_user_to_add")
 
@@ -24,6 +23,11 @@ def test_add_users_to_group(reset: None) -> None:
         name="add-user-test-group",
         user_ids=[admin_user.id],
         user_performing_action=admin_user,
+    )
+
+    UserGroupManager.wait_for_sync(
+        user_performing_action=admin_user,
+        user_groups_to_check=[user_group],
     )
 
     updated_user_group = UserGroupManager.add_users(
@@ -46,7 +50,7 @@ def test_add_users_to_group(reset: None) -> None:
     os.environ.get("ENABLE_PAID_ENTERPRISE_EDITION_FEATURES", "").lower() != "true",
     reason="User group tests are enterprise only",
 )
-def test_add_users_to_group_invalid_user(reset: None) -> None:
+def test_add_users_to_group_invalid_user(reset: None) -> None:  # noqa: ARG001
     admin_user: DATestUser = UserManager.create(name="admin_for_add_user_invalid")
 
     user_group: DATestUserGroup = UserGroupManager.create(
@@ -59,7 +63,7 @@ def test_add_users_to_group_invalid_user(reset: None) -> None:
     response = requests.post(
         f"{API_SERVER_URL}/manage/admin/user-group/{user_group.id}/add-users",
         json={"user_ids": [invalid_user_id]},
-        headers=admin_user.headers if admin_user else GENERAL_HEADERS,
+        headers=admin_user.headers,
     )
 
     assert response.status_code == 404

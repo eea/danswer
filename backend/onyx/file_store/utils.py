@@ -9,7 +9,6 @@ from sqlalchemy.orm import Session
 
 from onyx.configs.app_configs import WEB_DOMAIN
 from onyx.configs.constants import FileOrigin
-from onyx.db.models import ChatMessage
 from onyx.db.models import UserFile
 from onyx.file_store.file_store import get_default_file_store
 from onyx.file_store.models import ChatFileType
@@ -19,82 +18,79 @@ from onyx.server.query_and_chat.chat_utils import mime_type_to_chat_file_type
 from onyx.utils.b64 import get_image_type
 from onyx.utils.logger import setup_logger
 from onyx.utils.threadpool_concurrency import run_functions_tuples_in_parallel
+from onyx.utils.timing import log_function_time
 
 logger = setup_logger()
 
 
-def user_file_id_to_plaintext_file_name(user_file_id: UUID) -> str:
-    """Generate a consistent file name for storing plaintext content of a user file."""
-    return f"plaintext_{user_file_id}"
+def plaintext_file_name_for_id(file_id: str) -> str:
+    """Generate a consistent file name for storing plaintext content of a file."""
+    return f"plaintext_{file_id}"
 
 
-def store_user_file_plaintext(user_file_id: UUID, plaintext_content: str) -> bool:
+def store_plaintext(file_id: str, plaintext_content: str) -> bool:
     """
-    Store plaintext content for a user file in the file store.
+    Store plaintext content for a file in the file store.
 
     Args:
-        user_file_id: The ID of the user file
+        file_id: The ID of the file (user_file or artifact_file)
         plaintext_content: The plaintext content to store
 
     Returns:
         bool: True if storage was successful, False otherwise
     """
-    # Skip empty content
     if not plaintext_content:
         return False
 
-    # Get plaintext file name
-    plaintext_file_name = user_file_id_to_plaintext_file_name(user_file_id)
-
+    plaintext_file_name = plaintext_file_name_for_id(file_id)
     try:
         file_store = get_default_file_store()
         file_content = BytesIO(plaintext_content.encode("utf-8"))
         file_store.save_file(
             content=file_content,
-            display_name=f"Plaintext for user file {user_file_id}",
+            display_name=f"Plaintext for {file_id}",
             file_origin=FileOrigin.PLAINTEXT_CACHE,
             file_type="text/plain",
             file_id=plaintext_file_name,
         )
         return True
     except Exception as e:
-        logger.warning(f"Failed to store plaintext for user file {user_file_id}: {e}")
+        logger.warning(f"Failed to store plaintext for {file_id}: {e}")
         return False
 
 
-def load_chat_file(file_descriptor: FileDescriptor) -> InMemoryChatFile:
-    file_io = get_default_file_store().read_file(file_descriptor["id"], mode="b")
+# --- Convenience wrappers for callers that use user-file UUIDs ---
+
+
+def user_file_id_to_plaintext_file_name(user_file_id: UUID) -> str:
+    """Generate a consistent file name for storing plaintext content of a user file."""
+    return plaintext_file_name_for_id(str(user_file_id))
+
+
+def store_user_file_plaintext(user_file_id: UUID, plaintext_content: str) -> bool:
+    """Store plaintext content for a user file (delegates to :func:`store_plaintext`)."""
+    return store_plaintext(str(user_file_id), plaintext_content)
+
+
+def load_chat_file_by_id(file_id: str) -> InMemoryChatFile:
+    """Load a file directly from the file store using its file_record ID.
+
+    This is the fallback path for chat-attached files that don't have a
+    corresponding row in the ``user_file`` table."""
+    file_store = get_default_file_store()
+    file_record = file_store.read_file_record(file_id)
+    chat_file_type = mime_type_to_chat_file_type(file_record.file_type)
+
+    file_io = file_store.read_file(file_id, mode="b")
     return InMemoryChatFile(
-        file_id=file_descriptor["id"],
+        file_id=file_id,
         content=file_io.read(),
-        file_type=file_descriptor["type"],
-        filename=file_descriptor.get("name"),
+        file_type=chat_file_type,
+        filename=file_record.display_name,
     )
-
-
-def load_all_chat_files(
-    chat_messages: list[ChatMessage],
-    file_descriptors: list[FileDescriptor],
-) -> list[InMemoryChatFile]:
-    file_descriptors_for_history: list[FileDescriptor] = []
-    for chat_message in chat_messages:
-        if chat_message.files:
-            file_descriptors_for_history.extend(chat_message.files)
-
-    files = cast(
-        list[InMemoryChatFile],
-        run_functions_tuples_in_parallel(
-            [
-                (load_chat_file, (file,))
-                for file in file_descriptors + file_descriptors_for_history
-            ]
-        ),
-    )
-    return files
 
 
 def load_user_file(file_id: UUID, db_session: Session) -> InMemoryChatFile:
-    chat_file_type = ChatFileType.USER_KNOWLEDGE
     status = "not_loaded"
 
     user_file = db_session.query(UserFile).filter(UserFile.id == file_id).first()
@@ -114,16 +110,20 @@ def load_user_file(file_id: UUID, db_session: Session) -> InMemoryChatFile:
     # check for plain text normalized version first, then use original file otherwise
     try:
         file_io = file_store.read_file(plaintext_file_name, mode="b")
-        # For plaintext versions, use PLAIN_TEXT type (unless it's an image which doesn't have plaintext)
-        plaintext_chat_file_type = (
-            ChatFileType.PLAIN_TEXT
-            if chat_file_type != ChatFileType.IMAGE
-            else chat_file_type
-        )
-
-        # if we have plaintext for image (which happens when image extraction is enabled), we use PLAIN_TEXT type
-        if file_io is not None:
+        # Metadata-only file types preserve their original type so
+        # downstream injection paths can route them correctly.
+        if chat_file_type.use_metadata_only():
+            plaintext_chat_file_type = chat_file_type
+        elif file_io is not None:
+            # if we have plaintext for image (which happens when image
+            # extraction is enabled), we use PLAIN_TEXT type
             plaintext_chat_file_type = ChatFileType.PLAIN_TEXT
+        else:
+            plaintext_chat_file_type = (
+                ChatFileType.PLAIN_TEXT
+                if chat_file_type != ChatFileType.IMAGE
+                else chat_file_type
+            )
 
         chat_file = InMemoryChatFile(
             file_id=str(user_file.file_id),
@@ -148,9 +148,7 @@ def load_user_file(file_id: UUID, db_session: Session) -> InMemoryChatFile:
         return chat_file
     finally:
         logger.debug(
-            f"load_user_file finished: file_id={user_file.file_id} "
-            f"chat_file_type={chat_file_type} "
-            f"status={status}"
+            f"load_user_file finished: file_id={user_file.file_id} chat_file_type={chat_file_type} status={status}"
         )
 
 
@@ -299,6 +297,86 @@ def save_files(urls: list[str], base64_files: list[str]) -> list[str]:
     ]
 
     return run_functions_tuples_in_parallel(funcs)
+
+
+@log_function_time(print_only=True)
+def verify_user_files(
+    user_files: list[FileDescriptor],
+    user_id: UUID | None,
+    db_session: Session,
+    project_id: int | None = None,
+) -> None:
+    """
+    Verify that all provided file descriptors belong to the specified user.
+    For project files (those without user_file_id), verifies access through project ownership.
+
+    Args:
+        user_files: List of file descriptors to verify
+        user_id: The user ID to check ownership against
+        db_session: The SQLAlchemy database session
+        project_id: Optional project ID to verify project file access against
+
+    Raises:
+        ValueError: If any file does not belong to the user or is not found
+    """
+    from onyx.db.models import Project__UserFile
+    from onyx.db.projects import check_project_ownership
+
+    # Extract user_file_ids and project file_ids from the file descriptors
+    user_file_ids = []
+    project_file_ids = []
+
+    for file_descriptor in user_files:
+        # Check if this file descriptor has a user_file_id
+        if file_descriptor.get("user_file_id"):
+            try:
+                user_file_ids.append(UUID(file_descriptor["user_file_id"]))
+            except (ValueError, TypeError):
+                logger.warning(
+                    f"Invalid user_file_id in file descriptor: {file_descriptor['user_file_id']}"
+                )
+                continue
+        else:
+            # This is a project file - use the 'id' field which is the file_id
+            if file_descriptor.get("id"):
+                project_file_ids.append(file_descriptor["id"])
+
+    # Verify user files (existing logic)
+    if user_file_ids:
+        validate_user_files_ownership(user_file_ids, user_id, db_session)
+
+    # Verify project files
+    if project_file_ids:
+        if project_id is None:
+            raise ValueError(
+                "Project files provided but no project_id specified for verification"
+            )
+
+        # Verify user owns the project
+        if not check_project_ownership(project_id, user_id, db_session):
+            raise ValueError(
+                f"User {user_id} does not have access to project {project_id}"
+            )
+
+        # Verify all project files belong to the specified project
+        user_files_in_project = (
+            db_session.query(UserFile)
+            .join(Project__UserFile)
+            .filter(
+                Project__UserFile.project_id == project_id,
+                UserFile.file_id.in_(project_file_ids),
+            )
+            .all()
+        )
+
+        # Check if all files were found in the project
+        found_file_ids = {uf.file_id for uf in user_files_in_project}
+        missing_files = set(project_file_ids) - found_file_ids
+
+        if missing_files:
+            raise ValueError(
+                f"Files {missing_files} are not associated with project {project_id}"
+            )
 
 
 def build_frontend_file_url(file_id: str) -> str:

@@ -12,7 +12,7 @@ export interface FieldContextType {
 
 export type FormFieldRootProps = React.HTMLAttributes<HTMLDivElement> & {
   name?: string;
-  state: FormFieldState;
+  state?: FormFieldState;
   required?: boolean;
   id?: string;
 };
@@ -21,6 +21,7 @@ export type LabelProps = React.HTMLAttributes<HTMLLabelElement> & {
   leftIcon?: React.ReactNode;
   rightIcon?: React.ReactNode;
   optional?: boolean;
+  required?: boolean;
   rightAction?: React.ReactNode;
 };
 

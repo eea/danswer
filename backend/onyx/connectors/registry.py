@@ -68,6 +68,14 @@ CONNECTOR_CLASS_MAP = {
         module_path="onyx.connectors.slab.connector",
         class_name="SlabConnector",
     ),
+    DocumentSource.CODA: ConnectorMapping(
+        module_path="onyx.connectors.coda.connector",
+        class_name="CodaConnector",
+    ),
+    DocumentSource.CANVAS: ConnectorMapping(
+        module_path="onyx.connectors.canvas.connector",
+        class_name="CanvasConnector",
+    ),
     DocumentSource.NOTION: ConnectorMapping(
         module_path="onyx.connectors.notion.connector",
         class_name="NotionConnector",
@@ -191,6 +199,10 @@ CONNECTOR_CLASS_MAP = {
     DocumentSource.HIGHSPOT: ConnectorMapping(
         module_path="onyx.connectors.highspot.connector",
         class_name="HighspotConnector",
+    ),
+    DocumentSource.DRUPAL_WIKI: ConnectorMapping(
+        module_path="onyx.connectors.drupal_wiki.connector",
+        class_name="DrupalWikiConnector",
     ),
     DocumentSource.IMAP: ConnectorMapping(
         module_path="onyx.connectors.imap.connector",

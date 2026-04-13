@@ -1,7 +1,7 @@
 "use client";
 
 import { useContext } from "react";
-import { SettingsContext } from "../settings/SettingsProvider";
+import { SettingsContext } from "@/providers/SettingsProvider";
 import { OnyxIcon } from "../icons/icons";
 import { EEAIcon } from "../EEA_Logo";
 

@@ -1,7 +1,7 @@
 import { INTERNAL_URL } from "@/lib/constants";
 import { NextRequest, NextResponse } from "next/server";
 
-/* NextJS is annoying and makes use use a separate function for 
+/* NextJS is annoying and makes use use a separate function for
 each request type >:( */
 
 export async function GET(
@@ -87,14 +87,41 @@ async function handleRequest(request: NextRequest, path: string[]) {
       backendUrl.searchParams.append(key, value);
     });
 
+    // Build headers, optionally injecting debug auth cookie
+    const headers = new Headers(request.headers);
+    if (
+      process.env.DEBUG_AUTH_COOKIE &&
+      process.env.NODE_ENV === "development"
+    ) {
+      // Inject the debug auth cookie for local development against remote backend
+      // Get from cloud site: DevTools → Application → Cookies → fastapiusersauth
+      const existingCookies = headers.get("cookie") || "";
+      const debugCookie = `fastapiusersauth=${process.env.DEBUG_AUTH_COOKIE}`;
+      headers.set(
+        "cookie",
+        existingCookies ? `${existingCookies}; ${debugCookie}` : debugCookie
+      );
+    }
+
     const response = await fetch(backendUrl, {
       method: request.method,
-      headers: request.headers,
+      headers: headers,
       body: request.body,
       signal: request.signal,
+      redirect: "manual",
       // @ts-ignore
       duplex: "half",
     });
+
+    const setCookies =
+      // @ts-ignore - undici provides getSetCookie in Node.
+      response.headers.getSetCookie?.() ??
+      (response.headers.get("set-cookie")
+        ? [response.headers.get("set-cookie")]
+        : []);
+
+    const responseHeaders = new Headers(response.headers);
+    responseHeaders.delete("set-cookie");
 
     // Check if the response is a stream
     if (
@@ -105,15 +132,27 @@ async function handleRequest(request: NextRequest, path: string[]) {
       const { readable, writable } = new TransformStream();
       response.body?.pipeTo(writable);
 
-      return new NextResponse(readable, {
+      const proxyResponse = new NextResponse(readable, {
         status: response.status,
-        headers: response.headers,
+        headers: responseHeaders,
       });
+      for (const cookie of setCookies) {
+        if (cookie) {
+          proxyResponse.headers.append("set-cookie", cookie);
+        }
+      }
+      return proxyResponse;
     } else {
-      return new NextResponse(response.body, {
+      const proxyResponse = new NextResponse(response.body, {
         status: response.status,
-        headers: response.headers,
+        headers: responseHeaders,
       });
+      for (const cookie of setCookies) {
+        if (cookie) {
+          proxyResponse.headers.append("set-cookie", cookie);
+        }
+      }
+      return proxyResponse;
     }
   } catch (error: unknown) {
     console.error("Proxy error:", error);

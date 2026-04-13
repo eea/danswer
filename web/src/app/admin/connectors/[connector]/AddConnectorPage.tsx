@@ -2,20 +2,18 @@
 
 import { errorHandlingFetcher } from "@/lib/fetcher";
 import useSWR, { mutate } from "swr";
-
-import Title from "@/components/ui/title";
 import { AdminPageTitle } from "@/components/admin/Title";
 import { buildSimilarCredentialInfoURL } from "@/app/admin/connector/[ccPairId]/lib";
-import { usePopup } from "@/components/admin/connectors/Popup";
+import { toast } from "@/hooks/useToast";
 import { useFormContext } from "@/components/context/FormContext";
 import { getSourceDisplayName, getSourceMetadata } from "@/lib/sources";
 import { SourceIcon } from "@/components/SourceIcon";
 import { useEffect, useRef, useState } from "react";
 import { deleteCredential, linkCredential } from "@/lib/credential";
-import { submitFiles } from "./pages/utils/files";
-import { submitGoogleSite } from "./pages/utils/google_site";
-import AdvancedFormPage from "./pages/Advanced";
-import DynamicConnectionForm from "./pages/DynamicConnectorCreationForm";
+import { submitFiles } from "@/app/admin/connectors/[connector]/pages/utils/files";
+import { submitGoogleSite } from "@/app/admin/connectors/[connector]/pages/utils/google_site";
+import AdvancedFormPage from "@/app/admin/connectors/[connector]/pages/Advanced";
+import DynamicConnectionForm from "@/app/admin/connectors/[connector]/pages/DynamicConnectorCreationForm";
 import CreateCredential from "@/components/credentials/actions/CreateCredential";
 import ModifyCredential from "@/components/credentials/actions/ModifyCredential";
 import {
@@ -35,14 +33,14 @@ import {
   Connector,
   ConnectorBase,
 } from "@/lib/connectors/connectors";
-import { Modal } from "@/components/Modal";
-import { GmailMain } from "./pages/gmail/GmailPage";
+import Modal from "@/refresh-components/Modal";
+import { GmailMain } from "@/app/admin/connectors/[connector]/pages/gmail/GmailPage";
 import {
   useGmailCredentials,
   useGoogleDriveCredentials,
-} from "./pages/utils/hooks";
+} from "@/app/admin/connectors/[connector]/pages/utils/hooks";
 import { Formik } from "formik";
-import NavigationRow from "./NavigationRow";
+import NavigationRow from "@/app/admin/connectors/[connector]/NavigationRow";
 import { useRouter } from "next/navigation";
 import CardSection from "@/components/admin/CardSection";
 import { prepareOAuthAuthorizationRequest } from "@/lib/oauth_utils";
@@ -57,10 +55,13 @@ import {
 } from "@/lib/connectors/oauth";
 import { CreateStdOAuthCredential } from "@/components/credentials/actions/CreateStdOAuthCredential";
 import { Spinner } from "@/components/Spinner";
-import Button from "@/refresh-components/buttons/Button";
+import { Button } from "@opal/components";
 import { deleteConnector } from "@/lib/connector";
 import ConnectorDocsLink from "@/components/admin/connectors/ConnectorDocsLink";
 import Text from "@/refresh-components/texts/Text";
+import { SvgKey, SvgAlertCircle } from "@opal/icons";
+import SimpleTooltip from "@/refresh-components/SimpleTooltip";
+import Link from "next/link";
 
 export interface AdvancedConfig {
   refreshFreq: number;
@@ -177,7 +178,6 @@ export default function AddConnector({
 
   // Form context and popup management
   const { setFormStep, setAllowCreate, formStep } = useFormContext();
-  const { popup, setPopup } = usePopup();
   const [uploading, setUploading] = useState(false);
   const [creatingConnector, setCreatingConnector] = useState(false);
 
@@ -221,6 +221,9 @@ export default function AddConnector({
   };
 
   const displayName = getSourceDisplayName(connector) || connector;
+  const sourceMetadata = getSourceMetadata(connector);
+  const hasFederatedOption = sourceMetadata.federated === true;
+
   if (!credentials || !editableCredentials) {
     return <></>;
   }
@@ -233,26 +236,17 @@ export default function AddConnector({
   const onDeleteCredential = async (credential: Credential<any | null>) => {
     const response = await deleteCredential(credential.id, true);
     if (response.ok) {
-      setPopup({
-        message: "Credential deleted successfully!",
-        type: "success",
-      });
+      toast.success("Credential deleted successfully!");
     } else {
       const errorData = await response.json();
-      setPopup({
-        message: errorData.message,
-        type: "error",
-      });
+      toast.error(errorData.detail || errorData.message);
     }
   };
 
   const onSwap = async (selectedCredential: Credential<any>) => {
     setCurrentCredential(selectedCredential);
     setAllowCreate(true);
-    setPopup({
-      message: "Swapped credential successfully!",
-      type: "success",
-    });
+    toast.success("Swapped credential successfully!");
     refresh();
   };
 
@@ -276,15 +270,15 @@ export default function AddConnector({
         setOauthUrl(response.url);
         window.open(response.url, "_blank", "noopener,noreferrer");
       } else {
-        setPopup({ message: "Failed to fetch OAuth URL", type: "error" });
+        toast.error("Failed to fetch OAuth URL");
       }
     } catch (error: unknown) {
       // Narrow the type of error
       if (error instanceof Error) {
-        setPopup({ message: `Error: ${error.message}`, type: "error" });
+        toast.error(`Error: ${error.message}`);
       } else {
         // Handle non-standard errors
-        setPopup({ message: "An unknown error occurred", type: "error" });
+        toast.error("An unknown error occurred");
       }
     } finally {
       setIsAuthorizing(false);
@@ -354,7 +348,6 @@ export default function AddConnector({
           const response = await submitGoogleSite(
             selectedFiles,
             values?.base_url,
-            setPopup,
             advancedConfiguration.refreshFreq,
             advancedConfiguration.pruneFreq,
             advancedConfiguration.indexingStart,
@@ -373,7 +366,6 @@ export default function AddConnector({
           try {
             const response = await submitFiles(
               selectedFiles,
-              setPopup,
               name,
               access_type,
               groups
@@ -382,7 +374,7 @@ export default function AddConnector({
               onSuccess();
             }
           } catch (error) {
-            setPopup({ message: "Error uploading files", type: "error" });
+            toast.error("Error uploading files");
           } finally {
             setUploading(false);
           }
@@ -426,7 +418,7 @@ export default function AddConnector({
               if (isSuccess) {
                 onSuccess();
               } else {
-                setPopup({ message: message, type: "error" });
+                toast.error(message);
               }
             }
 
@@ -451,16 +443,13 @@ export default function AddConnector({
 
                 if (!timeoutErrorHappenedRef.current) {
                   // Only show error if timeout didn't happen
-                  setPopup({
-                    message: errorData.message || errorData.detail,
-                    type: "error",
-                  });
+                  toast.error(errorData.detail || errorData.message);
                 }
               }
             } else if (isSuccess) {
               onSuccess();
             } else {
-              setPopup({ message: message, type: "error" });
+              toast.error(message);
             }
 
             timeoutErrorHappenedRef.current = false;
@@ -476,12 +465,11 @@ export default function AddConnector({
 
           if (result.isTimeout) {
             timeoutErrorHappenedRef.current = true;
-            setPopup({
-              message: `Operation timed out after ${
+            toast.error(
+              `Operation timed out after ${
                 CONNECTOR_CREATION_TIMEOUT_MS / 1000
-              } seconds. Check your configuration for errors?`,
-              type: "error",
-            });
+              } seconds. Check your configuration for errors?`
+            );
 
             if (connectorIdRef.current) {
               await deleteConnector(connectorIdRef.current);
@@ -496,8 +484,6 @@ export default function AddConnector({
     >
       {(formikProps) => (
         <div className="mx-auto w-full">
-          {popup}
-
           {uploading && <Spinner />}
 
           {creatingConnector && <Spinner />}
@@ -505,13 +491,42 @@ export default function AddConnector({
           <AdminPageTitle
             includeDivider={false}
             icon={<SourceIcon iconSize={32} sourceType={connector} />}
-            title={displayName}
+            title={
+              hasFederatedOption ? (
+                <span className="inline-flex items-center gap-1.5">
+                  {displayName}
+                  <SimpleTooltip
+                    tooltip={
+                      <div className="flex flex-col gap-2">
+                        <Text as="p" textLight05>
+                          A federated search option is available for this
+                          connector. It will result in greater latency and
+                          reduced search quality.
+                        </Text>
+                        <Link
+                          href={`/admin/connectors/${connector}?mode=federated`}
+                          className="text-action-link-04 hover:underline text-sm"
+                        >
+                          Use federated version instead →
+                        </Link>
+                      </div>
+                    }
+                    side="bottom"
+                    delayDuration={0}
+                  >
+                    <SvgAlertCircle size={20} />
+                  </SimpleTooltip>
+                </span>
+              ) : (
+                displayName
+              )
+            }
             farRightElement={undefined}
           />
 
           {formStep == 0 && (
             <CardSection>
-              <Text headingH3 className="pb-2">
+              <Text as="p" headingH3 className="pb-2">
                 Select a credential
               </Text>
 
@@ -565,9 +580,9 @@ export default function AddConnector({
                       {oauthSupportedSources.includes(connector) &&
                         (NEXT_PUBLIC_CLOUD_ENABLED || NEXT_PUBLIC_TEST_ENV) && (
                           <Button
-                            action
-                            onClick={handleAuthorize}
                             disabled={isAuthorizing}
+                            variant="action"
+                            onClick={handleAuthorize}
                             hidden={!isAuthorizeVisible}
                           >
                             {isAuthorizing
@@ -582,39 +597,45 @@ export default function AddConnector({
 
                   {createCredentialFormToggle && (
                     <Modal
-                      className="max-w-3xl rounded-lg"
-                      onOutsideClick={() =>
-                        setCreateCredentialFormToggle(false)
-                      }
+                      open
+                      onOpenChange={() => setCreateCredentialFormToggle(false)}
                     >
-                      {oauthDetailsLoading ? (
-                        <Spinner />
-                      ) : (
-                        <>
-                          <Title className="mb-2 text-lg">
-                            Create a {getSourceDisplayName(connector)}{" "}
-                            credential
-                          </Title>
-                          {oauthDetails && oauthDetails.oauth_enabled ? (
-                            <CreateStdOAuthCredential
-                              sourceType={connector}
-                              additionalFields={oauthDetails.additional_kwargs}
-                            />
+                      <Modal.Content>
+                        <Modal.Header
+                          icon={SvgKey}
+                          title={`Create a ${getSourceDisplayName(
+                            connector
+                          )} credential`}
+                          onClose={() => setCreateCredentialFormToggle(false)}
+                        />
+                        <Modal.Body>
+                          {oauthDetailsLoading ? (
+                            <Spinner />
                           ) : (
-                            <CreateCredential
-                              close
-                              refresh={refresh}
-                              sourceType={connector}
-                              accessType={formikProps.values.access_type}
-                              setPopup={setPopup}
-                              onSwitch={onSwap}
-                              onClose={() =>
-                                setCreateCredentialFormToggle(false)
-                              }
-                            />
+                            <>
+                              {oauthDetails && oauthDetails.oauth_enabled ? (
+                                <CreateStdOAuthCredential
+                                  sourceType={connector}
+                                  additionalFields={
+                                    oauthDetails.additional_kwargs
+                                  }
+                                />
+                              ) : (
+                                <CreateCredential
+                                  close
+                                  refresh={refresh}
+                                  sourceType={connector}
+                                  accessType={formikProps.values.access_type}
+                                  onSwitch={onSwap}
+                                  onClose={() =>
+                                    setCreateCredentialFormToggle(false)
+                                  }
+                                />
+                              )}
+                            </>
                           )}
-                        </>
-                      )}
+                        </Modal.Body>
+                      </Modal.Content>
                     </Modal>
                   )}
                 </>

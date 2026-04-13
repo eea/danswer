@@ -17,10 +17,10 @@ class _FakeTime:
     def __init__(self) -> None:
         self._t = 0.0
 
-    def monotonic(self) -> float:  # type: ignore[override]
+    def monotonic(self) -> float:
         return self._t
 
-    def sleep(self, seconds: float) -> None:  # type: ignore[override]
+    def sleep(self, seconds: float) -> None:
         # advance time without real waiting
         self._t += float(seconds)
 
@@ -56,7 +56,11 @@ def test_zendesk_client_per_minute_rate_limiting(
     # Stub out requests.get to avoid network and return a minimal valid payload
     calls: list[str] = []
 
-    def _fake_get(url: str, auth: Any, params: Dict[str, Any]) -> _FakeResponse:
+    def _fake_get(
+        url: str,
+        auth: Any,  # noqa: ARG001
+        params: Dict[str, Any],  # noqa: ARG001
+    ) -> _FakeResponse:
         calls.append(url)
         # minimal Zendesk list response (articles path)
         return _FakeResponse({"articles": [], "meta": {"has_more": False}})

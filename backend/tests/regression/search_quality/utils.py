@@ -3,15 +3,16 @@ import re
 from pathlib import Path
 from textwrap import indent
 from typing import Any
+from typing import cast
 from typing import TextIO
 
-from ragas import evaluate  # type: ignore
-from ragas import EvaluationDataset  # type: ignore
-from ragas import SingleTurnSample  # type: ignore
-from ragas.dataset_schema import EvaluationResult  # type: ignore
-from ragas.metrics import FactualCorrectness  # type: ignore
-from ragas.metrics import Faithfulness  # type: ignore
-from ragas.metrics import ResponseRelevancy  # type: ignore
+from ragas import evaluate  # type: ignore[import-not-found,unused-ignore]
+from ragas import EvaluationDataset  # type: ignore[import-not-found,unused-ignore]
+from ragas import SingleTurnSample  # type: ignore[import-not-found,unused-ignore]
+from ragas.dataset_schema import EvaluationResult  # type: ignore[import-not-found,unused-ignore]
+from ragas.metrics import FactualCorrectness  # type: ignore[import-not-found,unused-ignore]
+from ragas.metrics import Faithfulness  # type: ignore[import-not-found,unused-ignore]
+from ragas.metrics import ResponseRelevancy  # type: ignore[import-not-found,unused-ignore]
 from sqlalchemy.orm import Session
 
 from onyx.configs.constants import DocumentSource
@@ -86,7 +87,7 @@ def get_doc_contents(
 ) -> dict[tuple[str, int], str]:
     with get_session_with_tenant(tenant_id=tenant_id) as db_session:
         search_settings = get_current_search_settings(db_session)
-        document_index = get_default_document_index(search_settings, None)
+        document_index = get_default_document_index(search_settings, None, db_session)
 
     filters = IndexFilters(access_control_list=None, tenant_id=tenant_id)
 
@@ -142,17 +143,20 @@ def ragas_evaluate(
         reference=reference_answer,
     )
     dataset = EvaluationDataset([sample])
-    return evaluate(
-        dataset,
-        metrics=[
-            ResponseRelevancy(),
-            Faithfulness(),
-            *(
-                [FactualCorrectness(mode="recall")]
-                if reference_answer is not None
-                else []
-            ),
-        ],
+    return cast(
+        EvaluationResult,
+        evaluate(
+            dataset,
+            metrics=[
+                ResponseRelevancy(),
+                Faithfulness(),
+                *(
+                    [FactualCorrectness(mode="recall")]
+                    if reference_answer is not None
+                    else []
+                ),
+            ],
+        ),
     )
 
 

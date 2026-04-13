@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from pydantic import Field
 from sqlalchemy.orm import Session
 
+from ee.onyx.db.scim import ScimDAL
 from ee.onyx.server.enterprise_settings.models import AnalyticsScriptUpload
 from ee.onyx.server.enterprise_settings.models import EnterpriseSettings
 from ee.onyx.server.enterprise_settings.store import get_logo_filename
@@ -22,11 +23,16 @@ from ee.onyx.server.enterprise_settings.store import load_settings
 from ee.onyx.server.enterprise_settings.store import store_analytics_script
 from ee.onyx.server.enterprise_settings.store import store_settings
 from ee.onyx.server.enterprise_settings.store import upload_logo
-from onyx.auth.users import current_admin_user
+from ee.onyx.server.scim.auth import generate_scim_token
+from ee.onyx.server.scim.models import ScimTokenCreate
+from ee.onyx.server.scim.models import ScimTokenCreatedResponse
+from ee.onyx.server.scim.models import ScimTokenResponse
+from onyx.auth.permissions import require_permission
 from onyx.auth.users import current_user_with_expired_token
 from onyx.auth.users import get_user_manager
 from onyx.auth.users import UserManager
 from onyx.db.engine.sql_engine import get_session
+from onyx.db.enums import Permission
 from onyx.db.models import User
 from onyx.file_store.file_store import get_default_file_store
 from onyx.server.utils import BasicAuthenticationError
@@ -115,7 +121,8 @@ async def refresh_access_token(
 
 @admin_router.put("")
 def admin_ee_put_settings(
-    settings: EnterpriseSettings, _: User | None = Depends(current_admin_user)
+    settings: EnterpriseSettings,
+    _: User = Depends(require_permission(Permission.FULL_ADMIN_PANEL_ACCESS)),
 ) -> None:
     store_settings(settings)
 
@@ -134,12 +141,12 @@ def ee_fetch_settings() -> EnterpriseSettings:
 def put_logo(
     file: UploadFile,
     is_logotype: bool = False,
-    _: User | None = Depends(current_admin_user),
+    _: User = Depends(require_permission(Permission.FULL_ADMIN_PANEL_ACCESS)),
 ) -> None:
     upload_logo(file=file, is_logotype=is_logotype)
 
 
-def fetch_logo_helper(db_session: Session) -> Response:
+def fetch_logo_helper(db_session: Session) -> Response:  # noqa: ARG001
     try:
         file_store = get_default_file_store()
         onyx_file = file_store.get_file_with_mime_type(get_logo_filename())
@@ -152,10 +159,14 @@ def fetch_logo_helper(db_session: Session) -> Response:
             detail="No logo file found",
         )
     else:
-        return Response(content=onyx_file.data, media_type=onyx_file.mime_type)
+        return Response(
+            content=onyx_file.data,
+            media_type=onyx_file.mime_type,
+            headers={"Cache-Control": "no-cache"},
+        )
 
 
-def fetch_logotype_helper(db_session: Session) -> Response:
+def fetch_logotype_helper(db_session: Session) -> Response:  # noqa: ARG001
     try:
         file_store = get_default_file_store()
         onyx_file = file_store.get_file_with_mime_type(get_logotype_filename())
@@ -187,7 +198,8 @@ def fetch_logo(
 
 @admin_router.put("/custom-analytics-script")
 def upload_custom_analytics_script(
-    script_upload: AnalyticsScriptUpload, _: User | None = Depends(current_admin_user)
+    script_upload: AnalyticsScriptUpload,
+    _: User = Depends(require_permission(Permission.FULL_ADMIN_PANEL_ACCESS)),
 ) -> None:
     try:
         store_analytics_script(script_upload)
@@ -198,3 +210,73 @@ def upload_custom_analytics_script(
 @basic_router.get("/custom-analytics-script")
 def fetch_custom_analytics_script() -> str | None:
     return load_analytics_script()
+
+
+# ---------------------------------------------------------------------------
+# SCIM token management
+# ---------------------------------------------------------------------------
+
+
+def _get_scim_dal(db_session: Session = Depends(get_session)) -> ScimDAL:
+    return ScimDAL(db_session)
+
+
+@admin_router.get("/scim/token")
+def get_active_scim_token(
+    _: User = Depends(require_permission(Permission.FULL_ADMIN_PANEL_ACCESS)),
+    dal: ScimDAL = Depends(_get_scim_dal),
+) -> ScimTokenResponse:
+    """Return the currently active SCIM token's metadata, or 404 if none."""
+    token = dal.get_active_token()
+    if not token:
+        raise HTTPException(status_code=404, detail="No active SCIM token")
+
+    # Derive the IdP domain from the first synced user as a heuristic.
+    idp_domain: str | None = None
+    mappings, _total = dal.list_user_mappings(start_index=1, count=1)
+    if mappings:
+        user = dal.get_user(mappings[0].user_id)
+        if user and "@" in user.email:
+            idp_domain = user.email.rsplit("@", 1)[1]
+
+    return ScimTokenResponse(
+        id=token.id,
+        name=token.name,
+        token_display=token.token_display,
+        is_active=token.is_active,
+        created_at=token.created_at,
+        last_used_at=token.last_used_at,
+        idp_domain=idp_domain,
+    )
+
+
+@admin_router.post("/scim/token", status_code=201)
+def create_scim_token(
+    body: ScimTokenCreate,
+    user: User = Depends(require_permission(Permission.FULL_ADMIN_PANEL_ACCESS)),
+    dal: ScimDAL = Depends(_get_scim_dal),
+) -> ScimTokenCreatedResponse:
+    """Create a new SCIM bearer token.
+
+    Only one token is active at a time — creating a new token automatically
+    revokes all previous tokens. The raw token value is returned exactly once
+    in the response; it cannot be retrieved again.
+    """
+    raw_token, hashed_token, token_display = generate_scim_token()
+    token = dal.create_token(
+        name=body.name,
+        hashed_token=hashed_token,
+        token_display=token_display,
+        created_by_id=user.id,
+    )
+    dal.commit()
+
+    return ScimTokenCreatedResponse(
+        id=token.id,
+        name=token.name,
+        token_display=token.token_display,
+        is_active=token.is_active,
+        created_at=token.created_at,
+        last_used_at=token.last_used_at,
+        raw_token=raw_token,
+    )

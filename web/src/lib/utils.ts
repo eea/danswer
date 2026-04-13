@@ -1,6 +1,20 @@
+import type { ComponentType } from "react";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
+import type { IconProps } from "@opal/types";
+import {
+  SvgImage,
+  SvgFileChartPie,
+  SvgFileBraces,
+  SvgFileText,
+} from "@opal/icons";
 import { ALLOWED_URL_PROTOCOLS } from "./constants";
+
+const URI_SCHEME_REGEX = /^[a-zA-Z][a-zA-Z\d+.-]*:/;
+const BARE_EMAIL_REGEX = /^[^\s@/]+@[^\s@/:]+\.[^\s@/:]+$/;
+
+export const INTERACTIVE_SELECTOR =
+  "a, button, input, textarea, select, label, [role='button'], [tabindex]:not([tabindex='-1']), [contenteditable]:not([contenteditable='false'])";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -11,28 +25,65 @@ export const truncateString = (str: string, maxLength: number) => {
 };
 
 /**
- * Custom URL transformer function for ReactMarkdown
- * Allows specific protocols to be used in markdown links
- * We use this with the urlTransform prop in ReactMarkdown
+ * Ensures an href has a protocol, adding https:// only to bare domains.
+ * Converts bare email addresses to mailto: links.
+ * Preserves existing protocols, relative paths, and anchors.
  */
-export function transformLinkUri(href: string) {
+export function ensureHrefProtocol(
+  href: string | undefined
+): string | undefined {
   if (!href) return href;
+  const trimmedHref = href.trim();
+  if (!trimmedHref) return href;
 
-  const url = href.trim();
-  try {
-    const parsedUrl = new URL(url);
-    if (
-      ALLOWED_URL_PROTOCOLS.some((protocol) =>
-        parsedUrl.protocol.startsWith(protocol)
-      )
-    ) {
-      return url;
-    }
-  } catch {
-    // If it's not a valid URL with protocol, return the original href
-    return href;
+  const needsProtocol =
+    !URI_SCHEME_REGEX.test(trimmedHref) &&
+    !trimmedHref.startsWith("/") &&
+    !trimmedHref.startsWith("#");
+  if (!needsProtocol) {
+    return trimmedHref;
   }
-  return href;
+
+  if (BARE_EMAIL_REGEX.test(trimmedHref)) {
+    return `mailto:${trimmedHref}`;
+  }
+
+  return `https://${trimmedHref}`;
+}
+
+/**
+ * Custom URL transformer function for ReactMarkdown.
+ * Only allows a small, safe set of protocols and strips everything else.
+ * Bare email addresses are normalized to mailto: links.
+ * Returning null removes the href attribute entirely.
+ */
+export function transformLinkUri(href: string): string | null {
+  if (!href) return null;
+
+  const trimmedHref = href.trim();
+  if (!trimmedHref) return null;
+
+  try {
+    const parsedUrl = new URL(trimmedHref);
+    const protocol = parsedUrl.protocol.toLowerCase();
+
+    if (ALLOWED_URL_PROTOCOLS.some((allowed) => allowed === protocol)) {
+      return trimmedHref;
+    }
+
+    return null;
+  } catch {
+    if (BARE_EMAIL_REGEX.test(trimmedHref)) {
+      return `mailto:${trimmedHref}`;
+    }
+
+    // Allow relative URLs, but drop anything that looks like a protocol-prefixed link
+    if (URI_SCHEME_REGEX.test(trimmedHref)) {
+      return null;
+    }
+
+    return trimmedHref;
+  }
 }
 
 export function isSubset(parent: string[], child: string[]): boolean {
@@ -106,12 +157,113 @@ export function isImageExtension(
 }
 
 /**
+ * Formats bytes to human-readable file size.
+ */
+export function formatBytes(
+  bytes: number | undefined,
+  decimals: number = 2
+): string {
+  if (bytes == null) return "Unknown";
+  if (bytes === 0) return "0 Bytes";
+
+  const k = 1024;
+  const dm = decimals < 0 ? 0 : decimals;
+  const sizes = ["Bytes", "KB", "MB", "GB", "TB"];
+
+  let unitIndex = Math.floor(Math.log(bytes) / Math.log(k));
+  if (unitIndex < 0) unitIndex = 0;
+  if (unitIndex >= sizes.length) unitIndex = sizes.length - 1;
+  return (
+    parseFloat((bytes / Math.pow(k, unitIndex)).toFixed(dm)) +
+    " " +
+    sizes[unitIndex]
+  );
+}
+
+/**
  * Checks if a filename represents an image file based on its extension.
  */
 export function isImageFile(fileName: string | null | undefined): boolean {
   if (!fileName) return false;
   const lowerFileName = String(fileName).toLowerCase();
   return IMAGE_EXTENSIONS.some((ext) => lowerFileName.endsWith(`.${ext}`));
+}
+
+/**
+ * Typical code/config file extensions (lowercase, no leading dots)
+ */
+export const CODE_EXTENSIONS = [
+  "ts",
+  "tsx",
+  "js",
+  "jsx",
+  "mjs",
+  "cjs",
+  "py",
+  "pyw",
+  "java",
+  "kt",
+  "kts",
+  "c",
+  "h",
+  "cpp",
+  "cc",
+  "cxx",
+  "hpp",
+  "cs",
+  "go",
+  "rs",
+  "rb",
+  "php",
+  "swift",
+  "scala",
+  "r",
+  "sql",
+  "sh",
+  "bash",
+  "zsh",
+  "yaml",
+  "yml",
+  "json",
+  "xml",
+  "html",
+  "htm",
+  "css",
+  "scss",
+  "sass",
+  "less",
+  "lua",
+  "pl",
+  "vue",
+  "svelte",
+  "m",
+  "mm",
+  "md",
+  "markdown",
+] as const;
+
+/**
+ * Checks if a filename represents a code/config file based on its extension.
+ */
+export function isCodeFile(fileName: string | null | undefined): boolean {
+  if (!fileName) return false;
+  const lowerFileName = String(fileName).toLowerCase();
+  return CODE_EXTENSIONS.some((ext) => lowerFileName.endsWith(`.${ext}`));
+}
+
+/**
+ * Returns the icon component for a file based on its name/path.
+ * Used for file tree and preview tab icons.
+ */
+export function getFileIcon(
+  fileName: string | null | undefined
+): ComponentType<IconProps> {
+  if (!fileName) return SvgFileText;
+  if (isImageFile(fileName)) return SvgImage;
+  if (/\.pptx$/i.test(fileName)) return SvgFileChartPie;
+  if (/\.pdf$/i.test(fileName)) return SvgFileText;
+  if (isCodeFile(fileName)) return SvgFileBraces;
+  return SvgFileText;
 }
 
 /**
@@ -122,4 +274,22 @@ export function hasNonImageFiles(
   files: Array<{ name?: string | null }>
 ): boolean {
   return files.some((file) => !isImageFile(file.name));
+}
+
+/**
+ * Merges multiple refs into a single callback ref.
+ * Useful when a component needs both an internal ref and a forwarded ref.
+ */
+export function mergeRefs<T>(
+  ...refs: (React.Ref<T> | undefined)[]
+): React.RefCallback<T> {
+  return (node: T | null) => {
+    refs.forEach((ref) => {
+      if (typeof ref === "function") {
+        ref(node);
+      } else if (ref) {
+        (ref as React.MutableRefObject<T | null>).current = node;
+      }
+    });
+  };
 }

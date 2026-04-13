@@ -2,7 +2,7 @@
 
 import { ThreeDotsLoader } from "@/components/Loading";
 import { PageSelector } from "@/components/PageSelector";
-import { BookmarkIcon, InfoIcon } from "@/components/icons/icons";
+import { InfoIcon } from "@/components/icons/icons";
 import {
   Table,
   TableHead,
@@ -10,7 +10,9 @@ import {
   TableBody,
   TableCell,
 } from "@/components/ui/table";
-import Text from "@/components/ui/text";
+import { Text } from "@opal/components";
+import { markdown } from "@opal/utils";
+import Spacer from "@/refresh-components/Spacer";
 import Title from "@/components/ui/title";
 import Separator from "@/refresh-components/Separator";
 import { DocumentSetSummary } from "@/lib/types";
@@ -18,8 +20,9 @@ import { useState } from "react";
 import { useDocumentSets } from "./hooks";
 import { ConnectorTitle } from "@/components/admin/connectors/ConnectorTitle";
 import { deleteDocumentSet } from "./lib";
-import { PopupSpec, usePopup } from "@/components/admin/connectors/Popup";
-import { AdminPageTitle } from "@/components/admin/Title";
+import { toast } from "@/hooks/useToast";
+import * as SettingsLayouts from "@/layouts/settings-layouts";
+import { ADMIN_ROUTES } from "@/lib/admin-routes";
 import {
   FiAlertTriangle,
   FiCheckCircle,
@@ -42,6 +45,7 @@ import CreateButton from "@/refresh-components/buttons/CreateButton";
 import { SourceIcon } from "@/components/SourceIcon";
 import Link from "next/link";
 
+const route = ADMIN_ROUTES.DOCUMENT_SETS;
 const numToDisplay = 50;
 
 // Component to display federated connectors with consistent styling
@@ -158,7 +162,6 @@ interface DocumentFeedbackTableProps {
   documentSets: DocumentSetSummary[];
   refresh: () => void;
   refreshEditable: () => void;
-  setPopup: (popupSpec: PopupSpec | null) => void;
   editableDocumentSets: DocumentSetSummary[];
 }
 
@@ -167,7 +170,6 @@ const DocumentSetTable = ({
   editableDocumentSets,
   refresh,
   refreshEditable,
-  setPopup,
 }: DocumentFeedbackTableProps) => {
   const [page, setPage] = useState(1);
 
@@ -324,16 +326,14 @@ const DocumentSetTable = ({
                             documentSet.id
                           );
                           if (response.ok) {
-                            setPopup({
-                              message: `Document set "${documentSet.name}" scheduled for deletion`,
-                              type: "success",
-                            });
+                            toast.success(
+                              `Document set "${documentSet.name}" scheduled for deletion`
+                            );
                           } else {
                             const errorMsg = (await response.json()).detail;
-                            setPopup({
-                              message: `Failed to schedule document set for deletion - ${errorMsg}`,
-                              type: "error",
-                            });
+                            toast.error(
+                              `Failed to schedule document set for deletion - ${errorMsg}`
+                            );
                           }
                           refresh();
                           refreshEditable();
@@ -362,8 +362,7 @@ const DocumentSetTable = ({
   );
 };
 
-const Main = () => {
-  const { popup, setPopup } = usePopup();
+function Main() {
   const {
     data: documentSets,
     isLoading: isDocumentSetsLoading,
@@ -396,12 +395,12 @@ const Main = () => {
 
   return (
     <div className="mb-8">
-      {popup}
-      <Text className="mb-3">
-        <b>Document Sets</b> allow you to group logically connected documents
-        into a single bundle. These can then be used as a filter when performing
-        searches to control the scope of information Onyx searches over.
+      <Text as="p">
+        {markdown(
+          "**Document Sets** allow you to group logically connected documents into a single bundle. These can then be used as a filter when performing searches to control the scope of information Onyx searches over."
+        )}
       </Text>
+      <Spacer rem={0.75} />
 
       <div className="mb-3"></div>
 
@@ -419,22 +418,20 @@ const Main = () => {
             editableDocumentSets={editableDocumentSets}
             refresh={refreshDocumentSets}
             refreshEditable={refreshEditableDocumentSets}
-            setPopup={setPopup}
           />
         </>
       )}
     </div>
   );
-};
+}
 
-const Page = () => {
+export default function Page() {
   return (
-    <div className="container mx-auto">
-      <AdminPageTitle icon={<BookmarkIcon size={32} />} title="Document Sets" />
-
-      <Main />
-    </div>
+    <SettingsLayouts.Root>
+      <SettingsLayouts.Header icon={route.icon} title={route.title} separator />
+      <SettingsLayouts.Body>
+        <Main />
+      </SettingsLayouts.Body>
+    </SettingsLayouts.Root>
   );
-};
-
-export default Page;
+}

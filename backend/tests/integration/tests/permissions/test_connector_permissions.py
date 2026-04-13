@@ -20,7 +20,7 @@ from tests.integration.common_utils.managers.user_group import UserGroupManager
     os.environ.get("ENABLE_PAID_ENTERPRISE_EDITION_FEATURES", "").lower() != "true",
     reason="Curator and user group tests are enterprise only",
 )
-def test_connector_permissions(reset: None) -> None:
+def test_connector_permissions(reset: None) -> None:  # noqa: ARG001
     # Creating an admin user (first user created is automatically an admin)
     admin_user: DATestUser = UserManager.create(name="admin_user")
 
@@ -59,17 +59,7 @@ def test_connector_permissions(reset: None) -> None:
 
     """Tests for things Curators should not be able to do"""
 
-    # Curators should not be able to create a public connector
-    with pytest.raises(HTTPError):
-        ConnectorManager.create(
-            name="invalid_connector_1",
-            source=DocumentSource.CONFLUENCE,
-            groups=[user_group_1.id],
-            access_type=AccessType.PUBLIC,
-            user_performing_action=curator,
-        )
-
-    # Curators should not be able to create a cc pair for a
+    # Curators should not be able to create a connector for a
     # user group they are not a curator of
     with pytest.raises(HTTPError):
         ConnectorManager.create(
@@ -133,12 +123,12 @@ def test_connector_permissions(reset: None) -> None:
             user_performing_action=curator,
         )
 
-    # Test that curator cannot create a public connector
-    with pytest.raises(HTTPError):
-        ConnectorManager.create(
-            name="invalid_connector_4",
-            source=DocumentSource.CONFLUENCE,
-            groups=[user_group_1.id],
-            access_type=AccessType.PUBLIC,
-            user_performing_action=curator,
-        )
+    # Curators should be able to create a public connector
+    public_connector = ConnectorManager.create(
+        name="curator_public_connector",
+        source=DocumentSource.CONFLUENCE,
+        groups=[user_group_1.id],
+        access_type=AccessType.PUBLIC,
+        user_performing_action=curator,
+    )
+    assert public_connector.id is not None

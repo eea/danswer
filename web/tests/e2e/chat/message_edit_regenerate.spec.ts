@@ -1,6 +1,6 @@
-import { test, expect } from "@chromatic-com/playwright";
-import { loginAsRandomUser } from "../utils/auth";
-import { sendMessage, switchModel } from "../utils/chatActions";
+import { test, expect } from "@playwright/test";
+import { loginAsRandomUser } from "@tests/e2e/utils/auth";
+import { sendMessage, switchModel } from "@tests/e2e/utils/chatActions";
 
 test.describe("Message Edit and Regenerate Tests", () => {
   test.beforeEach(async ({ page }) => {
@@ -9,7 +9,7 @@ test.describe("Message Edit and Regenerate Tests", () => {
     await loginAsRandomUser(page);
 
     // Navigate to the chat page
-    await page.goto("http://localhost:3000/chat");
+    await page.goto("/app");
     await page.waitForLoadState("networkidle");
   });
 
@@ -50,10 +50,10 @@ test.describe("Message Edit and Regenerate Tests", () => {
     await submitButton.click();
 
     // Wait for the new AI response to complete
-    await page.waitForSelector('[data-testid="AIMessage/copy-button"]', {
+    await page.waitForSelector('[data-testid="AgentMessage/copy-button"]', {
       state: "detached",
     });
-    await page.waitForSelector('[data-testid="AIMessage/copy-button"]', {
+    await page.waitForSelector('[data-testid="AgentMessage/copy-button"]', {
       state: "visible",
       timeout: 30000,
     });
@@ -85,10 +85,10 @@ test.describe("Message Edit and Regenerate Tests", () => {
     await submitButton.click();
 
     // Wait for the new AI response to complete
-    await page.waitForSelector('[data-testid="AIMessage/copy-button"]', {
+    await page.waitForSelector('[data-testid="AgentMessage/copy-button"]', {
       state: "detached",
     });
-    await page.waitForSelector('[data-testid="AIMessage/copy-button"]', {
+    await page.waitForSelector('[data-testid="AgentMessage/copy-button"]', {
       state: "visible",
       timeout: 30000,
     });
@@ -140,14 +140,12 @@ test.describe("Message Edit and Regenerate Tests", () => {
   });
 
   test("Message regeneration with model selection", async ({ page }) => {
-    // make sure we're using something other than GPT 4o Mini, otherwise the below
+    // make sure we're using something other than GPT-4o Mini, otherwise the below
     // will fail since we need to switch to a different model for the test
-    await switchModel(page, "GPT 4o");
+    await switchModel(page, "GPT-4.1");
 
     // Send initial message
     await sendMessage(page, "hi! Respond with no more than a sentence");
-    await page.waitForSelector('[data-testid="onyx-ai-message"]');
-    await page.waitForTimeout(3000);
 
     // Capture the original AI response text (just the message content, not buttons/switcher)
     const aiMessage = page.locator('[data-testid="onyx-ai-message"]').first();
@@ -159,19 +157,22 @@ test.describe("Message Edit and Regenerate Tests", () => {
     await aiMessage.hover();
 
     // Click regenerate button using its data-testid
-    const regenerateButton = aiMessage.getByTestId("AIMessage/regenerate");
+    const regenerateButton = aiMessage.getByTestId("AgentMessage/regenerate");
     await regenerateButton.click();
 
-    // Wait for dropdown to appear and select GPT-4o-mini
-    await page.waitForTimeout(500);
+    // Wait for dropdown to appear and select GPT-4o Mini
+    await page.waitForSelector('[role="dialog"]', { state: "visible" });
 
-    // Look for the GPT-4o-mini option in the dropdown
-    const gpt4oMiniOption = page.locator("text=/.*GPT.?4o.?Mini.*/i").first();
+    // Look for the GPT-4o Mini option in the dropdown
+    const gpt4oMiniOption = page
+      .locator('[role="dialog"]')
+      .getByText("GPT-4o Mini", { exact: true })
+      .first();
     await gpt4oMiniOption.click();
 
     // Wait for regeneration to complete by waiting for feedback buttons to appear
     // The feedback buttons (copy, like, dislike, regenerate) appear when streaming is complete
-    await page.waitForSelector('[data-testid="AIMessage/regenerate"]', {
+    await page.waitForSelector('[data-testid="AgentMessage/regenerate"]', {
       state: "visible",
       timeout: 15000,
     });
@@ -190,7 +191,6 @@ test.describe("Message Edit and Regenerate Tests", () => {
       .first()
       .locator("..")
       .click();
-    await page.waitForTimeout(1000);
 
     // Verify we're at "1 / 2"
     let switcherSpan = page.getByTestId("MessageSwitcher/container").first();
@@ -208,11 +208,98 @@ test.describe("Message Edit and Regenerate Tests", () => {
       .last()
       .locator("..")
       .click();
-    await page.waitForTimeout(1000);
 
     // Verify we're back at "2 / 2"
     switcherSpan = page.getByTestId("MessageSwitcher/container").first();
     await expect(switcherSpan).toBeVisible({ timeout: 5000 });
     await expect(switcherSpan).toContainText("2/2");
+  });
+
+  test("Message editing with files", async ({ page }) => {
+    const testFileName = `test-edit-${Date.now()}.txt`;
+    const testFileContent = "This is a test file for editing with attachments.";
+    const buffer = Buffer.from(testFileContent, "utf-8");
+
+    // Trigger the native file dialog by clicking the hidden file input,
+    // then intercept it with the filechooser event (same pattern as
+    // user_file_attachment.spec.ts).
+    const fileInput = page.locator('input[type="file"]').first();
+    const fileChooserPromise = page.waitForEvent("filechooser");
+    await fileInput.dispatchEvent("click");
+    const fileChooser = await fileChooserPromise;
+
+    const uploadResponsePromise = page.waitForResponse(
+      (response) =>
+        response.url().includes("/api/user/projects/file/upload") &&
+        response.request().method() === "POST"
+    );
+
+    await fileChooser.setFiles({
+      name: testFileName,
+      mimeType: "text/plain",
+      buffer: buffer,
+    });
+
+    const uploadResponse = await uploadResponsePromise;
+    expect(uploadResponse.ok()).toBeTruthy();
+
+    // Wait for upload processing to complete and file card to render
+    await page.waitForLoadState("networkidle", { timeout: 10000 });
+    await expect(page.getByText(testFileName).first()).toBeVisible({
+      timeout: 10000,
+    });
+
+    // Send a message with the file attached using the shared utility
+    await sendMessage(page, "Summarize this file");
+
+    // Verify the file is displayed in the sent human message
+    const humanMessage = page.locator("#onyx-human-message").first();
+
+    // Verify message text is displayed
+    const messageContent = await humanMessage.textContent();
+    expect(messageContent).toContain("Summarize this file");
+
+    // Hover and click the edit button
+    await humanMessage.hover();
+    const editButton = humanMessage
+      .locator('[data-testid="HumanMessage/edit-button"]')
+      .first();
+    await expect(editButton).toBeVisible();
+    await editButton.click();
+
+    // Edit the message text
+    const textarea = humanMessage.locator("textarea");
+    await textarea.fill("What does this file contain?");
+
+    // Submit the edit
+    const submitButton = humanMessage.locator('button:has-text("Submit")');
+    await submitButton.click();
+
+    // Wait for the new AI response to complete
+    await page.waitForSelector('[data-testid="AgentMessage/copy-button"]', {
+      state: "detached",
+    });
+    await page.waitForSelector('[data-testid="AgentMessage/copy-button"]', {
+      state: "visible",
+      timeout: 30000,
+    });
+
+    // Verify the edited message text is displayed
+    const editedHumanMessage = page.locator("#onyx-human-message").first();
+    const editedMessageContent = await editedHumanMessage.textContent();
+    expect(editedMessageContent).toContain("What does this file contain?");
+    expect(editedMessageContent).not.toContain("Summarize this file");
+
+    // Verify the file is still attached after editing
+    const editedFileDisplay = editedHumanMessage.locator("#onyx-file");
+    await expect(editedFileDisplay).toBeVisible();
+    await expect(editedFileDisplay.getByText(testFileName)).toBeVisible();
+
+    // Verify the version switcher shows 2/2 (original + edited)
+    const messageSwitcher = page
+      .getByTestId("MessageSwitcher/container")
+      .first();
+    await expect(messageSwitcher).toBeVisible();
+    await expect(messageSwitcher).toContainText("2/2");
   });
 });

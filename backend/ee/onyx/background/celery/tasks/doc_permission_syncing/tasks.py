@@ -25,8 +25,10 @@ from ee.onyx.db.connector_credential_pair import get_all_auto_sync_cc_pairs
 from ee.onyx.db.document import upsert_document_external_perms
 from ee.onyx.external_permissions.sync_params import get_source_perm_sync_config
 from onyx.access.models import DocExternalAccess
+from onyx.access.models import ElementExternalAccess
 from onyx.background.celery.apps.app_base import task_logger
 from onyx.background.celery.celery_redis import celery_find_task
+from onyx.background.celery.celery_redis import celery_get_broker_client
 from onyx.background.celery.celery_redis import celery_get_queue_length
 from onyx.background.celery.celery_redis import celery_get_queued_task_ids
 from onyx.background.celery.celery_redis import celery_get_unacked_task_ids
@@ -55,6 +57,9 @@ from onyx.db.enums import AccessType
 from onyx.db.enums import ConnectorCredentialPairStatus
 from onyx.db.enums import SyncStatus
 from onyx.db.enums import SyncType
+from onyx.db.hierarchy import (
+    update_hierarchy_node_permissions as db_update_hierarchy_node_permissions,
+)
 from onyx.db.models import ConnectorCredentialPair
 from onyx.db.permission_sync_attempt import complete_doc_permission_sync_attempt
 from onyx.db.permission_sync_attempt import create_doc_permission_sync_attempt
@@ -183,7 +188,6 @@ def check_for_doc_permissions_sync(self: Task, *, tenant_id: str) -> bool | None
     # (which lives on a different db number)
     r = get_redis_client()
     r_replica = get_redis_replica_client()
-    r_celery: Redis = self.app.broker_connection().channel().client  # type: ignore
 
     lock_beat: RedisLock = r.lock(
         OnyxRedisLocks.CHECK_CONNECTOR_DOC_PERMISSIONS_SYNC_BEAT_LOCK,
@@ -223,6 +227,7 @@ def check_for_doc_permissions_sync(self: Task, *, tenant_id: str) -> bool | None
             # tasks can be in the queue in redis, in reserved tasks (prefetched by the worker),
             # or be currently executing
             try:
+                r_celery = celery_get_broker_client(self.app)
                 validate_permission_sync_fences(
                     tenant_id, r, r_replica, r_celery, lock_beat
                 )
@@ -420,10 +425,7 @@ def connector_permission_sync_generator_task(
             raise ValueError(error_msg)
 
         if not redis_connector.permissions.fenced:  # The fence must exist
-            error_msg = (
-                f"connector_permission_sync_generator_task - fence not found: "
-                f"fence={redis_connector.permissions.fence_key}"
-            )
+            error_msg = f"connector_permission_sync_generator_task - fence not found: fence={redis_connector.permissions.fence_key}"
             _fail_doc_permission_sync_attempt(attempt_id, error_msg)
             raise ValueError(error_msg)
 
@@ -437,8 +439,7 @@ def connector_permission_sync_generator_task(
 
         if payload.celery_task_id is None:
             logger.info(
-                f"connector_permission_sync_generator_task - Waiting for fence: "
-                f"fence={redis_connector.permissions.fence_key}"
+                f"connector_permission_sync_generator_task - Waiting for fence: fence={redis_connector.permissions.fence_key}"
             )
             sleep(1)
             continue
@@ -473,6 +474,8 @@ def connector_permission_sync_generator_task(
             cc_pair = get_connector_credential_pair_from_id(
                 db_session=db_session,
                 cc_pair_id=cc_pair_id,
+                eager_load_connector=True,
+                eager_load_credential=True,
             )
             if cc_pair is None:
                 raise ValueError(
@@ -532,7 +535,9 @@ def connector_permission_sync_generator_task(
             )
             redis_connector.permissions.set_fence(new_payload)
 
-            callback = PermissionSyncCallback(redis_connector, lock, r)
+            callback = PermissionSyncCallback(
+                redis_connector, lock, r, timeout_seconds=JOB_TIMEOUT
+            )
 
             # pass in the capability to fetch all existing docs for the cc_pair
             # this is can be used to determine documents that are "missing" and thus
@@ -572,6 +577,13 @@ def connector_permission_sync_generator_task(
             tasks_generated = 0
             docs_with_errors = 0
             for doc_external_access in document_external_accesses:
+                if callback.should_stop():
+                    raise RuntimeError(
+                        f"Permission sync task timed out or stop signal detected: "
+                        f"cc_pair={cc_pair_id} "
+                        f"tasks_generated={tasks_generated}"
+                    )
+
                 result = redis_connector.permissions.update_db(
                     lock=lock,
                     new_permissions=[doc_external_access],
@@ -595,8 +607,7 @@ def connector_permission_sync_generator_task(
                 docs_with_permission_errors=docs_with_errors,
             )
             task_logger.info(
-                f"Completed doc permission sync attempt {attempt_id}: "
-                f"{tasks_generated} docs, {docs_with_errors} errors"
+                f"Completed doc permission sync attempt {attempt_id}: {tasks_generated} docs, {docs_with_errors} errors"
             )
 
             redis_connector.permissions.generator_complete = tasks_generated
@@ -637,17 +648,24 @@ def connector_permission_sync_generator_task(
     ),
     stop=stop_after_delay(DOCUMENT_PERMISSIONS_UPDATE_STOP_AFTER),
 )
-def document_update_permissions(
+def element_update_permissions(
     tenant_id: str,
-    permissions: DocExternalAccess,
+    permissions: ElementExternalAccess,
     source_type_str: str,
     connector_id: int,
     credential_id: int,
 ) -> bool:
+    """Update permissions for a document or hierarchy node."""
     start = time.monotonic()
-
-    doc_id = permissions.doc_id
     external_access = permissions.external_access
+
+    # Determine element type and identifier for logging
+    if isinstance(permissions, DocExternalAccess):
+        element_id = permissions.doc_id
+        element_type = "doc"
+    else:
+        element_id = permissions.raw_node_id
+        element_type = "node"
 
     try:
         with get_session_with_tenant(tenant_id=tenant_id) as db_session:
@@ -657,39 +675,55 @@ def document_update_permissions(
                 emails=list(external_access.external_user_emails),
                 continue_on_error=True,
             )
-            # Then upsert the document's external permissions
-            created_new_doc = upsert_document_external_perms(
-                db_session=db_session,
-                doc_id=doc_id,
-                external_access=external_access,
-                source_type=DocumentSource(source_type_str),
-            )
 
-            if created_new_doc:
-                # If a new document was created, we associate it with the cc_pair
-                upsert_document_by_connector_credential_pair(
+            if isinstance(permissions, DocExternalAccess):
+                # Document permission update
+                created_new_doc = upsert_document_external_perms(
                     db_session=db_session,
-                    connector_id=connector_id,
-                    credential_id=credential_id,
-                    document_ids=[doc_id],
+                    doc_id=permissions.doc_id,
+                    external_access=external_access,
+                    source_type=DocumentSource(source_type_str),
+                )
+
+                if created_new_doc:
+                    # If a new document was created, we associate it with the cc_pair
+                    upsert_document_by_connector_credential_pair(
+                        db_session=db_session,
+                        connector_id=connector_id,
+                        credential_id=credential_id,
+                        document_ids=[permissions.doc_id],
+                    )
+            else:
+                # Hierarchy node permission update
+                db_update_hierarchy_node_permissions(
+                    db_session=db_session,
+                    raw_node_id=permissions.raw_node_id,
+                    source=DocumentSource(permissions.source),
+                    is_public=external_access.is_public,
+                    external_user_emails=(
+                        list(external_access.external_user_emails)
+                        if external_access.external_user_emails
+                        else None
+                    ),
+                    external_user_group_ids=(
+                        list(external_access.external_user_group_ids)
+                        if external_access.external_user_group_ids
+                        else None
+                    ),
                 )
 
             elapsed = time.monotonic() - start
             task_logger.info(
-                f"connector_id={connector_id} "
-                f"doc={doc_id} "
-                f"action=update_permissions "
-                f"elapsed={elapsed:.2f}"
+                f"{element_type}={element_id} action=update_permissions elapsed={elapsed:.2f}"
             )
     except Exception as e:
         task_logger.exception(
-            f"document_update_permissions exceptioned: "
-            f"connector_id={connector_id} doc_id={doc_id}"
+            f"element_update_permissions exceptioned: {element_type}={element_id}, {connector_id=} {credential_id=}"
         )
         raise e
     finally:
         task_logger.info(
-            f"document_update_permissions completed: connector_id={connector_id} doc={doc_id}"
+            f"element_update_permissions completed: {element_type}={element_id}, {connector_id=} {credential_id=}"
         )
 
     return True
@@ -862,8 +896,7 @@ def validate_permission_sync_fence(
         tasks_not_in_celery += 1
 
     task_logger.info(
-        "validate_permission_sync_fence task check: "
-        f"tasks_scanned={tasks_scanned} tasks_not_in_celery={tasks_not_in_celery}"
+        f"validate_permission_sync_fence task check: tasks_scanned={tasks_scanned} tasks_not_in_celery={tasks_not_in_celery}"
     )
 
     # we're active if there are still tasks to run and those tasks all exist in celery
@@ -903,6 +936,7 @@ class PermissionSyncCallback(IndexingHeartbeatInterface):
         redis_connector: RedisConnector,
         redis_lock: RedisLock,
         redis_client: Redis,
+        timeout_seconds: int | None = None,
     ):
         super().__init__()
         self.redis_connector: RedisConnector = redis_connector
@@ -915,14 +949,29 @@ class PermissionSyncCallback(IndexingHeartbeatInterface):
         self.last_tag: str = "PermissionSyncCallback.__init__"
         self.last_lock_reacquire: datetime = datetime.now(timezone.utc)
         self.last_lock_monotonic = time.monotonic()
+        self.start_monotonic = time.monotonic()
+        self.timeout_seconds = timeout_seconds
 
     def should_stop(self) -> bool:
         if self.redis_connector.stop.fenced:
             return True
 
+        # Check if the task has exceeded its timeout
+        # NOTE: Celery's soft_time_limit does not work with thread pools,
+        # so we must enforce timeouts internally.
+        if self.timeout_seconds is not None:
+            elapsed = time.monotonic() - self.start_monotonic
+            if elapsed > self.timeout_seconds:
+                logger.warning(
+                    f"PermissionSyncCallback - task timeout exceeded: "
+                    f"elapsed={elapsed:.0f}s timeout={self.timeout_seconds}s "
+                    f"cc_pair={self.redis_connector.cc_pair_id}"
+                )
+                return True
+
         return False
 
-    def progress(self, tag: str, amount: int) -> None:
+    def progress(self, tag: str, amount: int) -> None:  # noqa: ARG002
         try:
             self.redis_connector.permissions.set_active()
 
@@ -953,7 +1002,10 @@ class PermissionSyncCallback(IndexingHeartbeatInterface):
 
 
 def monitor_ccpair_permissions_taskset(
-    tenant_id: str, key_bytes: bytes, r: Redis, db_session: Session
+    tenant_id: str,
+    key_bytes: bytes,
+    r: Redis,  # noqa: ARG001
+    db_session: Session,
 ) -> None:
     fence_key = key_bytes.decode("utf-8")
     cc_pair_id_str = RedisConnector.get_id_from_fence_key(fence_key)
@@ -977,8 +1029,7 @@ def monitor_ccpair_permissions_taskset(
         payload = redis_connector.permissions.payload
     except ValidationError:
         task_logger.exception(
-            "Permissions sync payload failed to validate. "
-            "Schema may have been updated."
+            "Permissions sync payload failed to validate. Schema may have been updated."
         )
         return
 
@@ -987,11 +1038,7 @@ def monitor_ccpair_permissions_taskset(
 
     remaining = redis_connector.permissions.get_remaining()
     task_logger.info(
-        f"Permissions sync progress: "
-        f"cc_pair={cc_pair_id} "
-        f"id={payload.id} "
-        f"remaining={remaining} "
-        f"initial={initial}"
+        f"Permissions sync progress: cc_pair={cc_pair_id} id={payload.id} remaining={remaining} initial={initial}"
     )
 
     # Add telemetry for permission syncing progress
@@ -1010,10 +1057,7 @@ def monitor_ccpair_permissions_taskset(
 
     mark_cc_pair_as_permissions_synced(db_session, int(cc_pair_id), payload.started)
     task_logger.info(
-        f"Permissions sync finished: "
-        f"cc_pair={cc_pair_id} "
-        f"id={payload.id} "
-        f"num_synced={initial}"
+        f"Permissions sync finished: cc_pair={cc_pair_id} id={payload.id} num_synced={initial}"
     )
 
     # Add telemetry for permission syncing complete

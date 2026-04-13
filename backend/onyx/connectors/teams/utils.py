@@ -4,9 +4,9 @@ from datetime import datetime
 from datetime import timezone
 from http import HTTPStatus
 
-from office365.graph_client import GraphClient  # type: ignore
-from office365.teams.channels.channel import Channel  # type: ignore
-from office365.teams.channels.channel import ConversationMember  # type: ignore
+from office365.graph_client import GraphClient  # type: ignore[import-untyped]
+from office365.teams.channels.channel import Channel  # type: ignore[import-untyped]
+from office365.teams.channels.channel import ConversationMember
 
 from onyx.access.models import ExternalAccess
 from onyx.connectors.interfaces import SecondsSinceUnixEpoch
@@ -123,10 +123,7 @@ def fetch_messages(
         "%Y-%m-%dT%H:%M:%SZ"
     )
 
-    initial_request_url = (
-        f"teams/{team_id}/channels/{channel_id}/messages/delta"
-        f"?$filter=lastModifiedDateTime gt {startfmt}"
-    )
+    initial_request_url = f"teams/{team_id}/channels/{channel_id}/messages/delta?$filter=lastModifiedDateTime gt {startfmt}"
 
     request_url: str | None = initial_request_url
 

@@ -24,7 +24,7 @@ from tests.integration.common_utils.managers.user import UserManager
 from tests.integration.common_utils.test_models import DATestUser
 
 
-def test_pat_lifecycle_happy_path(reset: None) -> None:
+def test_pat_lifecycle_happy_path(reset: None) -> None:  # noqa: ARG001
     """Complete PAT lifecycle: create, authenticate, revoke."""
     user: DATestUser = UserManager.create(name="pat_user")
 
@@ -75,7 +75,9 @@ def test_pat_lifecycle_happy_path(reset: None) -> None:
     assert len(tokens_after_revoke) == 0
 
 
-def test_pat_user_isolation_and_authentication(reset: None) -> None:
+def test_pat_user_isolation_and_authentication(
+    reset: None,  # noqa: ARG001
+) -> None:  # noqa: ARG001
     """
     PATs authenticate as real users, and users can only see/manage their own tokens.
     """
@@ -86,7 +88,7 @@ def test_pat_user_isolation_and_authentication(reset: None) -> None:
     user_a_pats = []
     for i in range(2):
         pat = PATManager.create(
-            name=f"User A Token {i+1}",
+            name=f"User A Token {i + 1}",
             expiration_days=30,
             user_performing_action=user_a,
         )
@@ -95,7 +97,7 @@ def test_pat_user_isolation_and_authentication(reset: None) -> None:
     user_b_pats = []
     for i in range(2):
         pat = PATManager.create(
-            name=f"User B Token {i+1}",
+            name=f"User B Token {i + 1}",
             expiration_days=30,
             user_performing_action=user_b,
         )
@@ -139,7 +141,7 @@ def test_pat_user_isolation_and_authentication(reset: None) -> None:
     assert delete_fake.status_code == 404
 
 
-def test_pat_expiration_flow(reset: None) -> None:
+def test_pat_expiration_flow(reset: None) -> None:  # noqa: ARG001
     """Expiration timestamp is end-of-day (23:59:59 UTC); never-expiring tokens work; revoked tokens fail."""
     user: DATestUser = UserManager.create(name="expiration_user")
 
@@ -188,7 +190,7 @@ def test_pat_expiration_flow(reset: None) -> None:
     assert revoked_auth_response.status_code == 403
 
 
-def test_pat_validation_errors(reset: None) -> None:
+def test_pat_validation_errors(reset: None) -> None:  # noqa: ARG001
     """Validate input errors: empty name, name too long, negative/zero expiration."""
     user: DATestUser = UserManager.create(name="validation_user")
 
@@ -248,7 +250,7 @@ def test_pat_validation_errors(reset: None) -> None:
     assert missing_name_response.status_code == 422
 
 
-def test_pat_sorting_and_last_used(reset: None) -> None:
+def test_pat_sorting_and_last_used(reset: None) -> None:  # noqa: ARG001
     """PATs are sorted by created_at DESC; last_used_at updates after authentication."""
     user: DATestUser = UserManager.create(name="sorting_user")
 
@@ -306,7 +308,7 @@ def test_pat_sorting_and_last_used(reset: None) -> None:
     assert token3_after_use.last_used_at is None
 
 
-def test_pat_role_based_access_control(reset: None) -> None:
+def test_pat_role_based_access_control(reset: None) -> None:  # noqa: ARG001
     """
     PATs inherit user roles and permissions:
     - Admin PAT: Full access to admin-only endpoints
@@ -440,8 +442,7 @@ def test_pat_role_based_access_control(reset: None) -> None:
     )
     assert basic_manage_response.status_code in [403, 401]
     print(
-        f"[✓] Basic PAT correctly denied access ({basic_manage_response.status_code}) "
-        "to /manage/admin/connector"
+        f"[✓] Basic PAT correctly denied access ({basic_manage_response.status_code}) to /manage/admin/connector"
     )
 
     # Verify PATs authenticate with correct identity and role
@@ -492,12 +493,10 @@ def test_pat_role_based_access_control(reset: None) -> None:
         "  - Admin PAT: Full access to admin-only endpoints (/admin/*, /manage/admin/*)"
     )
     print(
-        "  - Curator PAT: Access to management endpoints (/manage/admin/*), "
-        "denied on admin-only (/admin/*)"
+        "  - Curator PAT: Access to management endpoints (/manage/admin/*), denied on admin-only (/admin/*)"
     )
     print(
-        "  - Global Curator PAT: Access to management endpoints (/manage/admin/*), "
-        "denied on admin-only (/admin/*)"
+        "  - Global Curator PAT: Access to management endpoints (/manage/admin/*), denied on admin-only (/admin/*)"
     )
     print("  - Basic PAT: Denied access to admin and management endpoints")
     print("  - All PATs: Can access basic endpoints (/persona, /me, etc.)")

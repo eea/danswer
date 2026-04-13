@@ -25,6 +25,7 @@ const fonts = {
   secondaryBody: "font-secondary-body",
   secondaryAction: "font-secondary-action",
   secondaryMono: "font-secondary-mono",
+  secondaryMonoLabel: "font-secondary-mono-label",
 
   // Figure
   figureSmallLabel: "font-figure-small-label",
@@ -56,8 +57,7 @@ const colors = {
   },
 };
 
-export interface TextProps
-  extends Omit<HTMLAttributes<HTMLParagraphElement>, "as"> {
+export interface TextProps extends Omit<HTMLAttributes<HTMLElement>, "as"> {
   nowrap?: boolean;
 
   // Fonts
@@ -76,6 +76,7 @@ export interface TextProps
   secondaryBody?: boolean;
   secondaryAction?: boolean;
   secondaryMono?: boolean;
+  secondaryMonoLabel?: boolean;
   figureSmallLabel?: boolean;
   figureSmallValue?: boolean;
   figureKeystroke?: boolean;
@@ -93,7 +94,7 @@ export interface TextProps
   textDark05?: boolean;
 
   // Tag type override
-  as?: "p" | "span" | "div";
+  as?: "p" | "span" | "li";
 }
 
 export default function Text({
@@ -113,6 +114,7 @@ export default function Text({
   secondaryBody,
   secondaryAction,
   secondaryMono,
+  secondaryMonoLabel,
   figureSmallLabel,
   figureSmallValue,
   figureKeystroke,
@@ -161,13 +163,15 @@ export default function Text({
                               ? "secondaryAction"
                               : secondaryMono
                                 ? "secondaryMono"
-                                : figureSmallLabel
-                                  ? "figureSmallLabel"
-                                  : figureSmallValue
-                                    ? "figureSmallValue"
-                                    : figureKeystroke
-                                      ? "figureKeystroke"
-                                      : "mainUiBody";
+                                : secondaryMonoLabel
+                                  ? "secondaryMonoLabel"
+                                  : figureSmallLabel
+                                    ? "figureSmallLabel"
+                                    : figureSmallValue
+                                      ? "figureSmallValue"
+                                      : figureKeystroke
+                                        ? "figureKeystroke"
+                                        : "mainUiBody";
 
   const color = text01
     ? "text01"
@@ -189,7 +193,7 @@ export default function Text({
                     ? "textDark05"
                     : "text05";
 
-  const Tag = as ?? "p";
+  const Tag = as ?? "span";
 
   return (
     <Tag

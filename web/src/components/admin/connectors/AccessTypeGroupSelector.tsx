@@ -2,7 +2,7 @@ import { usePaidEnterpriseFeaturesEnabled } from "@/components/settings/usePaidE
 import React, { useState, useEffect } from "react";
 import { FieldArray, ArrayHelpers, ErrorMessage, useField } from "formik";
 import Text from "@/refresh-components/texts/Text";
-import Button from "@/refresh-components/buttons/Button";
+import { Button } from "@opal/components";
 import Separator from "@/refresh-components/Separator";
 import { UserGroup, UserRole } from "@/lib/types";
 import { useUserGroups } from "@/lib/hooks";
@@ -12,9 +12,8 @@ import {
   ConfigurableSources,
   validAutoSyncSources,
 } from "@/lib/types";
-import { useUser } from "@/components/user/UserProvider";
-import SvgUsers from "@/icons/users";
-
+import { useUser } from "@/providers/UserProvider";
+import { SvgUsers } from "@opal/icons";
 function isValidAutoSyncSource(
   value: ConfigurableSources
 ): value is ValidAutoSyncSource {
@@ -111,13 +110,13 @@ export function AccessTypeGroupSelector({
           <>
             <Separator />
             <div className="flex flex-col gap-3 pt-4">
-              <Text mainUiAction text05>
+              <Text as="p" mainUiAction text05>
                 Assign group access for this Connector
               </Text>
               {userGroupsIsLoading ? (
                 <div className="animate-pulse bg-background-200 h-8 w-32 rounded" />
               ) : (
-                <Text mainUiMuted text03>
+                <Text as="p" mainUiMuted text03>
                   {isAdmin
                     ? "This Connector will be visible/accessible by the groups selected below"
                     : "Curators must select one or more groups to give access to this Connector"}
@@ -137,10 +136,9 @@ export function AccessTypeGroupSelector({
                       let isSelected = ind !== -1;
                       return (
                         <Button
+                          variant={isSelected ? "action" : "default"}
                           key={userGroup.id}
-                          primary
-                          action={isSelected}
-                          leftIcon={SvgUsers}
+                          icon={SvgUsers}
                           onClick={() => {
                             if (isSelected) {
                               arrayHelpers.remove(ind);

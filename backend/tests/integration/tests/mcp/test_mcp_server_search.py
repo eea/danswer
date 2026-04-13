@@ -120,7 +120,10 @@ def _seed_document_and_wait_for_indexing(
     )
 
 
-def test_mcp_document_search_flow(reset: None, admin_user: DATestUser) -> None:
+def test_mcp_document_search_flow(
+    reset: None,  # noqa: ARG001
+    admin_user: DATestUser,
+) -> None:
     """Test the complete MCP search flow: initialization, resources, tools, and search."""
     # LLM provider is required for the document-search endpoint
     LLMProviderManager.create(user_performing_action=admin_user)
@@ -184,7 +187,10 @@ def test_mcp_document_search_flow(reset: None, admin_user: DATestUser) -> None:
     os.environ.get("ENABLE_PAID_ENTERPRISE_EDITION_FEATURES", "").lower() != "true",
     reason="User group permissions are Enterprise-only",
 )
-def test_mcp_search_respects_acl_filters(reset: None, admin_user: DATestUser) -> None:
+def test_mcp_search_respects_acl_filters(
+    reset: None,  # noqa: ARG001
+    admin_user: DATestUser,
+) -> None:
     """Test that search respects ACL filters - privileged users can access, others cannot."""
     # LLM provider is required for the document-search endpoint
     LLMProviderManager.create(user_performing_action=admin_user)
@@ -203,7 +209,9 @@ def test_mcp_search_respects_acl_filters(reset: None, admin_user: DATestUser) ->
         cc_pair_ids=[restricted_cc_pair.id],
         user_performing_action=admin_user,
     )
-    UserGroupManager.wait_for_sync([user_group], user_performing_action=admin_user)
+    UserGroupManager.wait_for_sync(
+        user_performing_action=admin_user, user_groups_to_check=[user_group]
+    )
 
     restricted_doc_content = "MCP restricted knowledge base document"
     _seed_document_and_wait_for_indexing(

@@ -37,6 +37,19 @@ export async function getOAuthConfigs(): Promise<OAuthConfig[]> {
   return await response.json();
 }
 
+export async function getOAuthConfig(id: number): Promise<OAuthConfig> {
+  const response = await fetch(`/api/admin/oauth-config/${id}`);
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      errorData.detail || `Failed to fetch OAuth config: ${response.statusText}`
+    );
+  }
+
+  return await response.json();
+}
+
 export async function updateOAuthConfig(
   id: number,
   updates: OAuthConfigUpdate
@@ -76,7 +89,7 @@ export async function deleteOAuthConfig(id: number): Promise<void> {
 
 export async function initiateOAuthFlow(
   oauthConfigId: number,
-  returnPath: string = "/chat"
+  returnPath: string = "/app"
 ): Promise<void> {
   const response = await fetch("/api/oauth-config/initiate", {
     method: "POST",

@@ -1,8 +1,28 @@
-@import url("https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&display=swap");
-@import url("https://fonts.googleapis.com/css2?family=DM+Mono:wght@400&display=swap");
-
+@import "css/attachment-button.css";
+@import "css/button.css";
+@import "css/card.css";
+@import "css/code.css";
+@import "css/color-swatch.css";
 @import "css/colors.css";
+@import "css/divider.css";
+@import "css/general-layouts.css";
+@import "css/inputs.css";
+@import "css/knowledge-table.css";
 @import "css/line-item.css";
+@import "css/sizes.css";
+@import "css/square-button.css";
+@import "css/switch.css";
+@import "css/z-index.css";
+
+/* KH Teka Font */
+
+@font-face {
+  font-family: "KH Teka";
+  src: url("/fonts/KHTeka-Medium.otf") format("opentype");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
 
 @tailwind base;
 @tailwind components;
@@ -39,7 +59,6 @@
   form {
     display: flex;
     flex-direction: column;
-    gap: 1.2rem;
     align-items: start;
   }
 
@@ -100,20 +119,16 @@
   .prose > :first-child {
     margin-top: 0;
   }
+
+  /* Remove bottom margin from last child to avoid extra space */
+  .prose > :last-child {
+    margin-bottom: 0;
+  }
 }
 
 @layer utilities {
-  /* Hide scrollbar for Chrome, Safari and Opera */
-  .no-scrollbar::-webkit-scrollbar {
-    display: none;
-  }
-
-  /* Hide scrollbar for IE, Edge and Firefox */
   .no-scrollbar {
-    -ms-overflow-style: none;
-    /* IE and Edge */
     scrollbar-width: none;
-    /* Firefox */
   }
 
   /* SHADOWS */
@@ -130,8 +145,14 @@
       0px 2px 24px 0px var(--shadow-03),
       0px 0px 12px 1px var(--shadow-03);
   }
-  .focus-shadow {
-    box-shadow: 0px 0px 0px 2px var(--background-tint-04);
+
+  /* RADIAL GRADIENTS */
+  .radial-00 {
+    background: radial-gradient(
+      236.31% 141.42% at 0% 0%,
+      var(--background-tint-00) 0%,
+      var(--background-tint-01) 100%
+    );
   }
 
   /* DEBUGGING UTILITIES
@@ -160,6 +181,8 @@
     "Segoe UI", Roboto, sans-serif;
   --font-dm-mono: "DM Mono", "SF Mono", Monaco, "Cascadia Code", "Roboto Mono",
     Consolas, "Courier New", monospace;
+  --font-kh-teka: "KH Teka", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Roboto, sans-serif;
 }
 
 /* HEADING STYLES */
@@ -204,6 +227,10 @@
   font-weight: 450;
   line-height: 24px;
   letter-spacing: 0px;
+}
+
+.font-main-content-body strong {
+  font-weight: 700;
 }
 
 .font-main-content-emphasis {
@@ -290,6 +317,14 @@
   letter-spacing: 0px;
 }
 
+.font-secondary-mono-label {
+  font-family: var(--font-dm-mono);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+  letter-spacing: 0px;
+}
+
 /* FIGURE STYLES */
 
 .font-figure-small-label {
@@ -318,27 +353,9 @@
 
 /* SCROLL BAR */
 
-.default-scrollbar::-webkit-scrollbar {
-  width: 6px;
-}
-
-.default-scrollbar::-webkit-scrollbar-track {
-  background: #f1f1f1;
-}
-
-.default-scrollbar::-webkit-scrollbar-thumb {
-  background: #888;
-  border-radius: 4px;
-}
-
-.default-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: #555;
-}
-
 .default-scrollbar {
   scrollbar-width: thin;
   scrollbar-color: #888 transparent;
-  overflow: overlay;
   overflow-y: scroll;
   overflow-x: hidden;
 }
@@ -348,78 +365,21 @@
   height: 100%;
 }
 
-.inputscroll::-webkit-scrollbar-track {
-  background: #e5e7eb;
+.inputscroll {
   scrollbar-width: none;
 }
 
-::-webkit-scrollbar {
-  width: 0px;
-  /* Vertical scrollbar width */
-  height: 8px;
-  /* Horizontal scrollbar height */
-}
-
-::-webkit-scrollbar-track {
-  background: transparent;
-  /* background: theme("colors.scrollbar.track"); */
-  /* Track background color */
-}
-
-/* Style the scrollbar handle */
-::-webkit-scrollbar-thumb {
-  background: transparent;
-  /* background: theme("colors.scrollbar.thumb"); */
-  /* Handle color */
-  border-radius: 10px;
-}
-
-/* Handle on hover */
-::-webkit-scrollbar-thumb:hover {
-  background: transparent;
-  /* background: theme("colors.scrollbar.thumb-hover"); */
-  /* Handle color on hover */
-}
-
-.dark-scrollbar::-webkit-scrollbar-thumb {
-  background: transparent;
-  /* background: theme("colors.scrollbar.dark.thumb"); */
-  /* Handle color */
-  border-radius: 10px;
-}
-
-.dark-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: transparent;
-  /* background: theme("colors.scrollbar.dark.thumb-hover"); */
-  /* Handle color on hover */
+/* Ensure native scrollbars are visible */
+@layer base {
+  * {
+    scrollbar-width: auto;
+  }
 }
 
 /* TEXTAREA */
 
-textarea::-webkit-scrollbar {
-  width: 8px;
-}
-
-textarea::-webkit-scrollbar-track {
-  background: var(--scrollbar-track);
-  border-radius: 4px;
-}
-
-textarea::-webkit-scrollbar-thumb {
-  background: var(--scrollbar-thumb);
-  border-radius: 4px;
-}
-
-textarea::-webkit-scrollbar-thumb:hover {
-  background: var(--scrollbar-thumb-hover);
-}
-
 textarea {
   resize: vertical;
-}
-
-/* For Firefox */
-textarea {
   scrollbar-width: thin;
   scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
 }
@@ -460,7 +420,7 @@ textarea {
   background-clip: text;
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
-  animation: shimmerTransition 2.5s ease-out infinite;
+  animation: shimmerTransition 1.8s ease-out infinite;
 }
 
 .dark .loading-text {
@@ -523,6 +483,21 @@ textarea {
 
 .animate-fadeIn {
   animation: fadeIn 0.2s ease-out forwards;
+}
+
+/* Recording waveform animation */
+@keyframes waveform {
+  0%,
+  100% {
+    transform: scaleY(0.3);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.animate-waveform {
+  animation: waveform 0.8s ease-in-out infinite;
 }
 
 .container {

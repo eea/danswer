@@ -13,23 +13,10 @@ RUN uv pip install --system --no-cache-dir --upgrade \
         -r /tmp/requirements.txt && \
     rm -rf ~/.cache/uv /tmp/*.txt
 
-# Stage for downloading tokenizers
-FROM base AS tokenizers
-RUN python -c "from transformers import AutoTokenizer; \
-AutoTokenizer.from_pretrained('distilbert-base-uncased'); \
-AutoTokenizer.from_pretrained('mixedbread-ai/mxbai-rerank-xsmall-v1');"
-
-# Stage for downloading Onyx models
-FROM base AS onyx-models
-RUN python -c "from huggingface_hub import snapshot_download; \
-snapshot_download(repo_id='onyx-dot-app/hybrid-intent-token-classifier'); \
-snapshot_download(repo_id='onyx-dot-app/information-content-model');"
-
-# Stage for downloading embedding and reranking models
+# Stage for downloading embedding models
 FROM base AS embedding-models
 RUN python -c "from huggingface_hub import snapshot_download; \
-snapshot_download('nomic-ai/nomic-embed-text-v1'); \
-snapshot_download('mixedbread-ai/mxbai-rerank-xsmall-v1');"
+snapshot_download('nomic-ai/nomic-embed-text-v1');"
 
 # Initialize SentenceTransformer to cache the custom architecture
 RUN python -c "from sentence_transformers import SentenceTransformer; \
@@ -55,19 +42,15 @@ RUN groupadd -g 1001 onyx && \
 # running Onyx, move the current contents of the cache folder to a temporary location to ensure
 # it's preserved in order to combine with the user's cache contents
 # Copy all downloaded models from each stage into the final image
-COPY --chown=onyx:onyx --from=tokenizers /app/.cache/huggingface /app/.cache/huggingface
-COPY --chown=onyx:onyx --from=onyx-models /app/.cache/huggingface /app/.cache/huggingface
-COPY --chown=onyx:onyx --from=embedding-models /app/.cache/huggingface /app/.cache/huggingface
+COPY --chown=onyx:onyx --from=embedding-models /app/.cache/huggingface /app/.cache/temp_huggingface
 
-# Verify all model caches are present
-RUN ls -la /app/.cache/huggingface/ && \
-    find /app/.cache/huggingface -type d | head -20
 
 WORKDIR /app
 
 # Utils used by model server
 COPY ./onyx/utils/logger.py /app/onyx/utils/logger.py
 COPY ./onyx/utils/middleware.py /app/onyx/utils/middleware.py
+COPY ./onyx/utils/tenant.py /app/onyx/utils/tenant.py
 
 # Place to fetch version information
 COPY ./onyx/__init__.py /app/onyx/__init__.py

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useRef, useLayoutEffect } from "react";
+import React, { useState, useRef, useCallback, useLayoutEffect } from "react";
 import { TextProps } from "@/refresh-components/texts/Text";
 import {
   Tooltip,
@@ -63,6 +63,7 @@ export default function Truncated({
 
   const text = (
     <Text
+      as="p"
       className={cn("line-clamp-1 break-all text-left", className)}
       {...rest}
     >
@@ -71,6 +72,18 @@ export default function Truncated({
   );
 
   const showTooltip = !disable && isTruncated;
+
+  // Radix's composeEventHandlers skips its internal handler when
+  // event.defaultPrevented is true. When there is nothing to show we
+  // block onPointerMove so the inner Tooltip never starts its open-delay
+  // timer and therefore never dispatches the global "tooltip.open" custom
+  // event that would close any *outer* tooltip wrapping this component.
+  const blockPointerWhenInert = useCallback(
+    (e: React.PointerEvent) => {
+      if (!showTooltip) e.preventDefault();
+    },
+    [showTooltip]
+  );
 
   return (
     <>
@@ -81,14 +94,20 @@ export default function Truncated({
             className="flex-grow overflow-hidden text-left w-full"
           >
             <TooltipTrigger asChild>
-              <div>{text}</div>
+              <div onPointerMove={blockPointerWhenInert}>{text}</div>
             </TooltipTrigger>
           </div>
 
           {showTooltip && (
-            <TooltipContent side={side} sideOffset={sideOffset}>
+            <TooltipContent
+              side={side}
+              sideOffset={sideOffset}
+              className="max-w-[400px] break-words whitespace-normal"
+            >
               {typeof children === "string" ? (
-                <Text textLight05>{children}</Text>
+                <Text as="p" textLight05>
+                  {children}
+                </Text>
               ) : (
                 children
               )}

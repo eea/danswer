@@ -1,7 +1,8 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 .env.sentry-build-plugin
+
 # dependencies
-/node_modules
+node_modules
 /.pnp
 .pnp.js
 
@@ -37,10 +38,15 @@ next-env.d.ts
 
 # playwright testing temp files
 /admin*_auth.json
+/worker*_auth.json
 /user_auth.json
 /build-archive.log
 /test-results
+/output/
 
 # generated clients ... in particular, the API to the Onyx backend itself!
 /src/lib/generated
 .jest-cache
+
+# storybook
+storybook-static

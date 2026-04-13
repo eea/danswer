@@ -6,10 +6,11 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from onyx.auth.oauth_token_manager import OAuthTokenManager
+from onyx.auth.permissions import require_permission
 from onyx.auth.users import current_curator_or_admin_user
-from onyx.auth.users import current_user
 from onyx.configs.app_configs import WEB_DOMAIN
 from onyx.db.engine.sql_engine import get_session
+from onyx.db.enums import Permission
 from onyx.db.models import OAuthConfig
 from onyx.db.models import User
 from onyx.db.oauth_config import create_oauth_config
@@ -63,7 +64,7 @@ def _oauth_config_to_snapshot(
 def create_oauth_config_endpoint(
     oauth_data: OAuthConfigCreate,
     db_session: Session = Depends(get_session),
-    _: User | None = Depends(current_curator_or_admin_user),
+    _: User = Depends(current_curator_or_admin_user),
 ) -> OAuthConfigSnapshot:
     """Create a new OAuth configuration (admin only)."""
     try:
@@ -85,11 +86,26 @@ def create_oauth_config_endpoint(
 @admin_router.get("")
 def list_oauth_configs(
     db_session: Session = Depends(get_session),
-    _: User | None = Depends(current_curator_or_admin_user),
+    _: User = Depends(current_curator_or_admin_user),
 ) -> list[OAuthConfigSnapshot]:
     """List all OAuth configurations (admin only)."""
     oauth_configs = get_oauth_configs(db_session)
     return [_oauth_config_to_snapshot(config, db_session) for config in oauth_configs]
+
+
+@admin_router.get("/{oauth_config_id}")
+def get_oauth_config_endpoint(
+    oauth_config_id: int,
+    db_session: Session = Depends(get_session),
+    _: User = Depends(current_curator_or_admin_user),
+) -> OAuthConfigSnapshot:
+    """Retrieve a single OAuth configuration (admin only)."""
+    oauth_config = get_oauth_config(oauth_config_id, db_session)
+    if not oauth_config:
+        raise HTTPException(
+            status_code=404, detail=f"OAuth config with id {oauth_config_id} not found"
+        )
+    return _oauth_config_to_snapshot(oauth_config, db_session)
 
 
 @admin_router.put("/{oauth_config_id}")
@@ -97,7 +113,7 @@ def update_oauth_config_endpoint(
     oauth_config_id: int,
     oauth_data: OAuthConfigUpdate,
     db_session: Session = Depends(get_session),
-    _: User | None = Depends(current_curator_or_admin_user),
+    _: User = Depends(current_curator_or_admin_user),
 ) -> OAuthConfigSnapshot:
     """Update an OAuth configuration (admin only)."""
     try:
@@ -123,7 +139,7 @@ def update_oauth_config_endpoint(
 def delete_oauth_config_endpoint(
     oauth_config_id: int,
     db_session: Session = Depends(get_session),
-    _: User | None = Depends(current_curator_or_admin_user),
+    _: User = Depends(current_curator_or_admin_user),
 ) -> dict[str, str]:
     """Delete an OAuth configuration (admin only)."""
     try:
@@ -140,16 +156,13 @@ def delete_oauth_config_endpoint(
 def initiate_oauth_flow(
     request: OAuthInitiateRequest,
     db_session: Session = Depends(get_session),
-    user: User | None = Depends(current_user),
+    user: User = Depends(require_permission(Permission.BASIC_ACCESS)),
 ) -> OAuthInitiateResponse:
     """
     Initiate OAuth flow for the current user.
 
     Returns an authorization URL that the frontend should redirect the user to.
     """
-    if not user:
-        raise HTTPException(status_code=401, detail="User not authenticated")
-
     # Get OAuth config
     oauth_config = get_oauth_config(request.oauth_config_id, db_session)
     if not oauth_config:
@@ -180,7 +193,7 @@ def handle_oauth_callback(
     code: str,
     state: str,
     db_session: Session = Depends(get_session),
-    user: User | None = Depends(current_user),
+    user: User = Depends(require_permission(Permission.BASIC_ACCESS)),
 ) -> OAuthCallbackResponse:
     """
     Handle OAuth callback after user authorizes the application.
@@ -188,9 +201,6 @@ def handle_oauth_callback(
     Exchanges the authorization code for an access token and stores it.
     Accepts code and state as query parameters (standard OAuth flow).
     """
-    if not user:
-        raise HTTPException(status_code=401, detail="User not authenticated")
-
     try:
         # Verify state and retrieve session data
         session = verify_oauth_state(state)
@@ -244,14 +254,11 @@ def handle_oauth_callback(
 def revoke_oauth_token(
     oauth_config_id: int,
     db_session: Session = Depends(get_session),
-    user: User | None = Depends(current_user),
+    user: User = Depends(require_permission(Permission.BASIC_ACCESS)),
 ) -> dict[str, str]:
     """
     Revoke (delete) the current user's OAuth token for a specific OAuth config.
     """
-    if not user:
-        raise HTTPException(status_code=401, detail="User not authenticated")
-
     try:
         delete_user_oauth_token(oauth_config_id, user.id, db_session)
         return {"message": "OAuth token revoked successfully"}

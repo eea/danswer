@@ -2,6 +2,7 @@ import json
 from uuid import UUID
 
 from fastapi import APIRouter
+from fastapi import BackgroundTasks
 from fastapi import Depends
 from fastapi import File
 from fastapi import Form
@@ -9,21 +10,25 @@ from fastapi import HTTPException
 from fastapi import Response
 from fastapi import UploadFile
 from pydantic import BaseModel
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from onyx.auth.users import current_user
-from onyx.background.celery.versioned_apps.client import app as client_app
+from onyx.auth.permissions import require_permission
+from onyx.configs.app_configs import DISABLE_VECTOR_DB
 from onyx.configs.constants import OnyxCeleryPriority
 from onyx.configs.constants import OnyxCeleryQueues
 from onyx.configs.constants import OnyxCeleryTask
+from onyx.configs.constants import PUBLIC_API_TAGS
+from onyx.configs.constants import USER_FILE_PROJECT_SYNC_MAX_QUEUE_DEPTH
 from onyx.db.engine.sql_engine import get_session
+from onyx.db.enums import Permission
 from onyx.db.enums import UserFileStatus
 from onyx.db.models import ChatSession
+from onyx.db.models import Project__UserFile
 from onyx.db.models import User
 from onyx.db.models import UserFile
 from onyx.db.models import UserProject
 from onyx.db.persona import get_personas_by_ids
+from onyx.db.projects import get_project_token_count
 from onyx.db.projects import upload_files_to_user_files_with_indexing
 from onyx.server.features.projects.models import CategorizedFilesSnapshot
 from onyx.server.features.projects.models import ChatSessionRequest
@@ -45,39 +50,87 @@ class UserFileDeleteResult(BaseModel):
     assistant_names: list[str] = []
 
 
-@router.get("/")
+def _trigger_user_file_project_sync(
+    user_file_id: UUID,
+    tenant_id: str,
+    background_tasks: BackgroundTasks | None = None,
+) -> None:
+    if DISABLE_VECTOR_DB and background_tasks is not None:
+        from onyx.background.task_utils import drain_project_sync_loop
+
+        background_tasks.add_task(drain_project_sync_loop, tenant_id)
+        logger.info(f"Queued in-process project sync for user_file_id={user_file_id}")
+        return
+
+    from onyx.background.celery.tasks.user_file_processing.tasks import (
+        enqueue_user_file_project_sync_task,
+    )
+    from onyx.background.celery.tasks.user_file_processing.tasks import (
+        get_user_file_project_sync_queue_depth,
+    )
+    from onyx.background.celery.versioned_apps.client import app as client_app
+    from onyx.redis.redis_pool import get_redis_client
+
+    queue_depth = get_user_file_project_sync_queue_depth(client_app)
+    if queue_depth > USER_FILE_PROJECT_SYNC_MAX_QUEUE_DEPTH:
+        logger.warning(
+            f"Skipping immediate project sync for user_file_id={user_file_id} due to "
+            f"queue depth {queue_depth}>{USER_FILE_PROJECT_SYNC_MAX_QUEUE_DEPTH}. "
+            "It will be picked up by beat later."
+        )
+        return
+
+    redis_client = get_redis_client(tenant_id=tenant_id)
+    enqueued = enqueue_user_file_project_sync_task(
+        celery_app=client_app,
+        redis_client=redis_client,
+        user_file_id=user_file_id,
+        tenant_id=tenant_id,
+        priority=OnyxCeleryPriority.HIGHEST,
+    )
+    if not enqueued:
+        logger.info(
+            f"Skipped duplicate project sync enqueue for user_file_id={user_file_id}"
+        )
+        return
+
+    logger.info(f"Triggered project sync for user_file_id={user_file_id}")
+
+
+@router.get("", tags=PUBLIC_API_TAGS)
 def get_projects(
-    user: User | None = Depends(current_user),
+    user: User = Depends(require_permission(Permission.BASIC_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> list[UserProjectSnapshot]:
-    user_id = user.id if user is not None else None
+    user_id = user.id
     projects = (
         db_session.query(UserProject).filter(UserProject.user_id == user_id).all()
     )
     return [UserProjectSnapshot.from_model(project) for project in projects]
 
 
-@router.post("/create")
+@router.post("/create", tags=PUBLIC_API_TAGS)
 def create_project(
     name: str,
-    user: User | None = Depends(current_user),
+    user: User = Depends(require_permission(Permission.BASIC_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> UserProjectSnapshot:
     if name == "":
         raise HTTPException(status_code=400, detail="Project name cannot be empty")
-    user_id = user.id if user is not None else None
+    user_id = user.id
     project = UserProject(name=name, user_id=user_id)
     db_session.add(project)
     db_session.commit()
     return UserProjectSnapshot.from_model(project)
 
 
-@router.post("/file/upload")
+@router.post("/file/upload", tags=PUBLIC_API_TAGS)
 def upload_user_files(
+    bg_tasks: BackgroundTasks,
     files: list[UploadFile] = File(...),
     project_id: int | None = Form(None),
     temp_id_map: str | None = Form(None),  # JSON string mapping hashed key -> temp_id
-    user: User | None = Depends(current_user),
+    user: User = Depends(require_permission(Permission.BASIC_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> CategorizedFilesSnapshot:
     try:
@@ -100,12 +153,12 @@ def upload_user_files(
             user=user,
             temp_id_map=parsed_temp_id_map,
             db_session=db_session,
+            background_tasks=bg_tasks if DISABLE_VECTOR_DB else None,
         )
 
         return CategorizedFilesSnapshot.from_result(categorized_files_result)
 
     except Exception as e:
-        # Log error with type, message, and stack for easier debugging
         logger.exception(f"Error uploading files - {type(e).__name__}: {str(e)}")
         raise HTTPException(
             status_code=500,
@@ -113,13 +166,13 @@ def upload_user_files(
         )
 
 
-@router.get("/{project_id}")
+@router.get("/{project_id}", tags=PUBLIC_API_TAGS)
 def get_project(
     project_id: int,
-    user: User | None = Depends(current_user),
+    user: User = Depends(require_permission(Permission.BASIC_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> UserProjectSnapshot:
-    user_id = user.id if user is not None else None
+    user_id = user.id
     project = (
         db_session.query(UserProject)
         .filter(UserProject.id == project_id, UserProject.user_id == user_id)
@@ -130,35 +183,40 @@ def get_project(
     return UserProjectSnapshot.from_model(project)
 
 
-@router.get("/files/{project_id}")
+@router.get("/files/{project_id}", tags=PUBLIC_API_TAGS)
 def get_files_in_project(
     project_id: int,
-    user: User | None = Depends(current_user),
+    user: User = Depends(require_permission(Permission.BASIC_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> list[UserFileSnapshot]:
-    user_id = user.id if user is not None else None
+    user_id = user.id
     user_files = (
         db_session.query(UserFile)
-        .filter(UserFile.projects.any(id=project_id), UserFile.user_id == user_id)
-        .filter(UserFile.status != UserFileStatus.FAILED)
-        .order_by(UserFile.created_at.desc())
+        .join(Project__UserFile, UserFile.id == Project__UserFile.user_file_id)
+        .filter(
+            Project__UserFile.project_id == project_id,
+            UserFile.user_id == user_id,
+            UserFile.status != UserFileStatus.FAILED,
+        )
+        .order_by(Project__UserFile.created_at.desc())
         .all()
     )
     return [UserFileSnapshot.from_model(user_file) for user_file in user_files]
 
 
-@router.delete("/{project_id}/files/{file_id}")
+@router.delete("/{project_id}/files/{file_id}", tags=PUBLIC_API_TAGS)
 def unlink_user_file_from_project(
     project_id: int,
     file_id: UUID,
-    user: User | None = Depends(current_user),
+    bg_tasks: BackgroundTasks,
+    user: User = Depends(require_permission(Permission.BASIC_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> Response:
     """Unlink an existing user file from a specific project for the current user.
 
     Does not delete the underlying file; only removes the association.
     """
-    user_id = user.id if user is not None else None
+    user_id = user.id
     project = (
         db_session.query(UserProject)
         .filter(UserProject.id == project_id, UserProject.user_id == user_id)
@@ -167,7 +225,6 @@ def unlink_user_file_from_project(
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    user_id = user.id if user is not None else None
     user_file = (
         db_session.query(UserFile)
         .filter(UserFile.id == file_id, UserFile.user_id == user_id)
@@ -183,24 +240,21 @@ def unlink_user_file_from_project(
         db_session.commit()
 
     tenant_id = get_current_tenant_id()
-    task = client_app.send_task(
-        OnyxCeleryTask.PROCESS_SINGLE_USER_FILE_PROJECT_SYNC,
-        kwargs={"user_file_id": user_file.id, "tenant_id": tenant_id},
-        queue=OnyxCeleryQueues.USER_FILE_PROJECT_SYNC,
-        priority=OnyxCeleryPriority.HIGHEST,
-    )
-    logger.info(
-        f"Triggered project sync for user_file_id={user_file.id} with task_id={task.id}"
-    )
+    _trigger_user_file_project_sync(user_file.id, tenant_id, bg_tasks)
 
     return Response(status_code=204)
 
 
-@router.post("/{project_id}/files/{file_id}", response_model=UserFileSnapshot)
+@router.post(
+    "/{project_id}/files/{file_id}",
+    response_model=UserFileSnapshot,
+    tags=PUBLIC_API_TAGS,
+)
 def link_user_file_to_project(
     project_id: int,
     file_id: UUID,
-    user: User | None = Depends(current_user),
+    bg_tasks: BackgroundTasks,
+    user: User = Depends(require_permission(Permission.BASIC_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> UserFileSnapshot:
     """Link an existing user file to a specific project for the current user.
@@ -208,7 +262,7 @@ def link_user_file_to_project(
     Creates the association in the Project__UserFile join table if it does not exist.
     Returns the linked user file snapshot.
     """
-    user_id = user.id if user is not None else None
+    user_id = user.id
     project = (
         db_session.query(UserProject)
         .filter(UserProject.id == project_id, UserProject.user_id == user_id)
@@ -231,15 +285,7 @@ def link_user_file_to_project(
         db_session.commit()
 
     tenant_id = get_current_tenant_id()
-    task = client_app.send_task(
-        OnyxCeleryTask.PROCESS_SINGLE_USER_FILE_PROJECT_SYNC,
-        kwargs={"user_file_id": user_file.id, "tenant_id": tenant_id},
-        queue=OnyxCeleryQueues.USER_FILE_PROJECT_SYNC,
-        priority=OnyxCeleryPriority.HIGHEST,
-    )
-    logger.info(
-        f"Triggered project sync for user_file_id={user_file.id} with task_id={task.id}"
-    )
+    _trigger_user_file_project_sync(user_file.id, tenant_id, bg_tasks)
 
     return UserFileSnapshot.from_model(user_file)
 
@@ -248,13 +294,17 @@ class ProjectInstructionsResponse(BaseModel):
     instructions: str | None
 
 
-@router.get("/{project_id}/instructions", response_model=ProjectInstructionsResponse)
+@router.get(
+    "/{project_id}/instructions",
+    response_model=ProjectInstructionsResponse,
+    tags=PUBLIC_API_TAGS,
+)
 def get_project_instructions(
     project_id: int,
-    user: User | None = Depends(current_user),
+    user: User = Depends(require_permission(Permission.BASIC_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> ProjectInstructionsResponse:
-    user_id = user.id if user is not None else None
+    user_id = user.id
     project = (
         db_session.query(UserProject)
         .filter(UserProject.id == project_id, UserProject.user_id == user_id)
@@ -271,16 +321,20 @@ class UpsertProjectInstructionsRequest(BaseModel):
     instructions: str
 
 
-@router.post("/{project_id}/instructions", response_model=ProjectInstructionsResponse)
+@router.post(
+    "/{project_id}/instructions",
+    response_model=ProjectInstructionsResponse,
+    tags=PUBLIC_API_TAGS,
+)
 def upsert_project_instructions(
     project_id: int,
     body: UpsertProjectInstructionsRequest,
-    user: User | None = Depends(current_user),
+    user: User = Depends(require_permission(Permission.BASIC_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> ProjectInstructionsResponse:
     """Create or update this project's instructions stored on the project itself."""
     # Ensure the project exists and belongs to the user
-    user_id = user.id if user is not None else None
+    user_id = user.id
     project = (
         db_session.query(UserProject)
         .filter(UserProject.id == project_id, UserProject.user_id == user_id)
@@ -298,13 +352,15 @@ def upsert_project_instructions(
 class ProjectPayload(BaseModel):
     project: UserProjectSnapshot
     files: list[UserFileSnapshot] | None = None
-    persona_id_to_is_default: dict[int, bool] | None = None
+    persona_id_to_is_featured: dict[int, bool] | None = None
 
 
-@router.get("/{project_id}/details", response_model=ProjectPayload)
+@router.get(
+    "/{project_id}/details", response_model=ProjectPayload, tags=PUBLIC_API_TAGS
+)
 def get_project_details(
     project_id: int,
-    user: User | None = Depends(current_user),
+    user: User = Depends(require_permission(Permission.BASIC_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> ProjectPayload:
     project = get_project(project_id, user, db_session)
@@ -315,13 +371,13 @@ def get_project_details(
         if session.persona_id is not None
     ]
     personas = get_personas_by_ids(persona_ids, db_session)
-    persona_id_to_is_default = {
-        persona.id: persona.is_default_persona for persona in personas
+    persona_id_to_is_featured = {
+        persona.id: persona.is_featured for persona in personas
     }
     return ProjectPayload(
         project=project,
         files=files,
-        persona_id_to_is_default=persona_id_to_is_default,
+        persona_id_to_is_featured=persona_id_to_is_featured,
     )
 
 
@@ -330,14 +386,14 @@ class UpdateProjectRequest(BaseModel):
     description: str | None = None
 
 
-@router.patch("/{project_id}", response_model=UserProjectSnapshot)
+@router.patch("/{project_id}", response_model=UserProjectSnapshot, tags=PUBLIC_API_TAGS)
 def update_project(
     project_id: int,
     body: UpdateProjectRequest,
-    user: User | None = Depends(current_user),
+    user: User = Depends(require_permission(Permission.BASIC_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> UserProjectSnapshot:
-    user_id = user.id if user is not None else None
+    user_id = user.id
     project = (
         db_session.query(UserProject)
         .filter(UserProject.id == project_id, UserProject.user_id == user_id)
@@ -356,13 +412,13 @@ def update_project(
     return UserProjectSnapshot.from_model(project)
 
 
-@router.delete("/{project_id}")
+@router.delete("/{project_id}", tags=PUBLIC_API_TAGS)
 def delete_project(
     project_id: int,
-    user: User | None = Depends(current_user),
+    user: User = Depends(require_permission(Permission.BASIC_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> Response:
-    user_id = user.id if user is not None else None
+    user_id = user.id
     project = (
         db_session.query(UserProject)
         .filter(UserProject.id == project_id, UserProject.user_id == user_id)
@@ -384,17 +440,18 @@ def delete_project(
     return Response(status_code=204)
 
 
-@router.delete("/file/{file_id}")
+@router.delete("/file/{file_id}", tags=PUBLIC_API_TAGS)
 def delete_user_file(
     file_id: UUID,
-    user: User | None = Depends(current_user),
+    bg_tasks: BackgroundTasks,
+    user: User = Depends(require_permission(Permission.BASIC_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> UserFileDeleteResult:
     """Delete a user file belonging to the current user.
 
     This will also remove any project associations for the file.
     """
-    user_id = user.id if user is not None else None
+    user_id = user.id
     user_file = (
         db_session.query(UserFile)
         .filter(UserFile.id == file_id, UserFile.user_id == user_id)
@@ -419,31 +476,40 @@ def delete_user_file(
     db_session.commit()
 
     tenant_id = get_current_tenant_id()
-    task = client_app.send_task(
-        OnyxCeleryTask.DELETE_SINGLE_USER_FILE,
-        kwargs={"user_file_id": str(user_file.id), "tenant_id": tenant_id},
-        queue=OnyxCeleryQueues.USER_FILE_DELETE,
-        priority=OnyxCeleryPriority.HIGH,
-    )
-    logger.info(
-        f"Triggered delete for user_file_id={user_file.id} with task_id={task.id}"
-    )
+    if DISABLE_VECTOR_DB:
+        from onyx.background.task_utils import drain_delete_loop
+
+        bg_tasks.add_task(drain_delete_loop, tenant_id)
+        logger.info(f"Queued in-process delete for user_file_id={user_file.id}")
+    else:
+        from onyx.background.celery.versioned_apps.client import app as client_app
+
+        task = client_app.send_task(
+            OnyxCeleryTask.DELETE_SINGLE_USER_FILE,
+            kwargs={"user_file_id": str(user_file.id), "tenant_id": tenant_id},
+            queue=OnyxCeleryQueues.USER_FILE_DELETE,
+            priority=OnyxCeleryPriority.HIGH,
+        )
+        logger.info(
+            f"Triggered delete for user_file_id={user_file.id} with task_id={task.id}"
+        )
+
     return UserFileDeleteResult(
         has_associations=False, project_names=[], assistant_names=[]
     )
 
 
-@router.get("/file/{file_id}", response_model=UserFileSnapshot)
+@router.get("/file/{file_id}", response_model=UserFileSnapshot, tags=PUBLIC_API_TAGS)
 def get_user_file(
     file_id: UUID,
-    user: User | None = Depends(current_user),
+    user: User = Depends(require_permission(Permission.BASIC_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> UserFileSnapshot:
     """Fetch a single user file by ID for the current user.
 
     Includes files in any status (including FAILED) to allow status polling.
     """
-    user_id = user.id if user is not None else None
+    user_id = user.id
     user_file = (
         db_session.query(UserFile)
         .filter(UserFile.id == file_id, UserFile.user_id == user_id)
@@ -459,10 +525,12 @@ class UserFileIdsRequest(BaseModel):
     file_ids: list[UUID]
 
 
-@router.post("/file/statuses", response_model=list[UserFileSnapshot])
+@router.post(
+    "/file/statuses", response_model=list[UserFileSnapshot], tags=PUBLIC_API_TAGS
+)
 def get_user_file_statuses(
     body: UserFileIdsRequest,
-    user: User | None = Depends(current_user),
+    user: User = Depends(require_permission(Permission.BASIC_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> list[UserFileSnapshot]:
     """Fetch statuses for a set of user file IDs owned by the current user.
@@ -472,7 +540,7 @@ def get_user_file_statuses(
     if not body.file_ids:
         return []
 
-    user_id = user.id if user is not None else None
+    user_id = user.id
     user_files = (
         db_session.query(UserFile)
         .filter(UserFile.user_id == user_id)
@@ -488,10 +556,10 @@ def get_user_file_statuses(
 def move_chat_session(
     project_id: int,
     body: ChatSessionRequest,
-    user: User | None = Depends(current_user),
+    user: User = Depends(require_permission(Permission.BASIC_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> Response:
-    user_id = user.id if user is not None else None
+    user_id = user.id
     chat_session = (
         db_session.query(ChatSession)
         .filter(ChatSession.id == body.chat_session_id, ChatSession.user_id == user_id)
@@ -507,10 +575,10 @@ def move_chat_session(
 @router.post("/remove_chat_session")
 def remove_chat_session(
     body: ChatSessionRequest,
-    user: User | None = Depends(current_user),
+    user: User = Depends(require_permission(Permission.BASIC_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> Response:
-    user_id = user.id if user is not None else None
+    user_id = user.id
     chat_session = (
         db_session.query(ChatSession)
         .filter(ChatSession.id == body.chat_session_id, ChatSession.user_id == user_id)
@@ -526,14 +594,14 @@ def remove_chat_session(
 @router.get("/session/{chat_session_id}/token-count", response_model=TokenCountResponse)
 def get_chat_session_project_token_count(
     chat_session_id: str,
-    user: User | None = Depends(current_user),
+    user: User = Depends(require_permission(Permission.BASIC_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> TokenCountResponse:
     """Return sum of token_count for all user files in the project linked to the given chat session.
 
     If the chat session has no project, returns 0.
     """
-    user_id = user.id if user is not None else None
+    user_id = user.id
     chat_session = (
         db_session.query(ChatSession)
         .filter(ChatSession.id == chat_session_id, ChatSession.user_id == user_id)
@@ -542,26 +610,19 @@ def get_chat_session_project_token_count(
     if chat_session is None:
         raise HTTPException(status_code=404, detail="Chat session not found")
 
-    if chat_session.project_id is None:
-        return TokenCountResponse(total_tokens=0)
-
-    total_tokens = (
-        db_session.query(func.coalesce(func.sum(UserFile.token_count), 0))
-        .filter(
-            UserFile.user_id == user_id,
-            UserFile.projects.any(id=chat_session.project_id),
-        )
-        .scalar()
-        or 0
+    total_tokens = get_project_token_count(
+        project_id=chat_session.project_id,
+        user_id=user_id,
+        db_session=db_session,
     )
 
-    return TokenCountResponse(total_tokens=int(total_tokens))
+    return TokenCountResponse(total_tokens=total_tokens)
 
 
-@router.get("/session/{chat_session_id}/files")
+@router.get("/session/{chat_session_id}/files", tags=PUBLIC_API_TAGS)
 def get_chat_session_project_files(
     chat_session_id: str,
-    user: User | None = Depends(current_user),
+    user: User = Depends(require_permission(Permission.BASIC_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> list[UserFileSnapshot]:
     """Return user files for the project linked to the given chat session.
@@ -569,7 +630,7 @@ def get_chat_session_project_files(
     If the chat session has no project, returns an empty list.
     Only returns files owned by the current user and not FAILED.
     """
-    user_id = user.id if user is not None else None
+    user_id = user.id
 
     chat_session = (
         db_session.query(ChatSession)
@@ -597,15 +658,15 @@ def get_chat_session_project_files(
 
 
 @router.get("/{project_id}/token-count", response_model=TokenCountResponse)
-def get_project_token_count(
+def get_project_total_token_count(
     project_id: int,
-    user: User | None = Depends(current_user),
+    user: User = Depends(require_permission(Permission.BASIC_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> TokenCountResponse:
     """Return sum of token_count for all user files in the given project for the current user."""
 
     # Verify the project belongs to the current user
-    user_id = user.id if user is not None else None
+    user_id = user.id
     project = (
         db_session.query(UserProject)
         .filter(UserProject.id == project_id, UserProject.user_id == user_id)
@@ -614,14 +675,10 @@ def get_project_token_count(
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    total_tokens = (
-        db_session.query(func.coalesce(func.sum(UserFile.token_count), 0))
-        .filter(
-            UserFile.user_id == user_id,
-            UserFile.projects.any(id=project_id),
-        )
-        .scalar()
-        or 0
+    total_tokens = get_project_token_count(
+        project_id=project_id,
+        user_id=user_id,
+        db_session=db_session,
     )
 
-    return TokenCountResponse(total_tokens=int(total_tokens))
+    return TokenCountResponse(total_tokens=total_tokens)

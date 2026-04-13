@@ -17,7 +17,9 @@ import {
   ConnectorIndexingStatusLite,
   FederatedConnectorStatus,
 } from "@/lib/types";
+import type { Route } from "next";
 import { useRouter } from "next/navigation";
+import Truncated from "@/refresh-components/texts/Truncated";
 import {
   FiChevronDown,
   FiChevronRight,
@@ -32,8 +34,25 @@ import { usePaidEnterpriseFeaturesEnabled } from "@/components/settings/usePaidE
 import { ConnectorCredentialPairStatus } from "../../connector/[ccPairId]/types";
 import { PageSelector } from "@/components/PageSelector";
 import { ConnectorStaggeredSkeleton } from "./ConnectorRowSkeleton";
-import IconButton from "@/refresh-components/buttons/IconButton";
-import SvgSettings from "@/icons/settings";
+import { Button } from "@opal/components";
+import { SvgSettings } from "@opal/icons";
+
+// Helper to handle navigation with cmd/ctrl+click support
+// NOTE: using this rather than Next/Link (or similar) since shadcn
+// table row components must be direct descendants of the table component
+// and putting the <Link> inside the <TableRow> would causes some parts of the
+// row to not navigate as expected.
+function navigateWithModifier(
+  e: React.MouseEvent,
+  url: string,
+  router: ReturnType<typeof useRouter>
+) {
+  if (e.metaKey || e.ctrlKey) {
+    window.open(url, "_blank");
+  } else {
+    router.push(url as Route);
+  }
+}
 
 function isFederatedConnectorStatus(
   status: ConnectorIndexingStatusLite | FederatedConnectorStatus
@@ -43,6 +62,7 @@ function isFederatedConnectorStatus(
 
 const NUMBER_OF_ROWS_PER_PAGE = 10;
 const NUMBER_OF_COLUMNS = 6;
+
 function SummaryRow({
   source,
   summary,
@@ -128,9 +148,10 @@ function ConnectorRow({
   const router = useRouter();
   const isPaidEnterpriseFeaturesEnabled = usePaidEnterpriseFeaturesEnabled();
 
-  const handleManageClick = (e: any) => {
-    e.stopPropagation();
-    router.push(`/admin/connector/${ccPairsIndexingStatus.cc_pair_id}`);
+  const connectorUrl = `/admin/connector/${ccPairsIndexingStatus.cc_pair_id}`;
+
+  const handleRowClick = (e: React.MouseEvent) => {
+    navigateWithModifier(e, connectorUrl, router);
   };
 
   return (
@@ -142,14 +163,10 @@ function ConnectorRow({
               ? "invisible !h-0 !-mb-10 !border-none"
               : "!border border-border dark:border-neutral-700"
           }  w-full cursor-pointer relative `}
-      onClick={() => {
-        router.push(`/admin/connector/${ccPairsIndexingStatus.cc_pair_id}`);
-      }}
+      onClick={handleRowClick}
     >
       <TableCell className="">
-        <p className="lg:w-[200px] xl:w-[400px] inline-block ellipsis truncate">
-          {ccPairsIndexingStatus.name}
-        </p>
+        <Truncated>{ccPairsIndexingStatus.name}</Truncated>
       </TableCell>
       <TableCell>
         {timeAgo(ccPairsIndexingStatus?.last_success) || "-"}
@@ -192,7 +209,7 @@ function ConnectorRow({
       <TableCell>
         {isEditable && (
           <SimpleTooltip tooltip="Manage Connector">
-            <IconButton icon={SvgSettings} tertiary />
+            <Button icon={SvgSettings} prominence="tertiary" />
           </SimpleTooltip>
         )}
       </TableCell>
@@ -210,9 +227,10 @@ function FederatedConnectorRow({
   const router = useRouter();
   const isPaidEnterpriseFeaturesEnabled = usePaidEnterpriseFeaturesEnabled();
 
-  const handleManageClick = (e: any) => {
-    e.stopPropagation();
-    router.push(`/admin/federated/${federatedConnector.id}`);
+  const federatedUrl = `/admin/federated/${federatedConnector.id}`;
+
+  const handleRowClick = (e: React.MouseEvent) => {
+    navigateWithModifier(e, federatedUrl, router);
   };
 
   return (
@@ -224,14 +242,10 @@ function FederatedConnectorRow({
               ? "invisible !h-0 !-mb-10 !border-none"
               : "!border border-border dark:border-neutral-700"
           }  w-full cursor-pointer relative `}
-      onClick={() => {
-        router.push(`/admin/federated/${federatedConnector.id}`);
-      }}
+      onClick={handleRowClick}
     >
       <TableCell className="">
-        <p className="lg:w-[200px] xl:w-[400px] inline-block ellipsis truncate">
-          {federatedConnector.name}
-        </p>
+        <Truncated>{federatedConnector.name}</Truncated>
       </TableCell>
       <TableCell>N/A</TableCell>
       <TableCell>
@@ -246,10 +260,13 @@ function FederatedConnectorRow({
       )}
       <TableCell>N/A</TableCell>
       <TableCell>
-        <IconButton
+        <Button
           icon={SvgSettings}
-          tertiary
-          onClick={handleManageClick}
+          prominence="tertiary"
+          onClick={(e: React.MouseEvent) => {
+            e.stopPropagation();
+            navigateWithModifier(e, federatedUrl, router);
+          }}
           tooltip="Manage Federated Connector"
         />
       </TableCell>
@@ -279,7 +296,7 @@ export function CCPairIndexingStatusTable({
     }
   });
   return (
-    <Table className="-mt-8">
+    <Table className="-mt-8 table-fixed">
       <TableHeader>
         <ConnectorRow
           invisible

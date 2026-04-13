@@ -1,28 +1,17 @@
-import { AdminPageTitle } from "@/components/admin/Title";
-import { ZoomInIcon } from "@/components/icons/icons";
-import { Explorer } from "./Explorer";
 import { fetchValidFilterInfo } from "@/lib/search/utilsSS";
+import DocumentExplorerPage from "./DocumentExplorerPage";
 
-const Page = async (props: {
+export default async function Page(props: {
   searchParams: Promise<{ [key: string]: string }>;
-}) => {
+}) {
   const searchParams = await props.searchParams;
   const { connectors, documentSets } = await fetchValidFilterInfo();
 
   return (
-    <div className="mx-auto container">
-      <AdminPageTitle
-        icon={<ZoomInIcon size={32} />}
-        title="Document Explorer"
-      />
-
-      <Explorer
-        initialSearchValue={searchParams.query}
-        connectors={connectors}
-        documentSets={documentSets}
-      />
-    </div>
+    <DocumentExplorerPage
+      initialSearchValue={searchParams.query}
+      connectors={connectors}
+      documentSets={documentSets}
+    />
   );
-};
-
-export default Page;
+}

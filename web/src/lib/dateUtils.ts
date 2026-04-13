@@ -35,6 +35,20 @@ export function getXYearsAgo(yearsAgo: number) {
   return yearsAgoDate;
 }
 
+export function normalizeDate(date: Date): Date {
+  const normalizedDate = new Date(date);
+  normalizedDate.setHours(0, 0, 0, 0);
+  return normalizedDate;
+}
+
+export function isAfterDate(date: Date, maxDate: Date): boolean {
+  return normalizeDate(date).getTime() > normalizeDate(maxDate).getTime();
+}
+
+export function isDateInFuture(date: Date): boolean {
+  return isAfterDate(date, new Date());
+}
+
 export const timestampToDateString = (timestamp: string) => {
   const date = new Date(timestamp);
   const year = date.getFullYear();
@@ -132,6 +146,60 @@ export const getTimeAgoString = (date: Date | null) => {
   if (diffDays < 30) return `${diffWeeks}w ago`;
   return `${diffMonths}mo ago`;
 };
+
+/**
+ * Format a date to short format like "Jan 27, 2026".
+ * Always shows date, never time.
+ */
+export const formatDateShort = (dateStr: string | null | undefined): string => {
+  if (!dateStr) return "—";
+  return new Date(dateStr).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+};
+
+/**
+ * Format an ISO timestamp as "YYYY/MM/DD HH:MM:SS" (24-hour, local time).
+ * Intended for log displays where full precision is needed.
+ */
+export function formatDateTimeLog(iso: string): string {
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(
+    d.getHours()
+  )}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+/**
+ * Format an ISO timestamp as "HH:MM:SS" (24-hour, local time).
+ * Intended for compact time-only displays.
+ */
+export function formatTimeOnly(iso: string): string {
+  return new Date(iso).toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}
+
+export function formatMmDdYyyy(d: string): string {
+  const date = new Date(d);
+  return `${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}`;
+}
+
+/**
+ * Format a duration in seconds as MM:SS (e.g. 65 → "01:05").
+ */
+export function formatElapsedTime(totalSeconds: number): string {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes.toString().padStart(2, "0")}:${seconds
+    .toString()
+    .padStart(2, "0")}`;
+}
 
 export const getFormattedDateTime = (date: Date | null) => {
   if (!date) return null;

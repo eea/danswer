@@ -2,11 +2,23 @@ dependencies:
 - name: vespa
   repository: https://onyx-dot-app.github.io/vespa-helm-charts
   version: 0.2.25
+- name: opensearch
+  repository: https://opensearch-project.github.io/helm-charts
+  version: 3.4.0
+- name: ingress-nginx
+  repository: https://kubernetes.github.io/ingress-nginx
+  version: 4.13.3
+- name: redis
+  repository: https://ot-container-kit.github.io/helm-charts
+  version: 0.16.6
 - name: minio
   repository: https://charts.min.io/
   version: 5.4.0
 - name: postfix
   repository: https://eea.github.io/helm-charts
   version: 3.1.2
-digest: sha256:fafb9f8e342501b0c0f583f0e4cf48eea4043c2e807b7f32500147d01ea1f49d
-generated: "2025-12-03T17:59:13.928227+02:00"
+- name: code-interpreter
+  repository: https://onyx-dot-app.github.io/python-sandbox/
+  version: 0.3.3
+digest: sha256:a57f29088b1624a72f6c70e4c3ccc2f2aad675e4624278c4e9be92083d6d5dad
+generated: "2026-04-08T16:47:29.33368-07:00"

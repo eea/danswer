@@ -1,0 +1,338 @@
+"""Database and cache operations for the license table."""
+
+from datetime import datetime
+from typing import NamedTuple
+
+from sqlalchemy import func
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from ee.onyx.server.license.models import LicenseMetadata
+from ee.onyx.server.license.models import LicensePayload
+from ee.onyx.server.license.models import LicenseSource
+from onyx.auth.schemas import UserRole
+from onyx.cache.factory import get_cache_backend
+from onyx.configs.constants import ANONYMOUS_USER_EMAIL
+from onyx.db.models import License
+from onyx.db.models import User
+from onyx.utils.logger import setup_logger
+from shared_configs.configs import MULTI_TENANT
+from shared_configs.contextvars import get_current_tenant_id
+
+logger = setup_logger()
+
+LICENSE_METADATA_KEY = "license:metadata"
+LICENSE_CACHE_TTL_SECONDS = 86400  # 24 hours
+
+
+class SeatAvailabilityResult(NamedTuple):
+    """Result of a seat availability check."""
+
+    available: bool
+    error_message: str | None = None
+
+
+# -----------------------------------------------------------------------------
+# Database CRUD Operations
+# -----------------------------------------------------------------------------
+
+
+def get_license(db_session: Session) -> License | None:
+    """
+    Get the current license (singleton pattern - only one row).
+
+    Args:
+        db_session: Database session
+
+    Returns:
+        License object if exists, None otherwise
+    """
+    return db_session.execute(select(License)).scalars().first()
+
+
+def upsert_license(db_session: Session, license_data: str) -> License:
+    """
+    Insert or update the license (singleton pattern).
+
+    Args:
+        db_session: Database session
+        license_data: Base64-encoded signed license blob
+
+    Returns:
+        The created or updated License object
+    """
+    existing = get_license(db_session)
+
+    if existing:
+        existing.license_data = license_data
+        db_session.commit()
+        db_session.refresh(existing)
+        logger.info("License updated")
+        return existing
+
+    new_license = License(license_data=license_data)
+    db_session.add(new_license)
+    db_session.commit()
+    db_session.refresh(new_license)
+    logger.info("License created")
+    return new_license
+
+
+def delete_license(db_session: Session) -> bool:
+    """
+    Delete the current license.
+
+    Args:
+        db_session: Database session
+
+    Returns:
+        True if deleted, False if no license existed
+    """
+    existing = get_license(db_session)
+    if existing:
+        db_session.delete(existing)
+        db_session.commit()
+        logger.info("License deleted")
+        return True
+    return False
+
+
+# -----------------------------------------------------------------------------
+# Seat Counting
+# -----------------------------------------------------------------------------
+
+
+def get_used_seats(tenant_id: str | None = None) -> int:
+    """
+    Get current seat usage directly from database.
+
+    For multi-tenant: counts users in UserTenantMapping for this tenant.
+    For self-hosted: counts all active users (excludes EXT_PERM_USER role
+    and the anonymous system user).
+
+    TODO: Exclude API key dummy users from seat counting. API keys create
+    users with emails like `__DANSWER_API_KEY_*` that should not count toward
+    seat limits. See: https://linear.app/onyx-app/issue/ENG-3518
+    """
+    if MULTI_TENANT:
+        from ee.onyx.server.tenants.user_mapping import get_tenant_count
+
+        return get_tenant_count(tenant_id or get_current_tenant_id())
+    else:
+        from onyx.db.engine.sql_engine import get_session_with_current_tenant
+
+        with get_session_with_current_tenant() as db_session:
+            result = db_session.execute(
+                select(func.count())
+                .select_from(User)
+                .where(
+                    User.is_active == True,  # type: ignore  # noqa: E712
+                    User.role != UserRole.EXT_PERM_USER,
+                    User.email != ANONYMOUS_USER_EMAIL,  # type: ignore
+                )
+            )
+            return result.scalar() or 0
+
+
+# -----------------------------------------------------------------------------
+# Redis Cache Operations
+# -----------------------------------------------------------------------------
+
+
+def get_cached_license_metadata(tenant_id: str | None = None) -> LicenseMetadata | None:
+    """
+    Get license metadata from cache.
+
+    Args:
+        tenant_id: Tenant ID (for multi-tenant deployments)
+
+    Returns:
+        LicenseMetadata if cached, None otherwise
+    """
+    cache = get_cache_backend(tenant_id=tenant_id)
+    cached = cache.get(LICENSE_METADATA_KEY)
+    if not cached:
+        return None
+
+    try:
+        cached_str = (
+            cached.decode("utf-8") if isinstance(cached, bytes) else str(cached)
+        )
+        return LicenseMetadata.model_validate_json(cached_str)
+    except Exception as e:
+        logger.warning(f"Failed to parse cached license metadata: {e}")
+        return None
+
+
+def invalidate_license_cache(tenant_id: str | None = None) -> None:
+    """
+    Invalidate the license metadata cache (not the license itself).
+
+    Deletes the cached LicenseMetadata. The actual license in the database
+    is not affected. Delete is idempotent — if the key doesn't exist, this
+    is a no-op.
+
+    Args:
+        tenant_id: Tenant ID (for multi-tenant deployments)
+    """
+    cache = get_cache_backend(tenant_id=tenant_id)
+    cache.delete(LICENSE_METADATA_KEY)
+    logger.info("License cache invalidated")
+
+
+def update_license_cache(
+    payload: LicensePayload,
+    source: LicenseSource | None = None,
+    grace_period_end: datetime | None = None,
+    tenant_id: str | None = None,
+) -> LicenseMetadata:
+    """
+    Update the cache with license metadata.
+
+    We cache all license statuses (ACTIVE, GRACE_PERIOD, GATED_ACCESS) because:
+    1. Frontend needs status to show appropriate UI/banners
+    2. Caching avoids repeated DB + crypto verification on every request
+    3. Status enforcement happens at the feature level, not here
+
+    Args:
+        payload: Verified license payload
+        source: How the license was obtained
+        grace_period_end: Optional grace period end time
+        tenant_id: Tenant ID (for multi-tenant deployments)
+
+    Returns:
+        The cached LicenseMetadata
+    """
+    from ee.onyx.utils.license import get_license_status
+
+    tenant = tenant_id or get_current_tenant_id()
+    cache = get_cache_backend(tenant_id=tenant_id)
+
+    used_seats = get_used_seats(tenant)
+    status = get_license_status(payload, grace_period_end)
+
+    metadata = LicenseMetadata(
+        tenant_id=payload.tenant_id,
+        organization_name=payload.organization_name,
+        seats=payload.seats,
+        used_seats=used_seats,
+        plan_type=payload.plan_type,
+        issued_at=payload.issued_at,
+        expires_at=payload.expires_at,
+        grace_period_end=grace_period_end,
+        status=status,
+        source=source,
+        stripe_subscription_id=payload.stripe_subscription_id,
+    )
+
+    cache.set(
+        LICENSE_METADATA_KEY,
+        metadata.model_dump_json(),
+        ex=LICENSE_CACHE_TTL_SECONDS,
+    )
+
+    logger.info(f"License cache updated: {metadata.seats} seats, status={status.value}")
+    return metadata
+
+
+def refresh_license_cache(
+    db_session: Session,
+    tenant_id: str | None = None,
+) -> LicenseMetadata | None:
+    """
+    Refresh the license cache from the database.
+
+    Args:
+        db_session: Database session
+        tenant_id: Tenant ID (for multi-tenant deployments)
+
+    Returns:
+        LicenseMetadata if license exists, None otherwise
+    """
+    from ee.onyx.utils.license import verify_license_signature
+
+    license_record = get_license(db_session)
+    if not license_record:
+        invalidate_license_cache(tenant_id)
+        return None
+
+    try:
+        payload = verify_license_signature(license_record.license_data)
+        # Derive source from payload: manual licenses lack stripe_customer_id
+        source: LicenseSource = (
+            LicenseSource.AUTO_FETCH
+            if payload.stripe_customer_id
+            else LicenseSource.MANUAL_UPLOAD
+        )
+        return update_license_cache(
+            payload,
+            source=source,
+            tenant_id=tenant_id,
+        )
+    except ValueError as e:
+        logger.error(f"Failed to verify license during cache refresh: {e}")
+        invalidate_license_cache(tenant_id)
+        return None
+
+
+def get_license_metadata(
+    db_session: Session,
+    tenant_id: str | None = None,
+) -> LicenseMetadata | None:
+    """
+    Get license metadata, using cache if available.
+
+    Args:
+        db_session: Database session
+        tenant_id: Tenant ID (for multi-tenant deployments)
+
+    Returns:
+        LicenseMetadata if license exists, None otherwise
+    """
+    # Try cache first
+    cached = get_cached_license_metadata(tenant_id)
+    if cached:
+        return cached
+
+    # Refresh from database
+    return refresh_license_cache(db_session, tenant_id)
+
+
+def check_seat_availability(
+    db_session: Session,
+    seats_needed: int = 1,
+    tenant_id: str | None = None,
+) -> SeatAvailabilityResult:
+    """
+    Check if there are enough seats available to add users.
+
+    Args:
+        db_session: Database session
+        seats_needed: Number of seats needed (default 1)
+        tenant_id: Tenant ID (for multi-tenant deployments)
+
+    Returns:
+        SeatAvailabilityResult with available=True if seats are available,
+        or available=False with error_message if limit would be exceeded.
+        Returns available=True if no license exists (self-hosted = unlimited).
+    """
+    metadata = get_license_metadata(db_session, tenant_id)
+
+    # No license = no enforcement (self-hosted without license)
+    if metadata is None:
+        return SeatAvailabilityResult(available=True)
+
+    # Calculate current usage directly from DB (not cache) for accuracy
+    current_used = get_used_seats(tenant_id)
+    total_seats = metadata.seats
+
+    # Use > (not >=) to allow filling to exactly 100% capacity
+    would_exceed_limit = current_used + seats_needed > total_seats
+    if would_exceed_limit:
+        return SeatAvailabilityResult(
+            available=False,
+            error_message=f"Seat limit would be exceeded: {current_used} of {total_seats} seats used, "
+            f"cannot add {seats_needed} more user(s).",
+        )
+
+    return SeatAvailabilityResult(available=True)

@@ -1,11 +1,9 @@
 import asyncio
 from logging.config import fileConfig
-from typing import Literal
 
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
-from sqlalchemy.schema import SchemaItem
 
 from alembic import context
 from onyx.db.engine.sql_engine import build_connection_string
@@ -20,7 +18,9 @@ config = context.config
 if config.config_file_name is not None and config.attributes.get(
     "configure_logger", True
 ):
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False prevents breaking pytest's caplog fixture
+    # See: https://pytest-alembic.readthedocs.io/en/latest/setup.html#caplog-issues
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # add your model's MetaData object here
 # for 'autogenerate' support
@@ -32,27 +32,6 @@ target_metadata = [PublicBase.metadata]
 # can be acquired:
 # my_important_option = config.get_main_option("my_important_option")
 # ... etc.
-
-EXCLUDE_TABLES = {"kombu_queue", "kombu_message"}
-
-
-def include_object(
-    object: SchemaItem,
-    name: str | None,
-    type_: Literal[
-        "schema",
-        "table",
-        "column",
-        "index",
-        "unique_constraint",
-        "foreign_key_constraint",
-    ],
-    reflected: bool,
-    compare_to: SchemaItem | None,
-) -> bool:
-    if type_ == "table" and name in EXCLUDE_TABLES:
-        return False
-    return True
 
 
 def run_migrations_offline() -> None:
@@ -82,9 +61,8 @@ def run_migrations_offline() -> None:
 def do_run_migrations(connection: Connection) -> None:
     context.configure(
         connection=connection,
-        target_metadata=target_metadata,  # type: ignore
-        include_object=include_object,
-    )  # type: ignore
+        target_metadata=target_metadata,  # type: ignore[arg-type]
+    )
 
     with context.begin_transaction():
         context.run_migrations()
@@ -108,9 +86,24 @@ async def run_async_migrations() -> None:
 
 
 def run_migrations_online() -> None:
-    """Run migrations in 'online' mode."""
+    """Run migrations in 'online' mode.
 
-    asyncio.run(run_async_migrations())
+    Supports pytest-alembic by checking for a pre-configured connection
+    in context.config.attributes["connection"]. If present, uses that
+    connection/engine directly instead of creating a new async engine.
+    """
+    # Check if pytest-alembic is providing a connection/engine
+    connectable = context.config.attributes.get("connection", None)
+
+    if connectable is not None:
+        # pytest-alembic is providing an engine - use it directly
+        with connectable.connect() as connection:
+            do_run_migrations(connection)
+            # Commit to ensure changes are visible to next migration
+            connection.commit()
+    else:
+        # Normal operation - use async migrations
+        asyncio.run(run_async_migrations())
 
 
 if context.is_offline_mode():

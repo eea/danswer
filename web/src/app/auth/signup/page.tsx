@@ -1,4 +1,3 @@
-import { HealthCheckBanner } from "@/components/health/healthcheck";
 import { User } from "@/lib/types";
 import {
   getCurrentUserSS,
@@ -14,6 +13,7 @@ import ReferralSourceSelector from "./ReferralSourceSelector";
 import AuthErrorDisplay from "@/components/auth/AuthErrorDisplay";
 import Text from "@/refresh-components/texts/Text";
 import { cn } from "@/lib/utils";
+import { AuthType } from "@/lib/constants";
 
 const Page = async (props: {
   searchParams?: Promise<{ [key: string]: string | string[] | undefined }>;
@@ -41,24 +41,23 @@ const Page = async (props: {
     console.log(`Some fetch failed for the login page - ${e}`);
   }
 
-
   // simply take the user to the home page if Auth is disabled
-  if (authTypeMetadata?.authType === "disabled") {
+  if (authTypeMetadata?.authType === AuthType.DISABLED) {
     return redirect("/chat");
   }
 
   // if user is already logged in, take them to the main app page
   if (currentUser && currentUser.is_active && !currentUser.is_anonymous_user) {
     if (!authTypeMetadata?.requiresVerification || currentUser.is_verified) {
-      return redirect("/chat");
+      return redirect("/app");
     }
     return redirect("/auth/waiting-on-verification");
   }
-  const cloud = authTypeMetadata?.authType === "cloud";
+  const cloud = authTypeMetadata?.authType === AuthType.CLOUD;
 
   // only enable this page if basic login is enabled
-  if (authTypeMetadata?.authType !== "basic" && !cloud) {
-    return redirect("/chat");
+  if (authTypeMetadata?.authType !== AuthType.BASIC && !cloud) {
+    return redirect("/app");
   }
 
   let authUrl: string | null = null;
@@ -68,7 +67,6 @@ const Page = async (props: {
 
   return (
     <AuthFlowContainer authState="signup">
-      <HealthCheckBanner />
       <AuthErrorDisplay searchParams={searchParams} />
 
       <>
@@ -81,17 +79,20 @@ const Page = async (props: {
           )}
         >
           <div className="w-full">
-            <Text headingH2 text05>
+            <Text as="p" headingH2 text05>
               {cloud ? "Complete your sign up" : "Sign Up for AI Hub"}
             </Text>
-            <Text text03>Get started with AI Hub</Text>
+            <Text as="p" text03>
+              Get started with AI Hub
+            </Text>
+
           </div>
           {cloud && authUrl && (
             <div className="w-full justify-center mt-6">
-              <SignInButton authorizeUrl={authUrl} authType="cloud" />
+              <SignInButton authorizeUrl={authUrl} authType={AuthType.CLOUD} />
               <div className="flex items-center w-full my-4">
                 <div className="flex-grow border-t border-border-01" />
-                <Text mainUiMuted text03 className="mx-2">
+                <Text as="p" mainUiMuted text03 className="mx-2">
                   or
                 </Text>
                 <div className="flex-grow border-t border-border-01" />

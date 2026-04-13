@@ -17,7 +17,8 @@ COPY ./tests/* /app/tests/
 
 FROM base AS openapi-schema
 COPY ./scripts/onyx_openapi_schema.py /app/scripts/onyx_openapi_schema.py
-RUN python scripts/onyx_openapi_schema.py --filename openapi.json
+# TODO(Nik): https://linear.app/onyx-app/issue/ENG-1/update-test-infra-to-use-test-license
+RUN LICENSE_ENFORCEMENT_ENABLED=false python scripts/onyx_openapi_schema.py --filename openapi.json
 
 FROM openapitools/openapi-generator-cli:latest AS openapi-client
 WORKDIR /local
@@ -37,5 +38,5 @@ COPY --from=openapi-client /local/onyx_openapi_client /app/generated/onyx_openap
 
 ENV PYTHONPATH=/app
 
-ENTRYPOINT ["pytest", "-s"]
+ENTRYPOINT ["pytest", "-s", "-rs"]
 CMD ["/app/tests/integration", "--ignore=/app/tests/integration/multitenant_tests"]

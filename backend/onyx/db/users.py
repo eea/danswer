@@ -4,6 +4,7 @@ from uuid import UUID
 
 from fastapi import HTTPException
 from fastapi_users.password import PasswordHelper
+from sqlalchemy import case
 from sqlalchemy import func
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -11,20 +12,51 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql import expression
 from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.sql.elements import KeyedColumnElement
+from sqlalchemy.sql.expression import or_
 
 from onyx.auth.invited_users import remove_user_from_invited_users
 from onyx.auth.schemas import UserRole
-from onyx.db.api_key import DANSWER_API_KEY_DUMMY_EMAIL_DOMAIN
+from onyx.configs.constants import ANONYMOUS_USER_EMAIL
+from onyx.configs.constants import DANSWER_API_KEY_DUMMY_EMAIL_DOMAIN
+from onyx.configs.constants import NO_AUTH_PLACEHOLDER_USER_EMAIL
+from onyx.db.enums import AccountType
+from onyx.db.models import DocumentSet
 from onyx.db.models import DocumentSet__User
+from onyx.db.models import Persona
 from onyx.db.models import Persona__User
 from onyx.db.models import SamlAccount
 from onyx.db.models import User
 from onyx.db.models import User__UserGroup
+from onyx.db.models import UserGroup
+from onyx.utils.logger import setup_logger
 from onyx.utils.variable_functionality import fetch_ee_implementation_or_noop
+
+logger = setup_logger()
+
+
+def is_limited_user(user: User) -> bool:
+    """Check if a user is effectively limited — i.e. should be denied
+    access by ``current_user`` and should not receive default-group
+    membership.
+
+    A user is limited when they are:
+    * an anonymous user, or
+    * a service account with no effective permissions (no group membership).
+    """
+    if user.account_type == AccountType.ANONYMOUS:
+        return True
+    if (
+        user.account_type == AccountType.SERVICE_ACCOUNT
+        and not user.effective_permissions
+    ):
+        return True
+    return False
 
 
 def validate_user_role_update(
-    requested_role: UserRole, current_role: UserRole, explicit_override: bool = False
+    requested_role: UserRole,
+    current_account_type: AccountType,
+    explicit_override: bool = False,
 ) -> None:
     """
     Validate that a user role update is valid.
@@ -34,28 +66,27 @@ def validate_user_role_update(
     - requested role is a slack user
     - requested role is an external permissioned user
     - requested role is a limited user
-    - current role is a slack user
-    - current role is an external permissioned user
-    - current role is a limited user
+    - current account type is BOT (slack user)
+    - current account type is EXT_PERM_USER
+    - current account type is ANONYMOUS or SERVICE_ACCOUNT
     """
 
-    if current_role == UserRole.SLACK_USER:
+    if current_account_type == AccountType.BOT:
         raise HTTPException(
             status_code=400,
             detail="To change a Slack User's role, they must first login to Onyx via the web app.",
         )
 
-    if current_role == UserRole.EXT_PERM_USER:
-        # This shouldn't happen, but just in case
+    if current_account_type == AccountType.EXT_PERM_USER:
         raise HTTPException(
             status_code=400,
             detail="To change an External Permissioned User's role, they must first login to Onyx via the web app.",
         )
 
-    if current_role == UserRole.LIMITED:
+    if current_account_type in (AccountType.ANONYMOUS, AccountType.SERVICE_ACCOUNT):
         raise HTTPException(
             status_code=400,
-            detail="To change a Limited User's role, they must first login to Onyx via the web app.",
+            detail="Cannot change the role of an anonymous or service account user.",
         )
 
     if explicit_override:
@@ -109,15 +140,15 @@ def get_all_users(
     is assumed to be relatively small (<< 1 million)"""
     stmt = select(User)
 
-    where_clause = []
+    # Exclude system users (anonymous user, no-auth placeholder)
+    stmt = stmt.where(User.email != ANONYMOUS_USER_EMAIL)  # type: ignore
+    stmt = stmt.where(User.email != NO_AUTH_PLACEHOLDER_USER_EMAIL)  # type: ignore
 
     if not include_external:
-        where_clause.append(User.role != UserRole.EXT_PERM_USER)
+        stmt = stmt.where(User.role != UserRole.EXT_PERM_USER)
 
     if email_filter_string is not None:
-        where_clause.append(User.email.ilike(f"%{email_filter_string}%"))  # type: ignore
-
-    stmt = stmt.where(*where_clause)
+        stmt = stmt.where(User.email.ilike(f"%{email_filter_string}%"))  # type: ignore
 
     return db_session.scalars(stmt).unique().all()
 
@@ -148,14 +179,23 @@ def _get_accepted_user_where_clause(
     is_active_col: KeyedColumnElement[Any] = User.__table__.c.is_active
 
     where_clause: list[ColumnElement[bool]] = [
-        expression.not_(email_col.endswith(DANSWER_API_KEY_DUMMY_EMAIL_DOMAIN))
+        expression.not_(email_col.endswith(DANSWER_API_KEY_DUMMY_EMAIL_DOMAIN)),
+        # Exclude system users (anonymous user, no-auth placeholder)
+        email_col != ANONYMOUS_USER_EMAIL,
+        email_col != NO_AUTH_PLACEHOLDER_USER_EMAIL,
     ]
 
     if not include_external:
         where_clause.append(User.role != UserRole.EXT_PERM_USER)
 
     if email_filter_string is not None:
-        where_clause.append(email_col.ilike(f"%{email_filter_string}%"))
+        personal_name_col: KeyedColumnElement[Any] = User.__table__.c.personal_name
+        where_clause.append(
+            or_(
+                email_col.ilike(f"%{email_filter_string}%"),
+                personal_name_col.ilike(f"%{email_filter_string}%"),
+            )
+        )
 
     if roles_filter:
         where_clause.append(User.role.in_(roles_filter))
@@ -164,6 +204,21 @@ def _get_accepted_user_where_clause(
         where_clause.append(is_active_col.is_(is_active_filter))
 
     return where_clause
+
+
+def get_all_accepted_users(
+    db_session: Session,
+    include_external: bool = False,
+) -> Sequence[User]:
+    """Returns all accepted users without pagination.
+    Uses the same filtering as the paginated endpoint but without
+    search, role, or active filters."""
+    stmt = select(User)
+    where_clause = _get_accepted_user_where_clause(
+        include_external=include_external,
+    )
+    stmt = stmt.where(*where_clause).order_by(User.email)
+    return db_session.scalars(stmt).unique().all()
 
 
 def get_page_of_filtered_users(
@@ -211,6 +266,41 @@ def get_total_filtered_users_count(
     return db_session.scalar(total_count_stmt) or 0
 
 
+def get_user_counts_by_role_and_status(
+    db_session: Session,
+) -> dict[str, dict[str, int]]:
+    """Returns user counts grouped by role and by active/inactive status.
+
+    Excludes API key users, anonymous users, and no-auth placeholder users.
+    Uses a single query with conditional aggregation.
+    """
+    base_where = _get_accepted_user_where_clause()
+    role_col = User.__table__.c.role
+    is_active_col = User.__table__.c.is_active
+
+    stmt = (
+        select(
+            role_col,
+            func.count().label("total"),
+            func.sum(case((is_active_col.is_(True), 1), else_=0)).label("active"),
+            func.sum(case((is_active_col.is_(False), 1), else_=0)).label("inactive"),
+        )
+        .where(*base_where)
+        .group_by(role_col)
+    )
+
+    role_counts: dict[str, int] = {}
+    status_counts: dict[str, int] = {"active": 0, "inactive": 0}
+
+    for role_val, total, active, inactive in db_session.execute(stmt).all():
+        key = role_val.value if hasattr(role_val, "value") else str(role_val)
+        role_counts[key] = total
+        status_counts["active"] += active or 0
+        status_counts["inactive"] += inactive or 0
+
+    return {"role_counts": role_counts, "status_counts": status_counts}
+
+
 def get_user_by_email(email: str, db_session: Session) -> User | None:
     user = (
         db_session.query(User)
@@ -232,6 +322,7 @@ def _generate_slack_user(email: str) -> User:
         email=email,
         hashed_password=hashed_pass,
         role=UserRole.SLACK_USER,
+        account_type=AccountType.BOT,
     )
 
 
@@ -240,8 +331,9 @@ def add_slack_user_if_not_exists(db_session: Session, email: str) -> User:
     user = get_user_by_email(email, db_session)
     if user is not None:
         # If the user is an external permissioned user, we update it to a slack user
-        if user.role == UserRole.EXT_PERM_USER:
+        if user.account_type == AccountType.EXT_PERM_USER:
             user.role = UserRole.SLACK_USER
+            user.account_type = AccountType.BOT
             db_session.commit()
         return user
 
@@ -257,7 +349,7 @@ def _get_users_by_emails(
     """given a list of lowercase emails,
     returns a list[User] of Users whose emails match and a list[str]
     the missing emails that had no User"""
-    stmt = select(User).filter(func.lower(User.email).in_(lower_emails))  # type: ignore
+    stmt = select(User).filter(func.lower(User.email).in_(lower_emails))
     found_users = list(db_session.scalars(stmt).unique().all())  # Convert to list
 
     # Extract found emails and convert to lowercase to avoid case sensitivity issues
@@ -278,6 +370,7 @@ def _generate_ext_permissioned_user(email: str) -> User:
         email=email,
         hashed_password=hashed_pass,
         role=UserRole.EXT_PERM_USER,
+        account_type=AccountType.EXT_PERM_USER,
     )
 
 
@@ -287,27 +380,101 @@ def batch_add_ext_perm_user_if_not_exists(
     lower_emails = [email.lower() for email in emails]
     found_users, missing_lower_emails = _get_users_by_emails(db_session, lower_emails)
 
-    new_users: list[User] = []
+    # Use savepoints (begin_nested) so that a failed insert only rolls back
+    # that single user, not the entire transaction. A plain rollback() would
+    # discard all previously flushed users in the same transaction.
+    # We also avoid add_all() because SQLAlchemy 2.0's insertmanyvalues
+    # batch path hits a UUID sentinel mismatch with server_default columns.
     for email in missing_lower_emails:
-        new_users.append(_generate_ext_permissioned_user(email=email))
+        user = _generate_ext_permissioned_user(email=email)
+        savepoint = db_session.begin_nested()
+        try:
+            db_session.add(user)
+            savepoint.commit()
+        except IntegrityError:
+            savepoint.rollback()
+            if not continue_on_error:
+                raise
 
-    try:
-        db_session.add_all(new_users)
-        db_session.commit()
-    except IntegrityError:
-        db_session.rollback()
-        if not continue_on_error:
-            raise
-        for user in new_users:
-            try:
-                db_session.add(user)
-                db_session.commit()
-            except IntegrityError:
-                db_session.rollback()
-                continue
+    db_session.commit()
     # Fetch all users again to ensure we have the most up-to-date list
     all_users, _ = _get_users_by_emails(db_session, lower_emails)
     return all_users
+
+
+def assign_user_to_default_groups__no_commit(
+    db_session: Session,
+    user: User,
+    is_admin: bool = False,
+) -> None:
+    """Assign a newly created user to the appropriate default group.
+
+    Does NOT commit — callers must commit the session themselves so that
+    group assignment can be part of the same transaction as user creation.
+
+    Args:
+        is_admin: If True, assign to Admin default group; otherwise Basic.
+            Callers determine this from their own context (e.g. user_count,
+            admin email list, explicit choice). Defaults to False (Basic).
+    """
+    if user.account_type in (
+        AccountType.BOT,
+        AccountType.EXT_PERM_USER,
+        AccountType.ANONYMOUS,
+    ):
+        return
+
+    target_group_name = "Admin" if is_admin else "Basic"
+
+    default_group = (
+        db_session.query(UserGroup)
+        .filter(
+            UserGroup.name == target_group_name,
+            UserGroup.is_default.is_(True),
+        )
+        .first()
+    )
+
+    if default_group is None:
+        raise RuntimeError(
+            f"Default group '{target_group_name}' not found. "
+            f"Cannot assign user {user.email} to a group. "
+            f"Ensure the seed_default_groups migration has run."
+        )
+
+    # Check if the user is already in the group
+    existing = (
+        db_session.query(User__UserGroup)
+        .filter(
+            User__UserGroup.user_id == user.id,
+            User__UserGroup.user_group_id == default_group.id,
+        )
+        .first()
+    )
+    if existing is not None:
+        return
+
+    savepoint = db_session.begin_nested()
+    try:
+        db_session.add(
+            User__UserGroup(
+                user_id=user.id,
+                user_group_id=default_group.id,
+            )
+        )
+        db_session.flush()
+    except IntegrityError:
+        # Race condition: another transaction inserted this membership
+        # between our SELECT and INSERT. The savepoint isolates the failure
+        # so the outer transaction (user creation) stays intact.
+        savepoint.rollback()
+        return
+
+    from onyx.db.permissions import recompute_user_permissions__no_commit
+
+    recompute_user_permissions__no_commit(user.id, db_session)
+
+    logger.info(f"Assigned user {user.email} to default group '{default_group.name}'")
 
 
 def delete_user_from_db(
@@ -327,6 +494,15 @@ def delete_user_from_db(
     db_session.query(SamlAccount).filter(
         SamlAccount.user_id == user_to_delete.id
     ).delete()
+    # Null out ownership on document sets and personas so they're
+    # preserved for other users instead of being cascade-deleted
+    db_session.query(DocumentSet).filter(
+        DocumentSet.user_id == user_to_delete.id
+    ).update({DocumentSet.user_id: None})
+    db_session.query(Persona).filter(Persona.user_id == user_to_delete.id).update(
+        {Persona.user_id: None}
+    )
+
     db_session.query(DocumentSet__User).filter(
         DocumentSet__User.user_id == user_to_delete.id
     ).delete()
@@ -342,3 +518,33 @@ def delete_user_from_db(
     # NOTE: edge case may exist with race conditions
     # with this `invited user` scheme generally.
     remove_user_from_invited_users(user_to_delete.email)
+
+
+def batch_get_user_groups(
+    db_session: Session,
+    user_ids: list[UUID],
+    include_default: bool = False,
+) -> dict[UUID, list[tuple[int, str]]]:
+    """Fetch group memberships for a batch of users in a single query.
+    Returns a mapping of user_id -> list of (group_id, group_name) tuples."""
+    if not user_ids:
+        return {}
+
+    stmt = (
+        select(
+            User__UserGroup.user_id,
+            UserGroup.id,
+            UserGroup.name,
+        )
+        .join(UserGroup, UserGroup.id == User__UserGroup.user_group_id)
+        .where(User__UserGroup.user_id.in_(user_ids))
+    )
+    if not include_default:
+        stmt = stmt.where(UserGroup.is_default == False)  # noqa: E712
+
+    rows = db_session.execute(stmt).all()
+
+    result: dict[UUID, list[tuple[int, str]]] = {uid: [] for uid in user_ids}
+    for user_id, group_id, group_name in rows:
+        result[user_id].append((group_id, group_name))
+    return result

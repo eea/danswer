@@ -2,10 +2,9 @@ from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.orm import joinedload
 from sqlalchemy.orm import Session
 
-from onyx.configs.chat_configs import MAX_CHUNKS_FED_TO_CHAT
-from onyx.context.search.enums import RecencyBiasSetting
 from onyx.db.constants import DEFAULT_PERSONA_SLACK_CHANNEL_NAME
 from onyx.db.constants import SLACK_BOT_PERSONA_PREFIX
 from onyx.db.models import ChannelConfig
@@ -44,8 +43,6 @@ def create_slack_channel_persona(
     channel_name: str | None,
     document_set_ids: list[int],
     existing_persona_id: int | None = None,
-    num_chunks: float = MAX_CHUNKS_FED_TO_CHAT,
-    enable_auto_filters: bool = False,
 ) -> Persona:
     """NOTE: does not commit changes"""
 
@@ -72,17 +69,13 @@ def create_slack_channel_persona(
         system_prompt="",
         task_prompt="",
         datetime_aware=True,
-        num_chunks=num_chunks,
-        llm_relevance_filter=True,
-        llm_filter_extraction=enable_auto_filters,
-        recency_bias=RecencyBiasSetting.AUTO,
         tool_ids=[search_tool.id],
         document_set_ids=document_set_ids,
         llm_model_provider_override=None,
         llm_model_version_override=None,
         starter_messages=None,
         is_public=True,
-        is_default_persona=False,
+        is_featured=False,
         db_session=db_session,
         commit=False,
     )
@@ -90,7 +83,10 @@ def create_slack_channel_persona(
     return persona
 
 
-def _no_ee_standard_answer_categories(*args: Any, **kwargs: Any) -> list:
+def _no_ee_standard_answer_categories(
+    *args: Any,  # noqa: ARG001
+    **kwargs: Any,  # noqa: ARG001
+) -> list:
     return []
 
 
@@ -161,7 +157,7 @@ def update_slack_channel_config(
     channel_config: ChannelConfig,
     standard_answer_category_ids: list[int],
     enable_auto_filters: bool,
-    disabled: bool,
+    disabled: bool,  # noqa: ARG001
 ) -> SlackChannelConfig:
     slack_channel_config = db_session.scalar(
         select(SlackChannelConfig).where(
@@ -207,7 +203,7 @@ def update_slack_channel_config(
 def remove_slack_channel_config(
     db_session: Session,
     slack_channel_config_id: int,
-    user: User | None,
+    user: User,
 ) -> None:
     slack_channel_config = db_session.scalar(
         select(SlackChannelConfig).where(
@@ -269,7 +265,9 @@ def fetch_slack_channel_config_for_channel_or_default(
     # attempt to find channel-specific config first
     if channel_name is not None:
         sc_config = db_session.scalar(
-            select(SlackChannelConfig).where(
+            select(SlackChannelConfig)
+            .options(joinedload(SlackChannelConfig.persona))
+            .where(
                 SlackChannelConfig.slack_bot_id == slack_bot_id,
                 SlackChannelConfig.channel_config["channel_name"].astext
                 == channel_name,
@@ -283,7 +281,9 @@ def fetch_slack_channel_config_for_channel_or_default(
 
     # if none found, see if there is a default
     default_sc = db_session.scalar(
-        select(SlackChannelConfig).where(
+        select(SlackChannelConfig)
+        .options(joinedload(SlackChannelConfig.persona))
+        .where(
             SlackChannelConfig.slack_bot_id == slack_bot_id,
             SlackChannelConfig.is_default == True,  # noqa: E712
         )

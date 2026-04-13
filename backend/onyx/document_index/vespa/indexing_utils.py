@@ -1,5 +1,7 @@
 import concurrent.futures
 import json
+import random
+import time
 import uuid
 from abc import ABC
 from abc import abstractmethod
@@ -14,10 +16,12 @@ from retry import retry
 from onyx.connectors.cross_connector_utils.miscellaneous_utils import (
     get_experts_stores_representations,
 )
+from onyx.document_index.chunk_content_enrichment import (
+    generate_enriched_content_for_chunk_text,
+)
 from onyx.document_index.document_index_utils import get_uuid_from_chunk
 from onyx.document_index.document_index_utils import get_uuid_from_chunk_info_old
 from onyx.document_index.interfaces import MinimalDocumentIndexingInfo
-from onyx.document_index.vespa.shared_utils.utils import remove_invalid_unicode_chars
 from onyx.document_index.vespa.shared_utils.utils import (
     replace_invalid_doc_id_characters,
 )
@@ -35,12 +39,14 @@ from onyx.document_index.vespa_constants import DOCUMENT_ID
 from onyx.document_index.vespa_constants import DOCUMENT_ID_ENDPOINT
 from onyx.document_index.vespa_constants import DOCUMENT_SETS
 from onyx.document_index.vespa_constants import EMBEDDINGS
+from onyx.document_index.vespa_constants import FULL_CHUNK_EMBEDDING_KEY
 from onyx.document_index.vespa_constants import IMAGE_FILE_NAME
 from onyx.document_index.vespa_constants import LARGE_CHUNK_REFERENCE_IDS
 from onyx.document_index.vespa_constants import METADATA
 from onyx.document_index.vespa_constants import METADATA_LIST
 from onyx.document_index.vespa_constants import METADATA_SUFFIX
 from onyx.document_index.vespa_constants import NUM_THREADS
+from onyx.document_index.vespa_constants import PERSONAS
 from onyx.document_index.vespa_constants import PRIMARY_OWNERS
 from onyx.document_index.vespa_constants import SECONDARY_OWNERS
 from onyx.document_index.vespa_constants import SECTION_CONTINUATION
@@ -54,9 +60,15 @@ from onyx.document_index.vespa_constants import TITLE_EMBEDDING
 from onyx.document_index.vespa_constants import USER_PROJECT
 from onyx.indexing.models import DocMetadataAwareIndexChunk
 from onyx.utils.logger import setup_logger
+from onyx.utils.text_processing import remove_invalid_unicode_chars
 
 
 logger = setup_logger()
+
+# Retry configuration constants
+INDEXING_MAX_RETRIES = 5
+INDEXING_BASE_DELAY = 1.0
+INDEXING_MAX_DELAY = 60.0
 
 
 @retry(tries=3, delay=1, backoff=2)
@@ -125,7 +137,6 @@ def get_existing_documents_from_chunks(
     return document_ids
 
 
-@retry(tries=5, delay=1, backoff=2)
 def _index_vespa_chunk(
     chunk: DocMetadataAwareIndexChunk,
     index_name: str,
@@ -143,7 +154,7 @@ def _index_vespa_chunk(
 
     embeddings = chunk.embeddings
 
-    embeddings_name_vector_map = {"full_chunk": embeddings.full_embedding}
+    embeddings_name_vector_map = {FULL_CHUNK_EMBEDDING_KEY: embeddings.full_embedding}
 
     if embeddings.mini_chunk_embeddings:
         for ind, m_c_embed in enumerate(embeddings.mini_chunk_embeddings):
@@ -177,7 +188,7 @@ def _index_vespa_chunk(
         # For the BM25 index, the keyword suffix is used, the vector is already generated with the more
         # natural language representation of the metadata section
         CONTENT: remove_invalid_unicode_chars(
-            f"{chunk.title_prefix}{chunk.doc_summary}{chunk.content}{chunk.chunk_context}{chunk.metadata_suffix_keyword}"
+            generate_enriched_content_for_chunk_text(chunk)
         ),
         # This duplication of `content` is needed for keyword highlighting
         # Note that it's not exactly the same as the actual content
@@ -208,6 +219,7 @@ def _index_vespa_chunk(
         # still called `image_file_name` in Vespa for backwards compatibility
         IMAGE_FILE_NAME: chunk.image_file_id,
         USER_PROJECT: chunk.user_project if chunk.user_project is not None else [],
+        PERSONAS: chunk.personas if chunk.personas is not None else [],
         BOOST: chunk.boost,
         AGGREGATED_CHUNK_BOOST_FACTOR: chunk.aggregated_chunk_boost_factor,
     }
@@ -217,24 +229,86 @@ def _index_vespa_chunk(
             vespa_document_fields[TENANT_ID] = chunk.tenant_id
     vespa_url = f"{DOCUMENT_ID_ENDPOINT.format(index_name=index_name)}/{vespa_chunk_id}"
     logger.debug(f'Indexing to URL "{vespa_url}"')
-    res = http_client.post(
-        vespa_url, headers=json_header, json={"fields": vespa_document_fields}
-    )
-    try:
-        res.raise_for_status()
-    except Exception as e:
-        logger.exception(
-            f"Failed to index document: '{document.id}'. Got response: '{res.text}'"
-        )
-        if isinstance(e, httpx.HTTPStatusError):
-            if e.response.status_code == HTTPStatus.INSUFFICIENT_STORAGE:
+
+    # Retry logic with exponential backoff for rate limiting
+    for attempt in range(INDEXING_MAX_RETRIES):
+        try:
+            res = http_client.post(
+                vespa_url, headers=json_header, json={"fields": vespa_document_fields}
+            )
+            res.raise_for_status()
+            return  # Success, exit the function
+        except httpx.HTTPStatusError as e:
+            # Handle 429 rate limiting specifically
+            if e.response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
+                if attempt < INDEXING_MAX_RETRIES - 1:
+                    # Calculate exponential backoff with jitter
+                    delay = min(
+                        INDEXING_BASE_DELAY * (2**attempt), INDEXING_MAX_DELAY
+                    ) * random.uniform(0.5, 1.0)
+                    logger.warning(
+                        f"Rate limited while indexing document '{document.id}' "
+                        f"(attempt {attempt + 1}/{INDEXING_MAX_RETRIES}). "
+                        f"Vespa response: '{e.response.text}'. "
+                        f"Backing off for {delay:.2f} seconds."
+                    )
+                    time.sleep(delay)
+                    continue
+                else:
+                    raise RuntimeError(
+                        f"Failed to index document '{document.id}' after {INDEXING_MAX_RETRIES} attempts due to rate limiting"
+                    ) from e
+            elif e.response.status_code == HTTPStatus.INSUFFICIENT_STORAGE:
+                logger.error(
+                    f"Failed to index document: '{document.id}'. Got response: '{e.response.text}'"
+                )
                 logger.error(
                     "NOTE: HTTP Status 507 Insufficient Storage usually means "
                     "you need to allocate more memory or disk space to the "
                     "Vespa/index container."
                 )
-
-        raise e
+                raise
+            else:
+                # For other HTTP errors, check if retryable
+                if e.response.status_code in (
+                    HTTPStatus.BAD_REQUEST,
+                    HTTPStatus.UNAUTHORIZED,
+                    HTTPStatus.FORBIDDEN,
+                    HTTPStatus.NOT_FOUND,
+                ):
+                    # Non-retryable errors - fail immediately
+                    logger.error(
+                        f"Non-retryable HTTP {e.response.status_code} error for document '{document.id}'"
+                    )
+                    raise
+                # Retry other errors with shorter backoff
+                if attempt < INDEXING_MAX_RETRIES - 1:
+                    delay = INDEXING_BASE_DELAY * (1.5**attempt)
+                    logger.warning(
+                        f"HTTP error {e.response.status_code} while indexing document '{document.id}' "
+                        f"(attempt {attempt + 1}/{INDEXING_MAX_RETRIES}). Retrying in {delay:.2f} seconds."
+                    )
+                    time.sleep(delay)
+                    continue
+                else:
+                    logger.exception(
+                        f"Failed to index document: '{document.id}'. Got response: '{e.response.text}'"
+                    )
+                    raise
+        except Exception as e:
+            # For non-HTTP errors, use simple retry logic
+            if attempt < INDEXING_MAX_RETRIES - 1:
+                delay = INDEXING_BASE_DELAY * (1.5**attempt)
+                logger.warning(
+                    f"Error while indexing document '{document.id}' "
+                    f"(attempt {attempt + 1}/{INDEXING_MAX_RETRIES}): {str(e)}. "
+                    f"Retrying in {delay:.2f} seconds."
+                )
+                time.sleep(delay)
+                continue
+            else:
+                logger.exception(f"Failed to index document: '{document.id}'")
+                raise
 
 
 def batch_index_vespa_chunks(
@@ -244,6 +318,15 @@ def batch_index_vespa_chunks(
     multitenant: bool,
     executor: concurrent.futures.ThreadPoolExecutor | None = None,
 ) -> None:
+    """Indexes a list of chunks in a Vespa index in parallel.
+
+    Args:
+        chunks: List of chunks to index.
+        index_name: Name of the index to index into.
+        http_client: HTTP client to use for the request.
+        multitenant: Whether the index is multitenant.
+        executor: Executor to use for the request.
+    """
     external_executor = True
 
     if not executor:

@@ -1,4 +1,3 @@
-import io
 import ipaddress
 import random
 import socket
@@ -22,6 +21,7 @@ from playwright.sync_api import sync_playwright
 from playwright.sync_api import Route
 from playwright.sync_api import Request
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
 from requests_oauthlib import OAuth2Session  # type:ignore
 from urllib3.exceptions import MaxRetryError
 
@@ -40,13 +40,11 @@ from onyx.connectors.exceptions import UnexpectedValidationError
 from onyx.connectors.interfaces import GenerateDocumentsOutput
 from onyx.connectors.interfaces import LoadConnector
 from onyx.connectors.models import Document
+from onyx.connectors.models import HierarchyNode
 from onyx.connectors.models import TextSection
-from onyx.file_processing.extract_file_text import read_pdf_file
 from onyx.file_processing.html_utils import web_html_cleanup
 from onyx.utils.logger import setup_logger
 from onyx.utils.sitemap import list_pages_for_site
-
-# from onyx.utils.sitemap_eea import list_pages_for_site_eea
 from onyx.utils.eea_utils import (
     is_pdf_mime_type,
     list_pages_for_site_eea,
@@ -54,6 +52,9 @@ from onyx.utils.eea_utils import (
     soer_login,
     remove_by_selector,
 )
+from onyx.utils.web_content import extract_pdf_text
+from onyx.utils.web_content import is_pdf_resource
+
 from shared_configs.configs import MULTI_TENANT
 
 logger = setup_logger()
@@ -71,7 +72,7 @@ class ScrapeSessionContext:
         self.visited_links: set[str] = set()
         self.content_hashes: set[int] = set()
 
-        self.doc_batch: list[Document] = []
+        self.doc_batch: list[Document | HierarchyNode] = []
 
         self.at_least_one_doc: bool = False
         self.last_error: str | None = None
@@ -124,11 +125,13 @@ WEB_CONNECTOR_RESOURCE_TYPES_TO_BLOCK_LESS_RESTRICTIVE = ["image", "font", "medi
 IFRAME_TEXT_LENGTH_THRESHOLD = 700
 # Message indicating JavaScript is disabled, which often appears when scraping fails
 JAVASCRIPT_DISABLED_MESSAGE = "You have JavaScript disabled in your browser"
+# Grace period after page navigation to allow bot-detection challenges
+# and SPA content rendering to complete
+PAGE_RENDER_TIMEOUT_MS = 5000
 
 # Define common headers that mimic a real browser
-DEFAULT_USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
-)
+DEFAULT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+
 DEFAULT_HEADERS = {
     "User-Agent": DEFAULT_USER_AGENT,
     "Accept": (
@@ -136,7 +139,9 @@ DEFAULT_HEADERS = {
         "image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
     ),
     "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
+    # Brotli decoding has been flaky in brotlicffi/httpx for certain chunked responses;
+    # stick to gzip/deflate to keep connectivity checks stable.
+    "Accept-Encoding": "gzip, deflate",
     "Connection": "keep-alive",
     "Upgrade-Insecure-Requests": "1",
     "Sec-Fetch-Dest": "document",
@@ -147,16 +152,6 @@ DEFAULT_HEADERS = {
     "Sec-CH-UA-Mobile": "?0",
     "Sec-CH-UA-Platform": '"macOS"',
 }
-
-# Common PDF MIME types
-PDF_MIME_TYPES = [
-    "application/pdf",
-    "application/x-pdf",
-    "application/acrobat",
-    "application/vnd.pdf",
-    "text/pdf",
-    "text/x-pdf",
-]
 
 
 class WEB_CONNECTOR_VALID_SETTINGS(str, Enum):
@@ -294,12 +289,6 @@ def get_internal_links(base_url: str, url: str, soup: BeautifulSoup, should_igno
     return internal_links
 
 
-def is_pdf_content(response: requests.Response) -> bool:
-    """Check if the response contains PDF content based on content-type header"""
-    content_type = response.headers.get("content-type", "").lower()
-    return any(pdf_type in content_type for pdf_type in PDF_MIME_TYPES)
-
-
 def start_playwright() -> Tuple[Playwright, BrowserContext]:
     playwright = sync_playwright().start()
 
@@ -387,10 +376,13 @@ def abort_unnecessary_resources(route: Route, request: Request) -> None:
 
 
 def extract_urls_from_sitemap(sitemap_url: str) -> list[str]:
+    # requests should handle brotli compression automatically
+    # as long as the brotli package is available in the venv. Leaving this line here to avoid
+    # a regression as someone says "Ah, looks like this brotli package isn't used anywhere, let's remove it"
+    # import brotli
     try:
         response = requests.get(sitemap_url, verify=False, headers=DEFAULT_HEADERS)
         response.raise_for_status()
-
         if sitemap_url.endswith(".gz"):
             with gzip.GzipFile(fileobj=io.BytesIO(response.content)) as f:
                 content = f.read()
@@ -411,6 +403,7 @@ def extract_urls_from_sitemap(sitemap_url: str) -> list[str]:
             eea_auth = soer_login()
             eea_global_auth["login"] = eea_auth
             urls_data = list_pages_for_protected_site_eea(sitemap_url, eea_auth)
+
 
         if len(urls_data.keys()) == 0 and len(soup.find_all("urlset")) == 0:
             # the given url doesn't look like a sitemap, let's try to find one
@@ -617,6 +610,7 @@ class WebConnector(LoadConnector):
         skip_unchanged_documents: bool = False,
         timeout: int = 30000,
         **kwargs: Any,
+
     ) -> None:
         self.mintlify_cleanup = mintlify_cleanup
         self.batch_size = batch_size
@@ -659,11 +653,13 @@ class WebConnector(LoadConnector):
                 raise ValueError("Upload input for web connector is not supported in cloud environments")
 
             logger.warning("This is not a UI supported Web Connector flow, are you sure you want to do this?")
+
             self.to_visit_list = _read_urls_file(base_url)
             self.lastmod = [None] * len(self.to_visit_list)  # No timestamps for uploaded URLs
 
         else:
             raise ValueError("Invalid Web Connector Config, must choose a valid type between: ")
+
 
     def load_credentials(self, credentials: dict[str, Any]) -> dict[str, Any] | None:
         if credentials:
@@ -700,7 +696,8 @@ class WebConnector(LoadConnector):
                 initial_url, headers=DEFAULT_HEADERS, cookies=auth_cookies, allow_redirects=True, stream=True
             )
 
-        is_pdf = is_pdf_content(head_response)
+        content_type = head_response.headers.get("content-type")
+        is_pdf = is_pdf_resource(initial_url, content_type)
 
         if not is_pdf and "@@download/file" in initial_url:
             response = requests.get(initial_url, headers=DEFAULT_HEADERS, cookies=auth_cookies)
@@ -714,6 +711,7 @@ class WebConnector(LoadConnector):
                 metadata={},
                 doc_updated_at=(_get_datetime_from_last_modified_header(last_modified) if last_modified else None),
             )
+
 
             return result
 
@@ -739,14 +737,15 @@ class WebConnector(LoadConnector):
         try:
             page_response = page.goto(
                 initial_url,
-                timeout=self.timeout,  # 30 seconds
+                timeout=self.timeout,
                 wait_until="commit",
             )
             try:
                 response_last_modified = page_response.header_value("Last-Modified") if page_response else None
             except Exception:
                 response_last_modified = None
-            # Wait for interactive or later state (handles race condition where page is already complete)
+
+            # Wait for interactive or later state
             try:
                 page.wait_for_function(
                     "document.readyState === 'interactive' || document.readyState === 'complete'",
@@ -756,14 +755,25 @@ class WebConnector(LoadConnector):
                 logger.warning(
                     f"{index}: Timed out waiting for interactive state on {initial_url}; proceeding with partial content"
                 )
+
+            # Give the page a moment to start rendering after navigation commits.
+            # Allows CloudFlare and other bot-detection challenges to complete.
+            page.wait_for_timeout(PAGE_RENDER_TIMEOUT_MS)
+
+            # Wait for network activity to settle
+            try:
+                page.wait_for_load_state("networkidle", timeout=PAGE_RENDER_TIMEOUT_MS)
+            except PlaywrightTimeoutError:
+                pass
+
             page.evaluate("""
                 () => {
                     const images = document.querySelectorAll('img');
                     images.forEach(img => img.remove());
                 }
             """)
-            # If meaningful text is already present, avoid long waits on pages that never settle to
-            # "complete" due to background scripts/cookie tooling.
+
+            # If meaningful text is already present, avoid long waits on pages that never settle
             text_len = page.evaluate("document.body ? document.body.innerText.length : 0")
             if text_len < 400:
                 try:
@@ -775,6 +785,7 @@ class WebConnector(LoadConnector):
                     logger.warning(
                         f"{index}: Timed out waiting for complete load on {initial_url}; proceeding with partial content"
                     )
+
 
             last_modified = response_last_modified or lastmod
             final_url = page.url
@@ -796,7 +807,12 @@ class WebConnector(LoadConnector):
                 while scroll_attempts < WEB_CONNECTOR_MAX_SCROLL_ATTEMPTS:
                     page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                     # wait for the content to load if we scrolled
-                    page.wait_for_load_state("networkidle", timeout=self.timeout)
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=max(self.timeout, PAGE_RENDER_TIMEOUT_MS))
+                    except (PlaywrightTimeoutError, Exception):
+                        # If networkidle times out, just give it a moment for content to render
+                        time.sleep(1)
+
                     time.sleep(0.5)  # let javascript run
 
                     new_height = page.evaluate("document.body.scrollHeight")

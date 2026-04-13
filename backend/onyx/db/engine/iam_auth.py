@@ -1,3 +1,4 @@
+import functools
 import os
 import ssl
 from typing import Any
@@ -36,7 +37,12 @@ def configure_psycopg2_iam_auth(
     cparams["sslrootcert"] = SSL_CERT_FILE
 
 
-def provide_iam_token(dialect: Any, conn_rec: Any, cargs: Any, cparams: Any) -> None:
+def provide_iam_token(
+    dialect: Any,  # noqa: ARG001
+    conn_rec: Any,  # noqa: ARG001
+    cargs: Any,  # noqa: ARG001
+    cparams: Any,
+) -> None:
     if USE_IAM_AUTH:
         host = POSTGRES_HOST
         port = POSTGRES_PORT
@@ -46,11 +52,9 @@ def provide_iam_token(dialect: Any, conn_rec: Any, cargs: Any, cparams: Any) -> 
         configure_psycopg2_iam_auth(cparams, host, port, user, region)
 
 
+@functools.cache
 def create_ssl_context_if_iam() -> ssl.SSLContext | None:
     """Create an SSL context if IAM authentication is enabled, else return None."""
     if USE_IAM_AUTH:
         return ssl.create_default_context(cafile=SSL_CERT_FILE)
     return None
-
-
-ssl_context = create_ssl_context_if_iam()

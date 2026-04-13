@@ -2,9 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
-import SvgCheck from "@/icons/check";
-import SvgMinus from "@/icons/minus";
-
+import { SvgCheck, SvgMinus } from "@opal/icons";
 const getRootClasses = (checked: boolean, indeterminate: boolean) => ({
   main:
     checked || indeterminate
@@ -114,6 +112,7 @@ function CheckboxInner(
       */}
       <input
         ref={inputRef}
+        id={id}
         type="checkbox"
         role="presentation"
         className="sr-only peer"
@@ -124,7 +123,6 @@ function CheckboxInner(
         {...props}
       />
       <div
-        id={id}
         role="checkbox"
         aria-checked={indeterminate ? "mixed" : checked}
         aria-label={ariaLabel}

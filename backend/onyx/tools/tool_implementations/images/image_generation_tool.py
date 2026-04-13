@@ -1,106 +1,75 @@
 import json
 import threading
-from collections.abc import Generator
-from enum import Enum
 from typing import Any
 from typing import cast
 
 import requests
-from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing_extensions import override
 
-from onyx.chat.chat_utils import combine_message_chain
-from onyx.chat.prompt_builder.answer_prompt_builder import AnswerPromptBuilder
-from onyx.configs.app_configs import AZURE_IMAGE_API_KEY
+from onyx.chat.emitter import Emitter
 from onyx.configs.app_configs import IMAGE_MODEL_NAME
-from onyx.configs.model_configs import GEN_AI_HISTORY_CUTOFF
-from onyx.db.llm import fetch_existing_llm_providers
-from onyx.llm.interfaces import LLM
-from onyx.llm.models import PreviousMessage
-from onyx.llm.utils import build_content_with_imgs
-from onyx.llm.utils import message_to_string
-from onyx.llm.utils import model_supports_image_input
-from onyx.prompts.constants import GENERAL_SEP_PAT
-from onyx.tools.message import ToolCallSummary
+from onyx.configs.app_configs import IMAGE_MODEL_PROVIDER
+from onyx.db.image_generation import get_default_image_generation_config
+from onyx.file_store.models import ChatFileType
+from onyx.file_store.utils import build_frontend_file_url
+from onyx.file_store.utils import load_chat_file_by_id
+from onyx.file_store.utils import save_files
+from onyx.image_gen.factory import get_image_generation_provider
+from onyx.image_gen.factory import validate_credentials
+from onyx.image_gen.interfaces import ImageGenerationProviderCredentials
+from onyx.image_gen.interfaces import ReferenceImage
+from onyx.server.query_and_chat.placement import Placement
+from onyx.server.query_and_chat.streaming_models import GeneratedImage
+from onyx.server.query_and_chat.streaming_models import ImageGenerationFinal
+from onyx.server.query_and_chat.streaming_models import ImageGenerationToolHeartbeat
+from onyx.server.query_and_chat.streaming_models import ImageGenerationToolStart
+from onyx.server.query_and_chat.streaming_models import Packet
+from onyx.tools.interface import Tool
+from onyx.tools.models import ImageGenerationToolOverrideKwargs
+from onyx.tools.models import ToolCallException
+from onyx.tools.models import ToolExecutionException
 from onyx.tools.models import ToolResponse
-from onyx.tools.tool import RunContextWrapper
-from onyx.tools.tool import Tool
-from onyx.tools.tool_implementations.images.prompt import (
-    build_image_generation_user_prompt,
+from onyx.tools.tool_implementations.images.models import (
+    FinalImageGenerationResponse,
 )
+from onyx.tools.tool_implementations.images.models import ImageGenerationResponse
+from onyx.tools.tool_implementations.images.models import ImageShape
+from onyx.utils.b64 import get_image_type_from_bytes
 from onyx.utils.logger import setup_logger
-from onyx.utils.special_types import JSON_ro
 from onyx.utils.threadpool_concurrency import run_functions_tuples_in_parallel
 
-
 logger = setup_logger()
-
-
-IMAGE_GENERATION_RESPONSE_ID = "image_generation_response"
-IMAGE_GENERATION_HEARTBEAT_ID = "image_generation_heartbeat"
-
-YES_IMAGE_GENERATION = "Yes Image Generation"
-SKIP_IMAGE_GENERATION = "Skip Image Generation"
 
 # Heartbeat interval in seconds to prevent timeouts
 HEARTBEAT_INTERVAL = 5.0
 
-IMAGE_GENERATION_TEMPLATE = f"""
-Given the conversation history and a follow up query, determine if the system should call \
-an external image generation tool to better answer the latest user input.
-Your default response is {SKIP_IMAGE_GENERATION}.
-
-Respond "{YES_IMAGE_GENERATION}" if:
-- The user is asking for an image to be generated.
-
-Conversation History:
-{GENERAL_SEP_PAT}
-{{chat_history}}
-{GENERAL_SEP_PAT}
-
-If you are at all unsure, respond with {SKIP_IMAGE_GENERATION}.
-Respond with EXACTLY and ONLY "{YES_IMAGE_GENERATION}" or "{SKIP_IMAGE_GENERATION}"
-
-Follow Up Input:
-{{final_query}}
-""".strip()
+PROMPT_FIELD = "prompt"
+REFERENCE_IMAGE_FILE_IDS_FIELD = "reference_image_file_ids"
 
 
-class ImageGenerationResponse(BaseModel):
-    revised_prompt: str
-    image_data: str
-
-
-class ImageShape(str, Enum):
-    SQUARE = "square"
-    PORTRAIT = "portrait"
-    LANDSCAPE = "landscape"
-
-
-# override_kwargs is not supported for image generation tools
-class ImageGenerationTool(Tool[None]):
-    _NAME = "run_image_generation"
-    _DESCRIPTION = (
-        "NEVER use generate_image unless the user specifically requests an image."
-    )
-    _DISPLAY_NAME = "Image Generation"
+class ImageGenerationTool(Tool[ImageGenerationToolOverrideKwargs | None]):
+    NAME = "generate_image"
+    DESCRIPTION = "Generate an image based on a prompt. Do not use unless the user specifically requests an image."
+    DISPLAY_NAME = "Image Generation"
 
     def __init__(
         self,
-        api_key: str,
-        api_base: str | None,
-        api_version: str | None,
+        image_generation_credentials: ImageGenerationProviderCredentials,
         tool_id: int,
+        emitter: Emitter,
         model: str = IMAGE_MODEL_NAME,
+        provider: str = IMAGE_MODEL_PROVIDER,
         num_imgs: int = 1,
     ) -> None:
-        self.api_key = api_key
-        self.api_base = api_base
-        self.api_version = api_version
-
+        super().__init__(emitter=emitter)
         self.model = model
+        self.provider = provider
         self.num_imgs = num_imgs
+
+        self.img_provider = get_image_generation_provider(
+            provider, image_generation_credentials
+        )
 
         self._id = tool_id
 
@@ -110,26 +79,40 @@ class ImageGenerationTool(Tool[None]):
 
     @property
     def name(self) -> str:
-        return self._NAME
+        return self.NAME
 
     @property
     def description(self) -> str:
-        return self._DESCRIPTION
+        return self.DESCRIPTION
 
     @property
     def display_name(self) -> str:
-        return self._DISPLAY_NAME
+        return self.DISPLAY_NAME
 
     @override
     @classmethod
     def is_available(cls, db_session: Session) -> bool:
-        """Available if an OpenAI LLM provider is configured in the system."""
+        """Available if a default image generation config exists with valid credentials."""
         try:
-            providers = fetch_existing_llm_providers(db_session)
-            return any(
-                (provider.provider == "openai" and provider.api_key is not None)
-                or (provider.provider == "azure" and AZURE_IMAGE_API_KEY is not None)
-                for provider in providers
+            config = get_default_image_generation_config(db_session)
+            if not config or not config.model_configuration:
+                return False
+
+            llm_provider = config.model_configuration.llm_provider
+            credentials = ImageGenerationProviderCredentials(
+                api_key=(
+                    llm_provider.api_key.get_value(apply_mask=False)
+                    if llm_provider.api_key
+                    else None
+                ),
+                api_base=llm_provider.api_base,
+                api_version=llm_provider.api_version,
+                deployment_name=llm_provider.deployment_name,
+                custom_config=llm_provider.custom_config,
+            )
+            return validate_credentials(
+                provider=llm_provider.provider,
+                credentials=credentials,
             )
         except Exception:
             logger.exception("Error checking if image generation is available")
@@ -144,7 +127,7 @@ class ImageGenerationTool(Tool[None]):
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "prompt": {
+                        PROMPT_FIELD: {
                             "type": "string",
                             "description": "Prompt used to generate the image",
                         },
@@ -156,85 +139,36 @@ class ImageGenerationTool(Tool[None]):
                             ),
                             "enum": [shape.value for shape in ImageShape],
                         },
+                        REFERENCE_IMAGE_FILE_IDS_FIELD: {
+                            "type": "array",
+                            "description": (
+                                "Optional image file IDs to use as reference context for edits/variations. "
+                                "Use the file_id values returned by previous generate_image calls."
+                            ),
+                            "items": {
+                                "type": "string",
+                            },
+                        },
                     },
-                    "required": ["prompt"],
+                    "required": [PROMPT_FIELD],
                 },
             },
         }
 
-    def get_args_for_non_tool_calling_llm(
-        self,
-        query: str,
-        history: list[PreviousMessage],
-        llm: LLM,
-        force_run: bool = False,
-    ) -> dict[str, Any] | None:
-        args = {"prompt": query}
-        if force_run:
-            return args
-
-        history_str = combine_message_chain(
-            messages=history, token_limit=GEN_AI_HISTORY_CUTOFF
-        )
-        prompt = IMAGE_GENERATION_TEMPLATE.format(
-            chat_history=history_str,
-            final_query=query,
-        )
-        use_image_generation_tool_output = message_to_string(
-            llm.invoke_langchain(prompt)
-        )
-
-        logger.debug(
-            f"Evaluated if should use ImageGenerationTool: {use_image_generation_tool_output}"
-        )
-        if (
-            YES_IMAGE_GENERATION.split()[0]
-        ).lower() in use_image_generation_tool_output.lower():
-            return args
-
-        return None
-
-    def run_v2(
-        self,
-        run_context: RunContextWrapper[Any],
-        *args: Any,
-        **kwargs: Any,
-    ) -> Any:
-        raise NotImplementedError("ImageGenerationTool.run_v2 is not implemented.")
-
-    def build_tool_message_content(
-        self, *args: ToolResponse
-    ) -> str | list[str | dict[str, Any]]:
-        # Filter out heartbeat responses and find the actual image response
-        generation_response = None
-        for response in args:
-            if response.id == IMAGE_GENERATION_RESPONSE_ID:
-                generation_response = response
-                break
-
-        if generation_response is None:
-            raise ValueError("No image generation response found")
-
-        image_generations = cast(
-            list[ImageGenerationResponse], generation_response.response
-        )
-
-        return build_content_with_imgs(
-            message=json.dumps(
-                [
-                    {
-                        "revised_prompt": image_generation.revised_prompt,
-                    }
-                    for image_generation in image_generations
-                ]
-            ),
+    def emit_start(self, placement: Placement) -> None:
+        self.emitter.emit(
+            Packet(
+                placement=placement,
+                obj=ImageGenerationToolStart(),
+            )
         )
 
     def _generate_image(
-        self, prompt: str, shape: ImageShape
-    ) -> ImageGenerationResponse:
-        from litellm import image_generation  # type: ignore
-
+        self,
+        prompt: str,
+        shape: ImageShape,
+        reference_images: list[ReferenceImage] | None = None,
+    ) -> tuple[ImageGenerationResponse, Any]:
         if shape == ImageShape.LANDSCAPE:
             if "gpt-image-1" in self.model:
                 size = "1536x1024"
@@ -249,16 +183,14 @@ class ImageGenerationTool(Tool[None]):
             size = "1024x1024"
         logger.debug(f"Generating image with model: {self.model}, size: {size}")
         try:
-            response = image_generation(
+            response = self.img_provider.generate_image(
                 prompt=prompt,
                 model=self.model,
-                api_key=self.api_key,
-                api_base=self.api_base or None,
-                api_version=self.api_version or None,
-                # response_format parameter is not supported for gpt-image-1
-                response_format=None if "gpt-image-1" in self.model else "b64_json",
                 size=size,
                 n=1,
+                reference_images=reference_images,
+                # response_format parameter is not supported for gpt-image-1
+                response_format=None if "gpt-image-1" in self.model else "b64_json",
             )
 
             if not response.data or len(response.data) == 0:
@@ -274,14 +206,19 @@ class ImageGenerationTool(Tool[None]):
             if revised_prompt is None:
                 revised_prompt = prompt
 
-            return ImageGenerationResponse(
-                revised_prompt=revised_prompt,
-                image_data=image_data,
+            return (
+                ImageGenerationResponse(
+                    revised_prompt=revised_prompt,
+                    image_data=image_data,
+                ),
+                response,
             )
 
         except requests.RequestException as e:
             logger.error(f"Error fetching or converting image: {e}")
-            raise ValueError("Failed to fetch or convert the generated image")
+            raise ToolExecutionException(
+                "Failed to fetch or convert the generated image", emit_error_packet=True
+            )
         except Exception as e:
             logger.debug(f"Error occurred during image generation: {e}")
 
@@ -291,35 +228,167 @@ class ImageGenerationTool(Tool[None]):
                     "Your request was rejected as a result of our safety system"
                     in error_message
                 ):
-                    raise ValueError(
-                        "The image generation request was rejected due to OpenAI's content policy. Please try a different prompt."
+                    raise ToolExecutionException(
+                        (
+                            "The image generation request was rejected due to OpenAI's content policy. "
+                            "Please try a different prompt."
+                        ),
+                        emit_error_packet=True,
                     )
                 elif "Invalid image URL" in error_message:
-                    raise ValueError("Invalid image URL provided for image generation.")
+                    raise ToolExecutionException(
+                        "Invalid image URL provided for image generation.",
+                        emit_error_packet=True,
+                    )
                 elif "invalid_request_error" in error_message:
-                    raise ValueError(
-                        "Invalid request for image generation. Please check your input."
+                    raise ToolExecutionException(
+                        "Invalid request for image generation. Please check your input.",
+                        emit_error_packet=True,
                     )
 
-            raise ValueError(
-                "An error occurred during image generation. Please try again later."
+            raise ToolExecutionException(
+                f"An error occurred during image generation. error={error_message}",
+                emit_error_packet=True,
             )
 
-    def run(
-        self, override_kwargs: None = None, **kwargs: str
-    ) -> Generator[ToolResponse, None, None]:
-        prompt = cast(str, kwargs["prompt"])
-        shape = ImageShape(kwargs.get("shape", ImageShape.SQUARE))
+    def _resolve_reference_image_file_ids(
+        self,
+        llm_kwargs: dict[str, Any],
+        override_kwargs: ImageGenerationToolOverrideKwargs | None,
+    ) -> list[str]:
+        raw_reference_ids = llm_kwargs.get(REFERENCE_IMAGE_FILE_IDS_FIELD)
+        if raw_reference_ids is not None:
+            if not isinstance(raw_reference_ids, list) or not all(
+                isinstance(file_id, str) for file_id in raw_reference_ids
+            ):
+                raise ToolCallException(
+                    message=(
+                        f"Invalid {REFERENCE_IMAGE_FILE_IDS_FIELD}: expected array of strings, got {type(raw_reference_ids)}"
+                    ),
+                    llm_facing_message=(
+                        f"The '{REFERENCE_IMAGE_FILE_IDS_FIELD}' field must be an array of file_id strings."
+                    ),
+                )
+            reference_image_file_ids = [
+                file_id.strip() for file_id in raw_reference_ids if file_id.strip()
+            ]
+        elif (
+            override_kwargs
+            and override_kwargs.recent_generated_image_file_ids
+            and self.img_provider.supports_reference_images
+        ):
+            # If no explicit reference was provided, default to the most recently generated image.
+            reference_image_file_ids = [
+                override_kwargs.recent_generated_image_file_ids[-1]
+            ]
+        else:
+            reference_image_file_ids = []
 
-        # Use threading to generate images in parallel while yielding heartbeats
-        results: list[ImageGenerationResponse | None] = [None] * self.num_imgs
+        # Deduplicate while preserving order.
+        deduped_reference_image_ids: list[str] = []
+        seen_ids: set[str] = set()
+        for file_id in reference_image_file_ids:
+            if file_id in seen_ids:
+                continue
+            seen_ids.add(file_id)
+            deduped_reference_image_ids.append(file_id)
+
+        if not deduped_reference_image_ids:
+            return []
+
+        if not self.img_provider.supports_reference_images:
+            raise ToolCallException(
+                message=(
+                    f"Reference images requested but provider '{self.provider}' does not support image-editing context."
+                ),
+                llm_facing_message=(
+                    "This image provider does not support editing from previous image context. "
+                    "Try text-only generation, or switch to a provider/model that supports image edits."
+                ),
+            )
+
+        max_reference_images = self.img_provider.max_reference_images
+        if max_reference_images > 0:
+            return deduped_reference_image_ids[-max_reference_images:]
+        return deduped_reference_image_ids
+
+    def _load_reference_images(
+        self,
+        reference_image_file_ids: list[str],
+    ) -> list[ReferenceImage]:
+        reference_images: list[ReferenceImage] = []
+
+        for file_id in reference_image_file_ids:
+            try:
+                loaded_file = load_chat_file_by_id(file_id)
+            except Exception as e:
+                raise ToolCallException(
+                    message=f"Could not load reference image file '{file_id}': {e}",
+                    llm_facing_message=(
+                        f"Reference image file '{file_id}' could not be loaded. "
+                        "Use file_id values returned by previous generate_image calls."
+                    ),
+                )
+
+            if loaded_file.file_type != ChatFileType.IMAGE:
+                raise ToolCallException(
+                    message=f"Reference file '{file_id}' is not an image",
+                    llm_facing_message=f"Reference file '{file_id}' is not an image.",
+                )
+
+            try:
+                mime_type = get_image_type_from_bytes(loaded_file.content)
+            except Exception as e:
+                raise ToolCallException(
+                    message=f"Unsupported reference image format for '{file_id}': {e}",
+                    llm_facing_message=(
+                        f"Reference image '{file_id}' has an unsupported format. Only PNG, JPEG, GIF, and WEBP are supported."
+                    ),
+                )
+
+            reference_images.append(
+                ReferenceImage(
+                    data=loaded_file.content,
+                    mime_type=mime_type,
+                )
+            )
+
+        return reference_images
+
+    def run(
+        self,
+        placement: Placement,
+        override_kwargs: ImageGenerationToolOverrideKwargs | None = None,
+        **llm_kwargs: Any,
+    ) -> ToolResponse:
+        if PROMPT_FIELD not in llm_kwargs:
+            raise ToolCallException(
+                message=f"Missing required '{PROMPT_FIELD}' parameter in generate_image tool call",
+                llm_facing_message=(
+                    f"The generate_image tool requires a '{PROMPT_FIELD}' parameter describing "
+                    f'the image to generate. Please provide like: {{"prompt": "a sunset over mountains"}}'
+                ),
+            )
+        prompt = cast(str, llm_kwargs[PROMPT_FIELD])
+        shape = ImageShape(llm_kwargs.get("shape", ImageShape.SQUARE.value))
+        reference_image_file_ids = self._resolve_reference_image_file_ids(
+            llm_kwargs=llm_kwargs,
+            override_kwargs=override_kwargs,
+        )
+        reference_images = self._load_reference_images(reference_image_file_ids)
+
+        # Use threading to generate images in parallel while emitting heartbeats
+        results: list[tuple[ImageGenerationResponse, Any] | None] = [
+            None
+        ] * self.num_imgs
         completed = threading.Event()
         error_holder: list[Exception | None] = [None]
 
+        # TODO allow the LLM to determine number of images
         def generate_all_images() -> None:
             try:
                 generated_results = cast(
-                    list[ImageGenerationResponse],
+                    list[tuple[ImageGenerationResponse, Any]],
                     run_functions_tuples_in_parallel(
                         [
                             (
@@ -327,6 +396,7 @@ class ImageGenerationTool(Tool[None]):
                                 (
                                     prompt,
                                     shape,
+                                    reference_images or None,
                                 ),
                             )
                             for _ in range(self.num_imgs)
@@ -344,16 +414,15 @@ class ImageGenerationTool(Tool[None]):
         generation_thread = threading.Thread(target=generate_all_images)
         generation_thread.start()
 
-        # Yield heartbeat packets while waiting for completion
+        # Emit heartbeat packets while waiting for completion
         heartbeat_count = 0
         while not completed.is_set():
-            # Yield a heartbeat packet to prevent timeout
-            yield ToolResponse(
-                id=IMAGE_GENERATION_HEARTBEAT_ID,
-                response={
-                    "status": "generating",
-                    "heartbeat": heartbeat_count,
-                },
+            # Emit a heartbeat packet to prevent timeout
+            self.emitter.emit(
+                Packet(
+                    placement=placement,
+                    obj=ImageGenerationToolHeartbeat(),
+                )
             )
             heartbeat_count += 1
 
@@ -371,64 +440,51 @@ class ImageGenerationTool(Tool[None]):
         # Filter out None values (shouldn't happen, but safety check)
         valid_results = [r for r in results if r is not None]
 
-        # Yield the final results
-        yield ToolResponse(
-            id=IMAGE_GENERATION_RESPONSE_ID,
-            response=valid_results,
+        if not valid_results:
+            raise ValueError("No images were generated")
+
+        # Extract ImageGenerationResponse objects
+        image_generation_responses = [r[0] for r in valid_results]
+
+        # Save files and create GeneratedImage objects
+        file_ids = save_files(
+            urls=[],
+            base64_files=[img.image_data for img in image_generation_responses],
+        )
+        generated_images_metadata = [
+            GeneratedImage(
+                file_id=file_id,
+                url=build_frontend_file_url(file_id),
+                revised_prompt=img.revised_prompt,
+                shape=shape.value,
+            )
+            for img, file_id in zip(image_generation_responses, file_ids)
+        ]
+
+        # Emit final packet with generated images
+        self.emitter.emit(
+            Packet(
+                placement=placement,
+                obj=ImageGenerationFinal(images=generated_images_metadata),
+            )
         )
 
-    def final_result(self, *args: ToolResponse) -> JSON_ro:
-        # Filter out heartbeat responses and find the actual image response
-        for response in args:
-            if response.id == IMAGE_GENERATION_RESPONSE_ID:
-                image_generation_responses = cast(
-                    list[ImageGenerationResponse], response.response
-                )
-                return [
-                    image_generation_response.model_dump()
-                    for image_generation_response in image_generation_responses
-                ]
-
-        raise ValueError("No image generation response found")
-
-    def build_next_prompt(
-        self,
-        prompt_builder: AnswerPromptBuilder,
-        tool_call_summary: ToolCallSummary,
-        tool_responses: list[ToolResponse],
-        using_tool_calling_llm: bool,
-    ) -> AnswerPromptBuilder:
-        img_generation_response = cast(
-            list[ImageGenerationResponse] | None,
-            next(
-                (
-                    response.response
-                    for response in tool_responses
-                    if response.id == IMAGE_GENERATION_RESPONSE_ID
-                ),
-                None,
-            ),
-        )
-        if img_generation_response is None:
-            raise ValueError("No image generation response found")
-
-        b64_imgs = [img.image_data for img in img_generation_response]
-
-        user_prompt = build_image_generation_user_prompt(
-            query=prompt_builder.get_user_message_content(),
-            supports_image_input=model_supports_image_input(
-                prompt_builder.llm_config.model_name,
-                prompt_builder.llm_config.model_provider,
-            ),
-            prompts=[
-                prompt
-                for response in img_generation_response
-                for prompt in response.revised_prompt
-            ],
-            img_urls=[],
-            b64_imgs=b64_imgs,
+        final_image_generation_response = FinalImageGenerationResponse(
+            generated_images=generated_images_metadata
         )
 
-        prompt_builder.update_user_prompt(user_prompt)
+        # Create llm_facing_response
+        llm_facing_response = json.dumps(
+            [
+                {
+                    "file_id": img.file_id,
+                    "revised_prompt": img.revised_prompt,
+                }
+                for img in generated_images_metadata
+            ]
+        )
 
-        return prompt_builder
+        return ToolResponse(
+            rich_response=final_image_generation_response,
+            llm_facing_response=cast(str, llm_facing_response),
+        )
