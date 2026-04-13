@@ -1,0 +1,215 @@
+84ec36f2327c07abe467504059b026d88938c84d|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2026-03-09|Prevent large batches for langfuse
+79c4c6b0238caee3f14e97c7e57e0b492d3cc946|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2026-03-05|added tini in the image
+8d3f8e1af384380d41e0a94892130b1f5340cab3|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2026-03-04|fixed metadata in langfuse traces when deep research is used
+ad4a611a8df859c1d10176cb5da716d77be7415c|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2026-03-04|typo
+8ef9f768b1f584fbb121485a46f03e37a7ad0a65|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2026-02-25|fixed conflicts, updated lock file
+6e88951b0bd4180960ebab7bcb273384a35b1862|Silviu|silviupanaite@users.noreply.github.com|2026-02-24|patch for wait for complete
+b303e0423d6be439952ec4bbe481b02825c5df8d|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2026-02-20|quickfix for changing password
+cf277efc4cec37d4a42025fa1baee43e63d55130|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2026-02-05|applied security patches
+43f53ec13b0a2d90ef8be75460d7e31edf4894c5|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2026-02-04|fixed metadata in langfuse and feedback functionality
+0f5e4443f1b3087de554541738e524b3b7a81179|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2026-02-02|updated for newer langfuse library
+7ba9c9fe91cb0ece87df681a6a95ab186d01aab0|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2026-01-29|change name from GPT Lab to AI Hub
+2fe36b8d74568bfa27a3e50b1455c8974bb40c35|Silviu|silviupanaite@users.noreply.github.com|2025-12-29|fix docfetching race condition and update helm config
+60d0911c98fa63c48bbe987f199e85e9bcb082ef|Silviu|silviupanaite@users.noreply.github.com|2025-12-17|fix vespa backup image
+0e548f24d1be79ea86a7fcef95232e4dd25cc1ba|Silviu|silviupanaite@users.noreply.github.com|2025-12-17|update backup jobs
+1c4f91288f662ef595846d8b7564e70b8baff2b1|Silviu|silviupanaite@users.noreply.github.com|2025-12-17|update network policies
+85d185c34e21c15dc5a188757ca59b5d99322ebf|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-12-12|security patch
+a1ef1ec478ab5fb7fce74d9c911ceefceb72591c|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-12-12|security patch
+3f274b65395c9dac5eef11655c4e9fadf1db0bd7|Silviu|silviupanaite@users.noreply.github.com|2025-12-11|cache updates and helm configs
+9ed1d2bb4ee4d712c1cf3024b03d82c23bb687b7|Silviu|silviupanaite@users.noreply.github.com|2025-12-11|fix merge issues
+02d84bd2253de21412cdcdb89e892c7676869dda|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-12-08|fix for CVE-2025-55182
+ef922c13742ba2dc07c736b3c6f72938421ee4a6|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-12-05|FIX for CVE-2025-55182
+05e9a42cb218c7ff3668abb84a3b39e367ff0ae1|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-12-05|FIX for CVE-2025-55182
+e74cb042de261dd873f93807bedae9136d932d24|Miu Razvan|miu.razvan28@gmail.com|2025-11-27|add fallback value to timeout
+d7b63965890b65a7bae4b24528c8ec5d252ab505|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-11-26|fixed conflict
+3c968b2fd444f3decb7f4506d31d35f3fb55a554|Silviu|silviupanaite@users.noreply.github.com|2025-11-25|update chart for eea deployment.
+7de59d7a7858fcfb3448dbc46f152ff7797ae01a|Miu Razvan|miu.razvan28@gmail.com|2025-11-25|add comments
+ea245c9b1cd8c3682de58519b45099f198ad7097|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-11-25|fixed connectors healthcheck
+9150a8c1018aefa84e387282a32189a07b382889|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-11-24|fixed nginx volume
+67ab9b71c03ecd4c0f5b948ec8dd7f2816e0a0ad|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-11-24|fixes in docker-compose.yml
+96a33e3b6b5576393635b713b9ba39fdcbb308f4|Miu Razvan|miu.razvan28@gmail.com|2025-11-24|feat(citation): avoid catastrophic backtracking
+6ad00f66a5e3ec1a2099b033757ce5fb033ef568|Miu Razvan|miu.razvan28@gmail.com|2025-11-24|feat(search_tool): Add full content to search tool packets
+0a945d46eb270b14bec26cab472465a4a5e5fc91|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-11-19|small fix
+95f44e1a81b71d482e2501e47153bdc207fdd0e6|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-11-19|docker-compose
+6ba660c310b61697da7acd4c47fc8eba4ee54d7d|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-11-19|replaced onyx logo
+8753631336ec9505069ed87fb700add3437a1a14|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-11-19|added customizable pages to user popover
+c26ce64b7be07b6fe21e0b0af5d3c7dd128e1a78|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-11-19|fix admin for custom pages
+995cc5a1b90b17ab54e7e600e8323e2daaf1fe31|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-11-19|fixed sort on connectors
+76b5cc276cba681a82d06d7861c6a842c1b9d1bc|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-11-19|fixed logo on auth pages
+c1ba5b42766c7549f4f9e3c010193db3ff78263c|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-11-19|fixed login form
+d95ee7f484e8aae01a5ad44c8b652a94ce2ab213|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-11-19|fixed signup form
+9b1b67b6ec42cb9ef119b94553f220cd80bff92a|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-11-19|wip sync
+72beee3e1f4782d79d1d3c5e94c53f213d8c42d0|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-11-18|fixed entrypoint
+a48c5275dc7659244effdf8bfe6f289e699e2e3f|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-11-18|added .env.example
+b89157b4801078fbf6a8c092b51bb1fee4c5fb6d|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-11-18|added docker-compose for local development
+7794a8977abdb24d660e75fc29b2b7e4cde63ef2|Justin Tahara|105671973+justin-tahara@users.noreply.github.com|2025-11-10|fix(embedding): Fix Deletion of Same Name (#6149)
+802420427d91a557994496ba95fd645f3a2f4080|Justin Tahara|105671973+justin-tahara@users.noreply.github.com|2025-11-10|fix(gpt-5): Catch all (#6162)
+e143c9558e3e129e9c7ee2fd0881eef6e757bda9|Chris Weaver|chris@onyx.app|2025-11-10|fix: improve /llm/provider performance (#6158)
+1f7b8446fcfaf2e4bd92146e1c2b3a62fad0b18a|Chris Weaver|chris@onyx.app|2025-11-10|fix: infinite render on embedding model page (#6144)
+aa2ba3bc97cf97b20d001c356b12bda28bd23331|Miu Razvan|miu.razvan28@gmail.com|2025-10-24|feat(pdf): use pdf metadata title as semantic identifier
+0a31435fcfb4a6d8a53c8c5db376b39d6267e619|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-10-22|Fix for connectors healthcheck
+e66600bfcdd9becdf35269f11d6f201ddb696f1f|Miu Razvan|miu.razvan28@gmail.com|2025-10-21|clean up
+435d1c49ca15dd39e8e2301b512bafced5bc77ef|Miu Razvan|miu.razvan28@gmail.com|2025-10-21|fix(chat): prevent streaming hang by bounding possible-citation regex scan
+f9980b665a4342fb5bc9ce1782c4ac908cce24ac|Miu Razvan|miu.razvan28@gmail.com|2025-10-21|fix(web): stabilize sitemap filtering + config handling
+c9368712cc8135a2f03dfa506d82450ce32f3146|Miu Razvan|miu.razvan28@gmail.com|2025-10-20|clean up
+e5fc621dca68d279c553dc084bbb7ac0ced8213c|Miu Razvan|miu.razvan28@gmail.com|2025-10-20|clean up
+9234cb26c4c59622032061bd4df0d3558e59dc3b|Miu Razvan|miu.razvan28@gmail.com|2025-10-17|feat(web-connector): optimize sitemap indexing with timestamp-based filtering
+e7a3561b3044ef01395ebb7d04e24d6683c72586|Miu Razvan|miu.razvan28@gmail.com|2025-10-17|fix: Adapt read_protected_sitemap to return the lastmod value
+6e5a12050dc37e8a92fb8333404a81c87c1bac53|Miu Razvan|miu.razvan28@gmail.com|2025-10-16|feat: Utilize lastmod from sitemap.xml in web connector
+6e0ded026566aede0ae1b7fabe1749ce67b19f02|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-10-16|don't throw an exception when a github user has no name or email address
+b3d194f5e956572a1d1ad08b3799a28ffe1d1693|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-10-14|added timeout, so requests.head don't get stalled
+81f1893bb135166a31e94aca92fa8a6728d3417c|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-09-26|fix the names of indexed pdf files
+325a63ec1ff5f978d7580e46e4c9d0f4e5b1e4d6|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-09-25|Replace special brackets used for citations
+79d4a2a2fe8d57b368f20a0d50782a976ad240b1|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-09-24|allow indexing of text files
+fb35ada65c610490e88ffa75769c0ba4fc22363a|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-09-03|custom fix for chatting with 'my documents'
+1ec557347015005fbc6cf17c47d7a340f038bc93|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-09-02|added option to reindex a user file (only for admin users)
+a7319ffec7fdaf6a1452f2112976bd7f98a7f7e1|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-09-02|add the assistant to metadata
+1c72086495080f129aed190515513910076008dc|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-08-27|better use of compressed sitemaps
+cee184dbe972e713d8ce870371471d38b9c98ef4|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-08-26|set the resource limits from an env
+84fed4077207835ff1255474b1e09d9052b15e87|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-08-26|increase resource-limits for vespa
+8475eeed8e63dd3eedef8f100540842c708b656e|Miu Razvan|miu.razvan28@gmail.com|2025-08-19|Add timeout option
+dcd639b6b5935f9e9089a7573966c2a84dbf1470|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-08-19|remove special characters in filenames
+5dc48af545e064335cb66ca2cd41ba9e3c6fb7b5|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-08-13|small fix on headless chrome flags
+cb65faf1dba57c78ff136891b7d90b8445b8dc65|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-08-13|fix
+3a47e3b2402d00a106b24b9e15ada051e59bd1f3|Evan Lohn|evan@danswer.ai|2025-08-11|fix: max tokens param (#5174)
+cfe8cdb136f08f229ed68d16d922e01d80c4b668|Wenxi|wenxi@onyx.app|2025-08-07|fix: sanitize slack payload before logging (#5167)
+773acc818a2aca3654f51ead605266f57265eb78|Wenxi Onyx|wenxi@onyx.app|2025-08-06|mask llm api key from logs
+1f1fa5e8696fb63ba15737f38d17bab1b9ad1be0|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-08-11|Fixed indexing of protected pdf files
+77d87a0159a9ce12e85e266b018de1113f00d530|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-08-11|fixed sync
+b6df06e451bcf446eeb5ce3bdb3830ffb853c9fe|Wenxi|wenxi@onyx.app|2025-08-08|add gpt 5 display names (#5175)
+037d0cae006f30dd5a80ebfbd19b82d8c80430c5|Wenxi|wenxi@onyx.app|2025-08-07|feat: support gpt5 models (#5169)
+83e7982cad61b0f579f297624a8c6903e832aab4|Miu Razvan|miu.razvan28@gmail.com|2025-07-30|clean up
+2f89c171b3cd3778c90c9ebd26649c850ad7b811|Miu Razvan|miu.razvan28@gmail.com|2025-07-30|Remove unnecessary resources requests
+71785057ebfc33b7d04b1825ab8a7aca4f593350|Miu Razvan|miu.razvan28@gmail.com|2025-07-24|move remove_by_selector in an utility function
+236810bfcfb63afa3b9e1ed309134ff462137af0|Miu Razvan|miu.razvan28@gmail.com|2025-07-24|Improve logic for remove_by_selector
+53052cda924d2d44fddcdb278ea2c0e8e2e87850|Miu Razvan|miu.razvan28@gmail.com|2025-07-24|Implement remove_by_selector to exclude elements when scraping
+89effced23ed7cd610e8780cef780ced9210d195|Tiberiu Ichim|tiberiu.ichim@gmail.com|2025-07-11|Refs #289898; fix celery beat process identification
+c0885914e4fe8cfdc8be11070b46bd0cde09f329|Tiberiu Ichim|tiberiu.ichim@gmail.com|2025-07-10|Refs #289847; Compatibility with later version
+4636cacaa85b958f82144a715f5dd9b7ba6cffdf|Tiberiu Ichim|tiberiu.ichim@gmail.com|2025-07-10|Fix connector state crash
+fc5f0a86c4859a73a90cb74d72040e8d7ee62feb|Tiberiu Ichim|tiberiu.ichim@gmail.com|2025-07-09|Add code deleted by mistake
+a328c0c6b7e24bcacfd41ec35c66574ac24fb000|Tiberiu Ichim|tiberiu.ichim@gmail.com|2025-07-08|Don't return a string when there's no exception
+459a24218a5237cea0e32f92fdea35c81a8ab017|Tiberiu Ichim|tiberiu.ichim@gmail.com|2025-07-08|Disable some tasks
+f7dfd4df9f064912c3c0dc5935c8a27fd300c122|Tiberiu Ichim|tiberiu.ichim@gmail.com|2025-07-07|Add override for tasks
+7ff8122c9d791b37e014d366e3c5b1f846429866|Tiberiu Ichim|tiberiu.ichim@gmail.com|2025-07-04|Fix login issue in connector
+8ba655dae970d97d45e34c79a6a46cbdf7ef81d2|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-07-02|added back missing configuration pages
+c75079136bef26dd9bb3c2059e4001be27d471d4|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-07-01|added option to crawl unpublished documents
+534f2b042bfcaafaa4963ef7da54637161c68fc8|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-06-30|in case we use api_keys, we should pass the keys name as metadata to litellm
+22cd00f1502da8a06250b2c60862005cefd64453|valentinab25|30239069+valentinab25@users.noreply.github.com|2025-06-20|chore: [JENKINS] run all 3 builds at the same time
+5ddb4cac6660f26c24cdb83ca1a23cc13ae9c4b8|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-06-20|don't try to download chromium-linux.zip
+8d3a0887fdf358b6a87010e76b90092283822927|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-06-19|added missing file
+99cbf16b109fda256d80cfd3fde140f76d6e6522|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-06-19|temporary fix, avoid downloading ffmpeg-linux
+189ead001990b500c0f5c47ac03ecbec216bd9f5|valentinab25|30239069+valentinab25@users.noreply.github.com|2025-06-18|chore: [JENKINS] start with backend
+c1aaf6b6fa1f7922c74220c3e8b558d4a0eb7c6e|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-06-18|small fixes
+8e807ebfc9cf2264fb8c1d5c02ddf5fecaacc039|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-06-18|small fix
+71712df3202bb6a31d20756cbcaf972b8bfac09e|Evan Lohn|evan@danswer.ai|2025-05-30|jira daylight savings handling (#4797)
+a2fd123e0a04961bbfa6ffe2f52146dd28a341e1|valentinab25|30239069+valentinab25@users.noreply.github.com|2025-06-02|use 3 different tag variables
+770f3fac6994e719b1471d77d89a09cd192764c6|valentinab25|30239069+valentinab25@users.noreply.github.com|2025-05-30|add argument to docker build
+1041727a6c4db419073ca959a6eab3f391a1fe1b|valentinab25|30239069+valentinab25@users.noreply.github.com|2025-05-30|remove unused code
+76c54fd5917ccca5746ca9ab556ae8e89c197011|valentinab25|30239069+valentinab25@users.noreply.github.com|2025-05-30|fix cd command
+80f5887a71d1acc77f48882bd87ded9f6832e0c5|valentinab25|30239069+valentinab25@users.noreply.github.com|2025-05-30|run on commit to eea
+99abef5738b60cc028da46fc58bb0aeabe7fb092|valentinab25|30239069+valentinab25@users.noreply.github.com|2025-05-30|fix \
+e8331a66701c972a89be338434b5e447fe2aee8a|valentinab25|30239069+valentinab25@users.noreply.github.com|2025-05-29|add build on branch eea
+5c9a44b0ee10c8b10603061630cf7fbc918e3022|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-05-28|updated jenkinsfile
+090985cc3001ae1da46951b7fc044c340c2ad79d|valentinab25|30239069+valentinab25@users.noreply.github.com|2025-05-28|Create Jenkinsfile
+1189a64c3a1e0c5c0ade50bb991368fcfccc0f43|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-05-12|added guardrails to onyx
+7f1fa5c208889b51f7632508e383cc57bd54c664|Chris Weaver|25087905+Weves@users.noreply.github.com|2025-05-06|Non default schema fix (#4667)
+84643bc0b30fbdc3658f50dbd97928749a1e15b2|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-05-06|updated llm metadata
+a9d2b7aae0a8352443c9a566c1fff7a4e1961973|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-04-17|don't load 3rd party resources
+62a493590f4539246c706cadbee2855595b714f6|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-04-17|added privacy statement in user dropdown menu
+dfd19cfe127a69c2d4d231f4a0ec0a64393b1200|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-04-17|pages created in onyx admin should not be restricted
+e4d44dd07772a5ddbc2448d414fbc6971c3bda9c|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-04-09|Refs remove debug code
+da7a4be39116a709e9fab4713dee141961f752f6|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-04-09|Updated onyx emails
+6c010f82fc8725021fae54fed64b1302e3343ad7|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-04-09|added missing dependency
+15d51857fd2db8d4b035a6d7e6d377511c425f6b|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-04-08|sync feedback with langfuse
+bdc09551a69f177cc253efe78b877410ba6e17a1|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-04-02|configure the metadata so we have nice traces in langfuse
+14679af511f97267969f8f6828c9d7460053e16d|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-03-27|updated pdf indexing
+46f68844119cef7e126fce5b5a5e34426c43611b|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-03-27|fixed pdf indexing
+616d35a192965a46a0a269e8e063aa622354cb21|Weves|chrisweaver101@gmail.com|2025-03-14|Fix basic auth for non-ee
+0888bc69d54ef93068f00def6312d60dced61609|rkuo-danswer|rkuo@danswer.ai|2025-03-06|Fix model server build (#4217)
+f2aed2d64f70c991fd39fb8063f302e82df293cb|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-02-14|customization for eea
+199a9944bfecdb9d5a985b6bee63dc8612f0d103|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-02-10|changed the way how we stop playwright if there was an exception; related to: https://github.com/microsoft/playwright-python/issues/2238
+fa04e34375eb5ef6b5260f321327fd43c3be265c|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-02-07|added timeout for playwright
+cd9ffb0e8d3d38c5b326b83f699648444f759bcd|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-02-06|updated playwright, how to scrape pages
+529f3e5e7e503fb942b4c7c7fe7ceb667177d380|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-02-06|get the sitemap even if the ssl certificate is expired
+0a4e36354b8a6ce1edaa7a1e7ec116422396f900|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-02-06|Don't pause the failed connectors
+f8696402278b00d4cd26c7e8eae3346af0c44524|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-02-06|updated connectors healthcheck
+ab5e4cd25d4dc33da0edcfd568ce85602c5e070f|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2025-02-06|if no urls found in sitemap, fallback to ultimate sitemap parser
+a52ea18ca0e82a69c48da201a020f51420290da3|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-12-31|connectors healthcheck should only fail if there are 2 consecutive failed indexing attempts for a connector
+1916b6b277e08420a21bdccf7b90104b333839ad|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-12-27|temporary fix for default prompt_id
+4d63cb69911d89ad99aa6317f06ddce239caf065|Richard Kuo (Danswer)|rkuo@onyx.app|2024-12-17|try backporting workflows - may not work
+7de3534212ec3873d14440c68c24415bcf32bd10|Richard Kuo|rkuo@rkuo.com|2024-12-11|cherry pick handleRequest fix
+c77790fb47b4be7a23a6653aa559b85dc237771d|Chris Weaver|25087905+Weves@users.noreply.github.com|2024-12-08|Fix Confluence perm sync for cloud users (#3374)
+a5759506637cb1d7d64a11d2d9319046a11e25ca|Chris Weaver|25087905+Weves@users.noreply.github.com|2024-12-04|Improve chat page performance (#3347)
+419e08875fdcaf0626dbc5e738437aa538e5724c|Chris Weaver|25087905+Weves@users.noreply.github.com|2024-11-29|Fix assistant prompt zero-ing (#3293)
+d9a06aab331189be881511e6a09768971763b91d|Chris Weaver|25087905+Weves@users.noreply.github.com|2024-12-02|Update openai version in model server (#3306)
+d15865daa462e868d4b8101f69ae2be9f611809a|hagen-danswer|hagen@danswer.ai|2024-11-28|increased the pagination limit for confluence spaces (#3288)
+33eadbc0a2bb4b391077857737f312fd602e8dbc|Richard Kuo|rkuo@rkuo.com|2024-11-27|backport alembic revision
+aa05c711f5815a622fbab9bdcc023ccb4a0d94da|Richard Kuo|rkuo@rkuo.com|2024-11-27|Revert "backport alembic revision"
+5460a9340ae6f93964b7eaf6fbc9d3aa7792b748|Richard Kuo|rkuo@rkuo.com|2024-11-27|backport alembic revision
+e59acb207715dbc56c14093f2086e2ff7123f174|Richard Kuo|rkuo@rkuo.com|2024-11-27|remove unused import
+b874171e4ca2ca03958837641edc21dd058d80e5|rkuo-danswer|rkuo@danswer.ai|2024-11-27|use indexing flag in db for manually triggering indexing (#3264)
+91a31c631d7cb922d54d2a5d55c2e242e8c559dd|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-11-25|fallback if we can't figure out the encoding from the model name
+c7001732f5d15094e5f68ea3d0e2dfb69a0f7b70|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-11-25|added What's new page
+322d7cdc90484546048276e103c931676678a428|hagen-danswer|hagen@danswer.ai|2024-11-20|brought the timeout changes too
+67d943da119a33515909307e1d49634ef88c4abf|hagen-danswer|hagen@danswer.ai|2024-11-20|added logging and bugfixing to conf (#3167)
+ae8bb7426306af977330400dadcfaa011a174d0c|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-11-20|ignore the errors that caused by a restart
+35581db8ffc5c4c6072c872519bef19a3f593533|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-11-19|added healthcheck for connectors
+cc3c0800f0af40b1ae890169c14dcb41c31d31e0|Richard Kuo (Danswer)|rkuo@danswer.ai|2024-11-18|no idea how those files got into the merge
+e860f15b640ac8f97ae783f99c28f76a3003a291|Richard Kuo (Danswer)|rkuo@danswer.ai|2024-11-18|hotfix merge
+9e391495c2fd879dcff1984dcd4876dfcd2d4d53|Richard Kuo|rkuo@rkuo.com|2024-11-16|fix unused stuff for hotfix
+e26d5430fac6a1f3dac486a769ccdedeabaae7e7|Richard Kuo|rkuo@rkuo.com|2024-11-16|merge overlapping connector hotfix
+fd2428d97f31c7c742d376f100cf235692be3365|rkuo-danswer|rkuo@danswer.ai|2024-11-13|Merge pull request #3131 from danswer-ai/bugfix/session_text
+cfc46812c81a115a6a862c1d1743ded7a3a52813|rkuo-danswer|rkuo@danswer.ai|2024-11-13|scale indexing sql pool based on concurrency (#3130)
+4e4c18401ed41ca97718b9127574d440a94cc720|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-11-12|fix typo on history sidebar
+6e37321786e6c4639d9fdf65adb70dca5d2bf776|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-11-12|small fix on auth page
+d0e018a3faa10dc0137c0cad3c28263d8b296865|rkuo-danswer|rkuo@danswer.ai|2024-10-29|init sqlalchemy in child process (#2987)
+ee5e085c8197d0a3f335c256748c648cac8fbf09|hagen-danswer|hagen@danswer.ai|2024-10-29|fixed label filter  (#2978)
+f0adc03de309c9549272043b33ac2bdcf2c1f510|Richard Kuo|rkuo@rkuo.com|2024-10-28|backport structured json fix
+c07a10440bf462c943b26dd462b0d981a179c9dd|Richard Kuo (Danswer)|rkuo@danswer.ai|2024-10-28|add missing scard operation
+ca4b230f67ea9fb3cc92b1da2eaf12060439ec5b|pablodanswer|pablo@danswer.ai|2024-10-28|add srem and sadd to tenant wrapper (#2973)
+4479bdceab4d1740ad6f4e9853f9881c6d43b106|Yuhong Sun|yuhongsun96@gmail.com|2024-10-27|Backport Test 7 (#2971)
+e23a37e3f19e34532a4ccbced76e8c33c6351cfe|Yuhong Sun|yuhongsun96@gmail.com|2024-10-27|Backport Test 5 (#2969)
+eadd87363d84478f518c112a6fb713335a8485e9|Yuhong Sun|yuhongsun96@gmail.com|2024-10-27|Backport Test 4 (#2968)
+91d9414ada169e41a5027cc5044e98eeb02a795e|Yuhong Sun|yuhongsun96@gmail.com|2024-10-27|Backport Test (#2958)
+39a485b777f6e31afd87329e9f34f02880074863|Yuhong Sun|yuhongsun96@gmail.com|2024-10-27|Backport Test (#2957)
+35e4ba7f99ba80db84eba6d628fd563274b850c3|Yuhong Sun|yuhongsun96@gmail.com|2024-10-27|Harmless Backport Test (#2950)
+302d28f1e819707dbf697c02d347919d0117eaf0|Yuhong Sun|yuhongsun96@gmail.com|2024-10-26|Backport Test Final (#2942)
+7e8e89359d281c01c960362a09b8892b04f75268|Yuhong Sun|yuhongsun96@gmail.com|2024-10-26|Backport Test (#2940)
+e9ae89b4bc84139a54960bdb4ead6f0912660732|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-09-16|fixed upgrade step
+5876ed728a1149aab24768048f0b875a38b6dbb4|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-09-02|remove unnecessary retry
+4e28bf09cb2e79e5bbfbe61a933ec8890af7d582|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-08-28|updated special case when forcing MAX TOKENS for Meta-Llama-3.1
+199b3430307889b7a0631554c3059b8a9443566c|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-07-31|added missing file
+b658f5c54c1db4d98d89ab79cfc54ec33b17e082|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-07-18|updated to libgnutls30=3.7.9-2+deb12u3
+93efe2affceaf1f0c363eaaf456e077837717148|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-07-18|fixed typo
+51c0dc62d77925f10834a541d2a1cf4b2e959dac|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-07-18|workaround for connector deletion
+dc3ddeb9739d4879326dedc664047becf177fa11|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-06-19|workaround for not reachable indexing_model_server using tenacity
+810429cd15b60f575d26f1e92f03bfd02b4080bb|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-06-19|updated dockerfile for backend
+49c4b53cc1730820ca1a4548f0386c3ea815681a|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-06-10|updated disclaimer modal
+921689a11e693a490a92b07afc73ddc768bafc53|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-06-10|updated the way the disclaimer is displayed
+c1835a4af7fe78af7ba042a102e81b1a5dbb4af4|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-05-30|changed the way the eea custom settings are fetched in the web app
+acdead91861d10925019091bac83665c33c69a8b|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-05-29|Try to find the sitemap for a given site
+3dd2c77b75fd6de667d697462c2294624846bc95|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-05-23|small fix for pages admin
+c363708e2afc9722246cab67a20c20ead6f0a36a|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-05-23|updated logo and title
+836e3c3dfcc5de77a04c050099bb5da82cbdeacd|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-05-22|added configuration options for footer, and the possibility to create pages
+cb86eba994763c50ba03175522dee74909d95354|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-05-08|use a state for checking if userGroups is loading
+d2ec8d52800fd0baa572bd65ec91108706477b5f|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-05-08|Only try to get the userGroups if EE is enabled
+ad369a6db583c5f4cef212c39256605470732037|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-04-24|added new options for date filter
+23688f512e32623751052bac99640f930726ed41|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-04-24|alphabetically sort knowledge sets
+1409f2ce44a32649c648344061f55c7217013498|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-04-24|updated how the models are shown for assistants
+206c9c4237b215baf5616b752aa2e3daac6529ac|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-04-24|show the actual default model for personas
+babac3daddd420818c9b848c2e518a3a7b281913|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-04-10|pessimistic disconnect handling
+c61780c483fa3a3f0e14e1fe1f34b9f543ee5790|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-04-05|updated style
+83e33d7efcbece93790c37138f4130c6eb6a0832|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-04-05|added tooltips for personas
+9c6a5741f1c90859692cd0399e1cf303cf8d9607|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-04-05|added new option in admin
+eb460341d53126d53cc75db1640f38b19e0c9943|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-04-05|updated disclaimer modal
+4b42a026497b00f17626c116d5383b1fbb213a55|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-04-05|updated header, footer, login, signup
+d19b3cc8ca88c1c91d2db42295f2d1bb6866f7ec|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-04-05|added admin page for disclaimer configuration
+f49349d372928339d9ad1186f7c665b3baf6c626|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-04-05|added backend for new configuration option for disclaimer
+715e1f3722ec07ea7472b92fe8096b28c5691c69|Matthieu Boret|matthieu.boret@fr.clara.net|2024-03-28|Update sharepoint connector behavior
+2824a873e1dac7c3b540cf2a9f49af6d89526b3e|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-03-26|show modal when user logs in
+65fbca40ae9983b8d5a6b3c3d064907856aa98cc|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-03-26|added disclaimer as modal, when user logs in
+732d6658ab799a7d9d3f6c133bf8b8aa53c5ddfc|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-03-20|layout fixes
+d2c33446a0a248923916bbd2e85ce4593e555da6|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-03-14|layout fix for search page
+bcdaf71c5b2dcb973414f30cb7598405ed726680|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-03-13|customizations for logo, header, footer, login & signup page
+16da6cf9b302a846cc4aa4421ac2638fe5a90313|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-03-12|fixed condition
+dccd98884ef69a34dd4bb9fbff0cfcae2caea0db|Zoltan Szabo|zoltan.szabo@eaudeweb.ro|2024-03-12|don't try to authenticate in case SMTP_USER & SMTP_PASS are not set

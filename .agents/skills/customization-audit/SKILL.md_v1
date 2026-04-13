@@ -1,0 +1,44 @@
+---
+name: customization-audit
+description: Scans fork history for team commits, categorizes them by intent, and generates AI reproduction prompts.
+---
+
+# Skill: Customization Audit
+
+## 1. Setup & Context
+- **Developer List**: Load the list of names/emails from the local `/.agents/team.yaml` file.
+- **Target Range**: Compare the current branch against the base `upstream/main` (or the specific base tag used for the fork).
+- **Scope**: Perform a `git log` filtered by the authors found in `team.yaml`. Include 100% of these commits; do not skip minor changes.
+
+## 2. Dynamic Categorization
+- **Diff Analysis**: Analyze the code changes for every identified commit.
+- **Auto-Labeling**: Group commits by their functional intent (e.g., "Langfuse Tracing," "Docker Networking," "Deep Research Logic"). 
+- **Clustering**: If a change doesn't fit an existing group, create a new logical category. Do not use generic "Miscellaneous" labels unless absolutely necessary.
+
+## 3. Extraction & Detail
+For **every** identified customization, extract and document:
+- **Feature Name**: A concise title for the change.
+- **Logic Summary**: A clear explanation of what the code does and why it was added.
+- **Files Affected**: A bulleted list of file paths.
+- **Reference**: The short Git commit hash.
+- **Complexity**: Rank as `Low`, `Medium`, or `High` based on the likelihood of merge conflicts.
+- **Reproduction Blueprint**: 
+    - Generate a standalone, technical prompt.
+    - **Goal**: This prompt must contain enough detail (variable names, logic steps, file locations) for a fresh AI agent to recreate the feature from scratch in a future version.
+
+## 4. Output Generation
+- Create or update a file named `FORK_CUSTOMIZATIONS.md` in the root directory.
+- Use a clean Markdown table format for maximum readability.
+
+### Output Template:
+# EEA Fork Customization Report (Complete Inventory)
+*Generated on: [Current Date]*
+
+## [Category Name]
+| Feature | Logic & Files | Blueprint / Instructions | Risk | Hash |
+| :--- | :--- | :--- | :--- | :--- |
+| **[Name]** | *Intent:* [Summary]<br>*Files:* `path/to/file` | **Prompt:** "[Detailed reproduction prompt]" | [Level] | `[hash]` |
+
+## 5. Skill Alignment Check
+- Compare the finalized inventory against the "Protected Features" defined in `.agents/skills/smart-sync/SKILL.md`.
+- **Gap Analysis**: Explicitly list any found customizations that are NOT currently listed as protected in the sync skill.

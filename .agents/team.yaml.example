@@ -1,0 +1,7 @@
+developers:
+  - name: "Your Name"
+    email: "your.email@eea.europa.eu"
+    github: "your_user"
+  - name: "Colleague Name"
+    email: "colleague.email@eea.europa.eu"
+    github: "colleague_user"

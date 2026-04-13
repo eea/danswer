@@ -1,0 +1,32 @@
+---
+name: customization-audit
+description: Audits the fork by traversing commit history and requires user validation of discovered data.
+---
+
+# Skill: Customization Audit
+
+## 1. Discovery & Inventory Phase
+- **Team Fetching**: Load developers from `/.agents/team.yaml`.
+- **Primary Scan**: Run `git log [merge-base]..HEAD --author="[Author Name]"` for each team member.
+- **Secondary Scan (Safety Net)**: Run `git diff --name-only upstream/main..HEAD`. Any file changed in this diff that was NOT captured in the author scan must be flagged as an "Orphan Change."
+
+## 2. Validation Checkpoint (MANDATORY)
+- **Action**: Before analyzing code logic or generating blueprints, the agent **MUST** present the following to the user:
+    1. **Commit Table**: A list of every hash, author, and subject line found.
+    2. **File List**: A deduplicated list of every file touched by the team.
+    3. **Orphan List**: Any files modified in the fork that don't clearly belong to a team member's commit (to catch squash merges or missing names).
+- **User Input**: Ask: *"I found [X] commits and [Y] files. Is anything missing? Please confirm to proceed to the Blueprinting phase."*
+- **Constraint**: Stop execution here and wait for confirmation.
+
+## 3. Extraction & Blueprinting
+- **Analysis**: Only once confirmed, run `git show [hash]` for the validated list.
+- **Categorization**: Group commits by intent (e.g., "Langfuse," "Docker," "Deep Research").
+- **Blueprint Generation**: Create a standalone AI prompt for each feature group, including specific function names and file paths.
+
+## 4. Output: FORK_CUSTOMIZATIONS.md
+- Generate the final report in a table format.
+- Ensure 100% of the **validated** inventory is included.
+
+## 5. Verification
+- Cross-reference the final list with `.agents/skills/smart-sync/SKILL.md`.
+- Explicitly list "Unprotected" features that were found in the audit but are missing from the sync skill.
