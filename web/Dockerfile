@@ -79,11 +79,11 @@ ENV SENTRY_RELEASE=${SENTRY_RELEASE}
 # Add NODE_OPTIONS argument
 ARG NODE_OPTIONS
 
-# SENTRY_AUTH_TOKEN is injected via BuildKit secret mount so it is never written
+# SENTRY_AUTH_TOKEN is injected via BuildKit secret [<0;65;49Mmount so it is never written
 # to any image layer, build cache, or registry manifest.
 # Use NODE_OPTIONS in the build command
-RUN --mount=type=secret,id=sentry_auth_token,env=SENTRY_AUTH_TOKEN \
-    NODE_OPTIONS="${NODE_OPTIONS}" npx next build
+#RUN --mount=type=secret,id=sentry_auth_token,env=SENTRY_AUTH_TOKEN \
+RUN NODE_OPTIONS="${NODE_OPTIONS}" npx next build
 
 # Step 2. Production image, copy all the files and run next
 FROM base AS runner
