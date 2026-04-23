@@ -46,7 +46,7 @@ export default function Page(props: { params: Promise<{ pageTitle: string }> }) 
       <BackButton />
       <div className="mx-auto container">
         <AdminPageTitle
-          title="Customize Layout"
+          title="Pages"
           icon={<FiCpu size={32} className="my-auto" />}
         />
         <div className="mb-2 mt-6 font-heading-h2 text-text-04">
