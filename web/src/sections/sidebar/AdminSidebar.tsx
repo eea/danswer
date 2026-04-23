@@ -42,6 +42,7 @@ const SECTIONS = {
   PERMISSIONS: "Permissions",
   ORGANIZATION: "Organization",
   USAGE: "Usage",
+  CUSTOMIZE_LAYOUT: "Customize Layout",
 } as const;
 
 interface SidebarItemEntry {
@@ -167,8 +168,8 @@ function buildItems(
   }
 
   // 9. Customize Layout (EEA only, admin only)
-  if (!isCurator && enableEnterprise) {
-    add(SECTIONS.ORGANIZATION, ADMIN_ROUTES.EEA_PAGES);
+  if (!isCurator) {
+    add(SECTIONS.CUSTOMIZE_LAYOUT, ADMIN_ROUTES.EEA_PAGES);
   }
 
   return items;
@@ -228,9 +229,9 @@ function AdminSidebarInner({
     billingLoading || licenseLoading
       ? true
       : Boolean(
-          (billingData && hasActiveSubscription(billingData)) ||
-            licenseData?.has_license
-        );
+        (billingData && hasActiveSubscription(billingData)) ||
+        licenseData?.has_license
+      );
   const hooksEnabled =
     enableEnterprise && (settings?.settings.hooks_enabled ?? false);
 

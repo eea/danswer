@@ -263,8 +263,8 @@ export const ADMIN_ROUTES = {
   EEA_PAGES: {
     path: "/admin/eea_config/pages",
     icon: SvgPaintBrush,
-    title: "Customize Pages",
-    sidebarLabel: "Custom Pages",
+    title: "Customize Layout",
+    sidebarLabel: "Customize Layout",
   },
 } as const satisfies Record<string, AdminRouteEntry>;
 

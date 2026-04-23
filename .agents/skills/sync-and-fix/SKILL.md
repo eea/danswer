@@ -14,6 +14,7 @@ When this skill is invoked with a `{target_upstream_tag}`:
 2. **The Refactor Check**:
    - For every "Intent" in the map, verify the logic still exists in the code.
    - If files were moved/renamed in the upstream, use the "Re-implementation Guide" from the map to restore the feature.
+   - **Missing UI Elements**: Pay special attention to the "Customize Layout" admin panel feature. If its source code is in place but missing from the UI, ensure its corresponding menu item is restored and properly wired into the updated admin sidebar/navigation.
 
 3. **The Docker Fix-Loop**:
    - Run `docker compose build`.

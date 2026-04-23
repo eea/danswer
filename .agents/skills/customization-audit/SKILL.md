@@ -12,6 +12,7 @@ description: Generates a mapping of fork customizations with explicit re-impleme
      - *Goal*: What does this change achieve?
      - *Logic*: What is the specific algorithm or condition?
      - *Dependencies*: Which other custom or upstream files does this rely on?
+   - **Crucial Feature Check**: Specifically verify the presence and logic of the "Customize Layout" admin panel section, ensuring both its source code and the admin menu item are fully documented.
 4. **Output Generation**:
    - Create `customization_map.md`.
    - **Section IV: Re-implementation Guide**: Write a step-by-step technical instruction for *re-creating* the feature if the original files are missing or heavily refactored in the new upstream.

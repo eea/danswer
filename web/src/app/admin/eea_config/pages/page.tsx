@@ -192,7 +192,7 @@ const Page = () => {
     <>
       <div className="mb-8">
         <div className="mx-auto container">
-          <AdminPageTitle icon={<FiCpu size={32} />} title="Pages configuration" />
+          <AdminPageTitle icon={<FiCpu size={32} />} title="Customize Layout" />
           <div className="mb-3 text-text-04 font-main-ui-body">
             <strong>User defined pages</strong> allow you to create pages.
           </div>
