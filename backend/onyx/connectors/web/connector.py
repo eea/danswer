@@ -117,7 +117,7 @@ WEB_CONNECTOR_RESOURCE_TYPES_TO_BLOCK_COMPREHENSIVE = [
     "manifest",
     "other",
     # Legacy-aggressive option:
-    "stylesheet",
+    #"stylesheet", we need this to load the page content properly
 ]
 WEB_CONNECTOR_RESOURCE_TYPES_TO_BLOCK_LEGACY = WEB_CONNECTOR_RESOURCE_TYPES_TO_BLOCK_COMPREHENSIVE
 WEB_CONNECTOR_RESOURCE_TYPES_TO_BLOCK_LESS_RESTRICTIVE = ["image", "font", "media"]
