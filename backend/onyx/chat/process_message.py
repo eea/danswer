@@ -124,7 +124,7 @@ from onyx.utils.logger import setup_logger
 from onyx.utils.telemetry import mt_cloud_telemetry
 from onyx.utils.timing import log_function_time
 from onyx.utils.timing import log_generator_function_time
-from onyx.utils.eea_utils import add_metadata_to_llm
+# EEA Trace logic is now in eea_log_turn
 
 from shared_configs.contextvars import get_current_tenant_id
 
@@ -687,21 +687,16 @@ def build_chat_turn(
             commit=True,
         )
         chat_history.append(user_message)
-        
-        # EEA Sticky Logic: Populate Langfuse metadata
-        user_identity.trace_id = str(user_message.id)
-        user_identity.trace_name = user_message.message[:200]
-        persona_name = persona.name if persona else "Default"
-        user_identity.generation_name = f"{persona_name} - assistant_response"
 
-        for i, llm in enumerate(llms):
-            llms[i] = add_metadata_to_llm(
-                llm,
-                user_identity.generation_name,
-                user,
-                user_message,
-                chat_session,
-            )
+    # EEA: store turn metadata so eea_set_turn_output() can log it later.
+    # Placed after the if/else so it always runs for both new messages and regenerations.
+    from onyx.utils.eea_utils import eea_start_turn
+    eea_start_turn(
+        user_message=user_message,
+        user_email=user.email or "anon",
+        persona_name=persona.name if persona else "Default",
+        session_id=str(chat_session.id),
+    )
 
     # Collect file IDs for the file reader tool *before* summary truncation so
     # that files attached to older (summarized-away) messages are still accessible
@@ -1585,7 +1580,6 @@ def llm_loop_completion_handle(
             )
         else:
             final_answer = "The generation was stopped by the user."
-
     save_chat_turn(
         message_text=final_answer,
         reasoning_tokens=reasoning_tokens,
@@ -1623,6 +1617,11 @@ def llm_loop_completion_handle(
             compression_params=compression_params,
             tool_id_to_name=tool_id_to_name,
         )
+
+    # EEA: record final answer in the active tracing span
+    from onyx.utils.eea_utils import eea_set_turn_output
+    eea_set_turn_output(assistant_message)
+
 
 
 _CITATION_LINK_START_PATTERN = re.compile(r"\s*\[\[\d+\]\]\(")

@@ -3,9 +3,12 @@ services:
     ports:
       - "80:80"
       - "13000:80"  # allow for localhost:3000 usage, since that is the norm
+    environment:
+      - ONYX_BACKEND_API_HOST=api_server.
+      - ONYX_WEB_SERVER_HOST=web_server.
 
   api_server:
-#    command: bash -c "tail -f /dev/null"
+    command: bash -c "tail -f /dev/null"
     env_file:
       - ./.env
     depends_on:

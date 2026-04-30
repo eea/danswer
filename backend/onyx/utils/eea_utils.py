@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 import json
 import os
 import requests
@@ -162,13 +163,20 @@ def is_pdf_mime_type(url):
     else:
         return False
 
-def add_metadata_to_llm(llm, generation, user, user_message, chat_session):
-    user_id = "anon"
-    if user is not None:
-        user_id = user.email
+def get_eea_user_id(user_email: str, persona_name: str) -> str:
+    """Helper to get a consistent user ID for EEA tracing."""
+    user_id = user_email
     if user_id.startswith(DANSWER_API_KEY_PREFIX.lower()):
         user_id = user_id.split("@")[0].split(DANSWER_API_KEY_PREFIX.lower())[1]
-    final_user_id = f"{user_id} - {chat_session.persona.name}"
+    return f"{user_id} - {persona_name}"
+
+
+def add_metadata_to_llm(llm, generation, user, user_message, chat_session):
+    user_email = "anon"
+    if user is not None:
+        user_email = user.email
+
+    final_user_id = get_eea_user_id(user_email, chat_session.persona.name)
     llm._model_kwargs={
         'metadata':{
             "debug_langfuse": True,
@@ -180,6 +188,80 @@ def add_metadata_to_llm(llm, generation, user, user_message, chat_session):
         }
     }
     return llm
+
+
+import threading
+
+# Thread-local storage for turn metadata.
+# threading.local() persists within the same thread, so it correctly bridges
+# eea_start_turn (called in build_chat_turn) and eea_set_turn_output (called
+# in llm_loop_completion_handle) which both run in the same streaming thread.
+_eea_thread_local = threading.local()
+
+
+def eea_start_turn(
+    user_message: ChatMessage,
+    user_email: str,
+    persona_name: str,
+    session_id: str,
+) -> None:
+    """
+    Store turn metadata at the start of a chat turn so that eea_set_turn_output()
+    can later log input + output together as a single complete span.
+    """
+    print(f"EEA: eea_start_turn called for message_id={user_message.id}")
+    _eea_thread_local.turn_data = {
+        "user_message_id": user_message.id,
+        "user_message": user_message.message,
+        "user_email": user_email,
+        "persona_name": persona_name,
+        "session_id": session_id,
+    }
+
+
+def eea_set_turn_output(assistant_message: ChatMessage) -> None:
+    """
+    Create a single, self-contained span with both input and output via Onyx's
+    tracing framework (routes to Langfuse when configured).
+
+    The span is opened and closed synchronously here — no cross-context token
+    issues possible. Call this once the final assistant answer is assembled.
+    """
+    data: dict[str, Any] | None = getattr(_eea_thread_local, "turn_data", None)
+    print(f"EEA eea_set_turn_output called, data is None: {data is None}")
+
+    if data is None:
+        return
+
+    try:
+        from onyx.tracing.framework.create import trace, function_span
+
+        # Use the actual question as the trace name (truncated for UI sanity)
+        trace_name = data["user_message"]
+        if len(trace_name) > 200:
+            trace_name = trace_name[:197] + "..."
+
+        metadata = {
+            "chat_session_id": f"{data['session_id']}:{assistant_message.id}",
+            "assistant_message_id": assistant_message.id,
+            "user_email": data["user_email"],
+            "user_id": get_eea_user_id(data["user_email"], data["persona_name"]),
+            "persona_name": data["persona_name"],
+        }
+
+        print(f"EEA: logging turn trace '{trace_name[:60]}' to Langfuse")
+        # Creating a trace sets the top-level name in Langfuse
+        with trace(workflow_name=trace_name, metadata=metadata):
+            # The span inside captures the full input/output for the turn
+            with function_span(
+                name=data["user_message"],
+                input=data["user_message"],
+                output=assistant_message.message,
+            ):
+                pass  # span is started and finished synchronously
+        print("EEA: turn trace submitted successfully")
+    except Exception:
+        logger.warning("EEA: failed to log turn to tracing framework", exc_info=True)
 
 def score(trace, feedback):
     langfuse.create_score(
@@ -211,7 +293,7 @@ def find_id(message_id, db_session):
         chat_message_list.append(message_id)
         chat_session_id = result[0][0].__str__()
         message_id = result[0][1]
-        if message_id is None:
+        if message_id is None or message_id is False:
             break
     return {"session_id": chat_session_id, "messages": chat_message_list}
 
