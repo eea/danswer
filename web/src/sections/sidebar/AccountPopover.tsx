@@ -16,6 +16,7 @@ import NotificationsPopover from "@/sections/sidebar/NotificationsPopover";
 import {
   SvgBell,
   SvgExternalLink,
+  SvgFileText,
   SvgLogOut,
   SvgUser,
   SvgNotificationBubble,
@@ -112,7 +113,32 @@ function SettingsPopover({
             target="_blank"
             rel="noopener noreferrer"
           >
-            Help & FAQ
+            Help &amp; FAQ
+          </LineItem>,
+          // EEA: legal & informational page links
+          <LineItem key="disclaimer" icon={SvgFileText} href="/pages/disclaimer">
+            Disclaimer
+          </LineItem>,
+          <LineItem
+            key="privacy-architecture"
+            icon={SvgFileText}
+            href="/pages/privacy"
+          >
+            Privacy Architecture
+          </LineItem>,
+          <LineItem
+            key="privacy-statement"
+            icon={SvgFileText}
+            href="/pages/privacy-statement"
+          >
+            Privacy Statement
+          </LineItem>,
+          <LineItem
+            key="whats-new"
+            icon={SvgFileText}
+            href="/pages/whats-new"
+          >
+            What&apos;s new
           </LineItem>,
           null,
           showLogin && (

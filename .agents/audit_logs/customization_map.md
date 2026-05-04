@@ -96,11 +96,17 @@
 2. Pages have: `title` (used as URL slug), `content` (markdown), `is_public` flag. Public pages are accessible without admin role.
 3. `hooks.tsx` — React hooks for fetching/mutating pages via API.
 4. `lib.tsx` — shared helpers for the page admin section.
-5. User popover `added customizable pages to user popover` (commit `87536313`) — pages appear as links in the profile dropdown.
+5. **User popover links** (commit `87536313`) — four EEA legal/info links are rendered in the user account popover (`web/src/sections/sidebar/AccountPopover.tsx`) inside `SettingsPopover`, after the `Help & FAQ` item, using `<LineItem icon={SvgFileText} href="...">` from `@opal/icons`:
+   - `/pages/disclaimer` → "Disclaimer"
+   - `/pages/privacy` → "Privacy Architecture"
+   - `/pages/privacy-statement` → "Privacy Statement"
+   - `/pages/whats-new` → "What's new"
 6. Privacy statement page added (commit `62a49359`) — non-EE-restricted.
 7. Backend: Pages stored in DB, served via `/api/eea/pages` endpoint.
 
-**Dependencies**: Backend model + API, `eea_utils.py` settings fetch, user popover component.
+**Dependencies**: Backend model + API, `eea_utils.py` settings fetch, user popover component (`AccountPopover.tsx`).
+
+**Sticky Logic** ⚠️: The four `<LineItem>` entries in `AccountPopover.tsx → SettingsPopover` MUST survive upstream refactors. If upstream renames or recreates the user popover file, find the new file (search for `onyx-user-dropdown` id or `PopoverMenu`) and re-add these entries.
 
 **Key Commits**: `836e3c3d`, `3dd2c77b`, `875363133`, `c26ce64b7`, `62a49359`, `dfd19cfe`
 
@@ -283,6 +289,7 @@
 | SL-07 | `Dockerfile`: tini entrypoint | `ENTRYPOINT ["/usr/bin/tini", "--"]` | Required for playwright subprocess reaping |
 | SL-08 | `DiacriticTagResolver`: registry build | Class-based, streaming-compatible | EEA proprietary normalization logic |
 | SL-09 | Healthcheck logic: consecutive failure threshold | 2 consecutive failures before marking unhealthy | Prevents connector auto-pause on transient errors |
+| SL-10 | `AccountPopover.tsx → SettingsPopover`: EEA page links | Four `<LineItem>` entries for Disclaimer, Privacy Architecture, Privacy Statement, What's new | Legal/informational links required by EEA. Upstream often rewrites the user popover — always re-add these after `Help & FAQ` and before the `null` separator. Search for `onyx-user-dropdown` to find the file. |
 
 ---
 
@@ -330,7 +337,24 @@
 
 **Prompt for re-implementation**:
 
-> "Create a DB model `EEAPage` with `title: str` (used as URL slug), `content: str` (markdown), `is_restricted: bool`. Add CRUD endpoints at `/api/eea/pages`. Create `web/src/app/admin/eea_config/pages/` with Next.js pages for listing, creating, editing, and viewing pages. In `web/src/components/layout/UserDropdown.tsx` (or equivalent user popover), fetch and render EEA pages as dropdown links. Pages with `is_restricted=False` should be accessible without admin role."
+> "Create a DB model `EEAPage` with `title: str` (used as URL slug), `content: str` (markdown), `is_restricted: bool`. Add CRUD endpoints at `/api/eea/pages`. Create `web/src/app/admin/eea_config/pages/` with Next.js pages for listing, creating, editing, and viewing pages. Pages with `is_restricted=False` should be accessible without admin role.
+>
+> **CRITICAL — user popover links**: Find the file containing the user account popover. Search for `onyx-user-dropdown` (the trigger div id) or `PopoverMenu` to locate it — currently `web/src/sections/sidebar/AccountPopover.tsx`. Inside the `SettingsPopover` component's `<PopoverMenu>` array, add the following four `<LineItem>` entries **after** the `Help & FAQ` item and **before** the `null` separator. Import `SvgFileText` from `@opal/icons`:
+> ```tsx
+> // EEA: legal & informational page links
+> <LineItem key="disclaimer" icon={SvgFileText} href="/pages/disclaimer">
+>   Disclaimer
+> </LineItem>,
+> <LineItem key="privacy-architecture" icon={SvgFileText} href="/pages/privacy">
+>   Privacy Architecture
+> </LineItem>,
+> <LineItem key="privacy-statement" icon={SvgFileText} href="/pages/privacy-statement">
+>   Privacy Statement
+> </LineItem>,
+> <LineItem key="whats-new" icon={SvgFileText} href="/pages/whats-new">
+>   What&apos;s new
+> </LineItem>,
+> ```"
 
 ---
 
@@ -371,6 +395,7 @@
 | Diacritic Resolver | ❌ Not mentioned | **GAP**: Add rule for `DiacriticTagResolver` — protect from upstream refactor that restructures `natural_language_processing/`. |
 | LANGFUSE_FLUSH_AT=1 | Partially (env var mentioned) | **GAP**: Add explicit check: after sync, verify `.env.example` contains `LANGFUSE_FLUSH_AT=1`. |
 | tini Dockerfile entrypoint | ❌ Not mentioned | **GAP**: Add Dockerfile guard: "Verify ENTRYPOINT uses tini after upstream Dockerfile changes." |
+| AccountPopover EEA page links | ✅ Added — SL-10 | **DONE**: Four sidebar links (Disclaimer, Privacy Architecture, Privacy Statement, What's new) documented in SL-10 and RG-04. Smart-sync rule added. |
 
 **Recommended addition to `smart-sync.md`**:
 ```

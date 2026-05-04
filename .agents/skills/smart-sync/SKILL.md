@@ -52,6 +52,31 @@ Before finalizing the merge, the agent must perform a "Call Trace Audit":
 3. **Parameter Propagation**: If a helper function is called that eventually triggers an LLM, ensure the `metadata` is passed as an argument through the entire chain.
 4. **Validation**: Use static analysis to flag any `completion()` call that does not explicitly pass a `metadata=` argument. Fix these by injecting the contextually relevant metadata (including the `original_question` for naming).
 
+## EEA Sidebar Page Links (SL-10)
+
+The user account popover **must always** contain four EEA-specific navigation links. After any upstream sync that touches sidebar or popover files:
+
+1. **Find the popover file**: Search for `onyx-user-dropdown` (the trigger `<div>` id) or `PopoverMenu` across the `web/src` tree.
+   - Current file: `web/src/sections/sidebar/AccountPopover.tsx`
+2. **Locate insertion point**: Inside `SettingsPopover` → `<PopoverMenu>` array, find the `Help & FAQ` `<LineItem>` and the `null` separator that follows it.
+3. **Verify these four entries exist between them** (import `SvgFileText` from `@opal/icons` if missing):
+   ```tsx
+   // EEA: legal & informational page links
+   <LineItem key="disclaimer" icon={SvgFileText} href="/pages/disclaimer">
+     Disclaimer
+   </LineItem>,
+   <LineItem key="privacy-architecture" icon={SvgFileText} href="/pages/privacy">
+     Privacy Architecture
+   </LineItem>,
+   <LineItem key="privacy-statement" icon={SvgFileText} href="/pages/privacy-statement">
+     Privacy Statement
+   </LineItem>,
+   <LineItem key="whats-new" icon={SvgFileText} href="/pages/whats-new">
+     What&apos;s new
+   </LineItem>,
+   ```
+4. **If missing**: Re-add them. This is a **Logic Violation** — do not require user approval.
+
 ## Constraints
 - Do not delete our custom features.
 - Always use 'Planning Mode' for conflicts involving more than 3 files.
