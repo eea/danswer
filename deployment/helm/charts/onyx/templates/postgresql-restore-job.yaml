@@ -15,10 +15,21 @@ spec:
         app: postgresql-restore
         {{- include "onyx.labels" . | nindent 8 }}
     spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        fsGroup: 999
       restartPolicy: Never
       containers:
         - name: postgresql-restore
           image: postgres:{{ .Values.postgresql.simple.tag | default "16" }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
           env:
             - name: POSTGRES_HOST
               value: {{ include "onyx.fullname" . }}-postgresql
@@ -74,17 +85,27 @@ spec:
               PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -d postgres -c "DROP DATABASE IF EXISTS $TARGET_DB;"
               {{- end }}
 
-              # Restore the backup
-              echo "Restoring backup..."
-              gunzip -c "$BACKUP_FILE" | PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -d "$TARGET_DB" --single-transaction
+              # Restore the backup (custom format compressed with gzip)
+              echo "Decompressing backup..."
+              gunzip -c "$BACKUP_FILE" > /tmp/restore.dump
 
+              echo "Restoring with pg_restore..."
+              PGPASSWORD="$POSTGRES_PASSWORD" pg_restore -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -d "$TARGET_DB" \
+                --no-owner --no-privileges --clean --if-exists --single-transaction /tmp/restore.dump
+
+              rm -f /tmp/restore.dump
               echo "Backup restored successfully."
           volumeMounts:
             - name: postgresql-backup
               mountPath: /backups
-          {{- toYaml .Values.postgresql.restore.resources | nindent 10 }}
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            {{- toYaml .Values.postgresql.restore.resources | nindent 12 }}
       volumes:
         - name: postgresql-backup
           persistentVolumeClaim:
             claimName: {{ include "onyx.fullname" . }}-postgresql-backup
+        - name: tmp
+          emptyDir: {}
 {{- end }}

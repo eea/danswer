@@ -39,9 +39,10 @@ spec:
         app.kubernetes.io/managed-by: {{ .Release.Service }}
         app.kubernetes.io/name: {{ include "onyx.name" . }}
     spec:
-      {{- with .Values.postgresql.simple.securityContext }}
+      automountServiceAccountToken: false
+      {{- if .Values.postgresql.simple.podSecurityContext }}
       securityContext:
-        {{- toYaml . | nindent 8 }}
+        {{- toYaml .Values.postgresql.simple.podSecurityContext | nindent 8 }}
       {{- end }}
       containers:
         - name: postgresql
@@ -67,16 +68,47 @@ spec:
           volumeMounts:
             - name: postgresql-data
               mountPath: /var/lib/postgresql/data
+            - name: postgresql-run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
           {{- if .Values.postgresql.initdb.enabled }}
             - name: postgresql-init
               mountPath: /docker-entrypoint-initdb.d
           {{- end }}
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - pg_isready -U "$POSTGRES_USER" -d {{ .Values.postgresql.simple.database | default "onyx" }}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - pg_isready -U "$POSTGRES_USER" -d {{ .Values.postgresql.simple.database | default "onyx" }}
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
           resources:
             {{- toYaml .Values.postgresql.simple.resources | nindent 12 }}
-          {{- if .Values.postgresql.simple.securityContext }}
           securityContext:
+            {{- if .Values.postgresql.simple.securityContext }}
             {{- toYaml .Values.postgresql.simple.securityContext | nindent 12 }}
-          {{- end }}
+            {{- else }}
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsUser: 999
+            {{- end }}
       {{- if .Values.postgresql.initdb.enabled }}
       initContainers:
         - name: init-scripts
@@ -95,6 +127,10 @@ spec:
         - name: postgresql-data
           persistentVolumeClaim:
             claimName: {{ default (printf "%s-postgresql" (include "onyx.fullname" .)) $existingClaim }}
+        - name: postgresql-run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
         {{- if .Values.postgresql.initdb.enabled }}
         - name: postgresql-init
           configMap:

@@ -1,4 +1,3 @@
-{{- if .Values.vectorDB.enabled }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -17,5 +16,3 @@ spec:
       port: {{ default 9000 .Values.indexCapability.service.servicePort }}
       targetPort: {{ default 9000 .Values.indexCapability.service.targetPort }}
   type: {{ default "ClusterIP" .Values.indexCapability.service.type }}
-{{- end }}
-

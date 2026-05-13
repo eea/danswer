@@ -1,52 +1,49 @@
 apiVersion: v2
-name: onyx
-description: A Helm chart for Kubernetes
+name: onyx-stack
+description: An Onyx derived Helm chart for GPTLab
 home: https://www.onyx.app/
+icon: https://raw.githubusercontent.com/eea/helm-charts/main/sources/onyx/logo_onyx.png
 sources:
   - "https://github.com/onyx-dot-app/onyx"
+keywords:
+  - gptlab
+  - ai
+  - search
+  - question-answering
+  - onyx
 type: application
-version: 0.4.40
-appVersion: latest
+version: 0.5.1  
+appVersion: "v3.2.1-eea.0.0.107-dev"
 annotations:
   category: Productivity
   licenses: MIT
   images: |
     - name: webserver
-      image: eeacms/danswer:web-v2.3.0-eea.0.0.83-dev
+      image: eeacms/danswer:web-v3.2.1-eea.0.0.106-dev
     - name: background
-      image: eeacms/danswer:backend-v2.3.0-eea.0.0.83-dev
+      image: eeacms/danswer:backend-v3.2.1-eea.0.0.106-dev
     - name: model-server
-      image: eeacms/danswer:model_server-v2.3.0-eea.0.0.83-dev
+      image: eeacms/danswer:model_server-v3.2.1-eea.0.0.106-dev
     - name: vespa
       image: vespaengine/vespa:8.609.39
 dependencies:
   - name: vespa
-    version: 0.2.25
-    repository: https://onyx-dot-app.github.io/vespa-helm-charts
+    version: 0.2.26
+    repository: https://eea.github.io/helm-charts
     condition: vespa.enabled
   - name: opensearch
     version: 3.4.0
     repository: https://opensearch-project.github.io/helm-charts
     condition: opensearch.enabled
-  - name: ingress-nginx
-    version: 4.13.3
-    repository: https://kubernetes.github.io/ingress-nginx
-    condition: nginx.enabled
-    alias: nginx
-  - name: redis
-    version: 0.16.6
-    repository: https://ot-container-kit.github.io/helm-charts
-    condition: redis.enabled
   - name: minio
     version: 5.4.0
     repository: https://charts.min.io/
     condition: minio.enabled
   - name: postfix
-    version: 3.1.2
+    version: 3.2.0
     repository: https://eea.github.io/helm-charts
     condition: postfix.enabled
   - name: code-interpreter
     version: 0.3.3
     repository: https://onyx-dot-app.github.io/python-sandbox/
     condition: codeInterpreter.enabled
-

@@ -16,8 +16,28 @@
 *.tmp
 *.orig
 *~
+*-backup.yaml
 # Various IDEs
 .project
 .idea/
 *.tmproj
 .vscode/
+# Custom values files (not part of chart)
+custom-values*.yaml
+# Disabled templates
+templates_disabled/
+# Images (logo is not needed in chart)
+*.png
+# AI/LLM tooling files
+.claude/
+.claude-flow/
+CLAUDE.md
+.mcp.json
+.plandex-v2/
+.cursor/
+.aider*
+.continue/
+.copilot/
+.codeium/
+.tabnine/
+.opencode/
