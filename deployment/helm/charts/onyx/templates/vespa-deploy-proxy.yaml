@@ -1,0 +1,110 @@
+{{- if and .Values.vespa.enabled .Values.vespa.deployProxy.enabled }}
+{{- $proxyName := default (printf "%s-vespa-deploy-proxy" (include "onyx.fullname" .)) .Values.vespa.deployProxy.name }}
+{{- $proxyConfigMapName := default (printf "%s-vespa-proxy-nginx-conf" (include "onyx.fullname" .)) .Values.vespa.deployProxy.configMapName }}
+{{- $vespaHost := printf "%s.%s.%s.svc.cluster.local" .Values.vespa.name .Values.vespa.service.name .Release.Namespace }}
+{{- $vespaAdminPort := default 19071 .Values.vespa.deployProxy.vespaAdminPort }}
+{{- $vespaHealthPort := default 8081 .Values.vespa.deployProxy.vespaHealthPort }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $proxyConfigMapName }}
+  labels:
+    {{- include "onyx.labels" . | nindent 4 }}
+data:
+  nginx.conf: |
+    events { worker_connections 64; }
+    http {
+      resolver {{ .Values.vespa.deployProxy.resolver }} valid={{ .Values.vespa.deployProxy.resolverValid }} ipv6=off;
+
+      server {
+        listen {{ .Values.vespa.deployProxy.healthPort }};
+        location / {
+          set $vespa_health_upstream http://{{ $vespaHost }}:{{ $vespaHealthPort }};
+          proxy_pass $vespa_health_upstream;
+          proxy_read_timeout 60;
+          proxy_connect_timeout 10;
+        }
+      }
+
+      server {
+        listen {{ .Values.vespa.deployProxy.service.port }};
+
+        location = /application/v2/tenant/default/prepareandactivate {
+          set $vespa_prepare_url http://{{ $vespaHost }}:{{ $vespaAdminPort }}/application/v2/tenant/default/prepareandactivate?ignoreValidationErrors=true;
+          proxy_pass $vespa_prepare_url;
+          proxy_pass_request_headers on;
+          proxy_read_timeout 1800;
+          proxy_send_timeout 300;
+          proxy_connect_timeout 30;
+          proxy_request_buffering off;
+          client_max_body_size 100m;
+        }
+
+        location / {
+          set $vespa_upstream http://{{ $vespaHost }}:{{ $vespaAdminPort }};
+          proxy_pass $vespa_upstream;
+          proxy_read_timeout 300;
+          proxy_connect_timeout 30;
+          client_max_body_size 100m;
+        }
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $proxyName }}
+  labels:
+    {{- include "onyx.labels" . | nindent 4 }}
+    app: vespa
+    role: deploy-proxy
+spec:
+  replicas: {{ .Values.vespa.deployProxy.replicas }}
+  selector:
+    matchLabels:
+      app: vespa
+      role: deploy-proxy
+  template:
+    metadata:
+      labels:
+        app: vespa
+        role: deploy-proxy
+    spec:
+      containers:
+        - name: nginx
+          image: {{ .Values.vespa.deployProxy.image }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: {{ .Values.vespa.deployProxy.healthPort }}
+            - containerPort: {{ .Values.vespa.deployProxy.service.port }}
+          resources:
+            {{- toYaml .Values.vespa.deployProxy.resources | nindent 12 }}
+          volumeMounts:
+            - name: nginx-conf
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+      volumes:
+        - name: nginx-conf
+          configMap:
+            name: {{ $proxyConfigMapName }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $proxyName }}
+  labels:
+    {{- include "onyx.labels" . | nindent 4 }}
+spec:
+  selector:
+    app: vespa
+    role: deploy-proxy
+  ports:
+    - name: health
+      port: {{ .Values.vespa.deployProxy.service.healthPort }}
+      targetPort: {{ .Values.vespa.deployProxy.healthPort }}
+      protocol: TCP
+    - name: admin
+      port: {{ .Values.vespa.deployProxy.service.port }}
+      targetPort: {{ .Values.vespa.deployProxy.service.port }}
+      protocol: TCP
+{{- end }}

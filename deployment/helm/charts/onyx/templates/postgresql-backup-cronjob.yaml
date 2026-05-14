@@ -18,10 +18,21 @@ spec:
       ttlSecondsAfterFinished: {{ .Values.postgresql.backup.ttlSecondsAfterFinished | default 86400 }}
       template:
         spec:
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 999
+            fsGroup: 999
           restartPolicy: OnFailure
           containers:
             - name: postgresql-backup
               image: postgres:{{ .Values.postgresql.simple.tag | default "16" }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
               args:
                 - /bin/bash
                 - -c
@@ -77,9 +88,14 @@ spec:
               volumeMounts:
                 - name: postgresql-backup
                   mountPath: /backups
-              {{- toYaml .Values.postgresql.backup.resources | nindent 14 }}
+                - name: tmp
+                  mountPath: /tmp
+              resources:
+                {{- toYaml .Values.postgresql.backup.resources | nindent 16 }}
           volumes:
             - name: postgresql-backup
               persistentVolumeClaim:
                 claimName: {{ include "onyx.fullname" . }}-postgresql-backup
+            - name: tmp
+              emptyDir: {}
 {{- end }}

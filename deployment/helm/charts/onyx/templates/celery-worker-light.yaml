@@ -1,4 +1,4 @@
-{{- if and .Values.vectorDB.enabled (gt (int .Values.celery_worker_light.replicaCount) 0) }}
+{{- if gt (int .Values.celery_worker_light.replicaCount) 0 }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -49,7 +49,7 @@ spec:
       {{- if and .Values.celery_shared.image .Values.celery_shared.image.repository }}
         {{- $backendRepo = .Values.celery_shared.image.repository }}
       {{- end }}
-      {{- $backendTag := default .Values.global.image.tags.backend (printf "backend-%s" .Values.global.version) }}
+      {{- $backendTag := default .Values.global.image.tags.backend (printf "backend-%s" (include "onyx.version" .)) }}
       {{- if and .Values.celery_shared.image .Values.celery_shared.image.tag }}
         {{- $backendTag = .Values.celery_shared.image.tag }}
       {{- end }}
@@ -73,7 +73,7 @@ spec:
               "-A",
               "onyx.background.celery.versioned_apps.light",
               "worker",
-              {{ printf "--loglevel=%s" .Values.celery_worker_light.logLevel | quote }},
+              "--loglevel=INFO",
               "--hostname=light@%n",
               "-Q",
               "vespa_metadata_sync,connector_deletion,doc_permissions_upsert,checkpoint_cleanup,index_attempt_cleanup,opensearch_migration",

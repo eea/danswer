@@ -49,7 +49,7 @@ spec:
       {{- if and .Values.celery_shared.image .Values.celery_shared.image.repository }}
         {{- $backendRepo = .Values.celery_shared.image.repository }}
       {{- end }}
-      {{- $backendTag := default .Values.global.image.tags.backend (printf "backend-%s" .Values.global.version) }}
+      {{- $backendTag := default .Values.global.image.tags.backend (printf "backend-%s" (include "onyx.version" .)) }}
       {{- if and .Values.celery_shared.image .Values.celery_shared.image.tag }}
         {{- $backendTag = .Values.celery_shared.image.tag }}
       {{- end }}

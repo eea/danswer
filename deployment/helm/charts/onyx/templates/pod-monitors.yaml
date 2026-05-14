@@ -1,0 +1,46 @@
+{{- if and .Values.monitoring.podMonitors.enabled (gt (int .Values.inferenceCapability.replicaCount) 0) }}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ include "onyx.fullname" . }}-inference-model
+  labels:
+    {{- include "onyx.labels" . | nindent 4 }}
+    {{- range .Values.monitoring.podMonitors.labels }}
+    {{ .key }}: {{ .value }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- range .Values.inferenceCapability.labels }}
+      {{ .key }}: {{ .value }}
+      {{- end }}
+  podMetricsEndpoints:
+  - port: model-server
+    path: /metrics
+    interval: {{ .Values.monitoring.podMonitors.interval }}
+    scrapeTimeout: {{ .Values.monitoring.podMonitors.scrapeTimeout }}
+{{- end }}
+---
+{{- if and .Values.monitoring.podMonitors.enabled (gt (int .Values.indexCapability.replicaCount) 0) }}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ include "onyx.fullname" . }}-indexing-model
+  labels:
+    {{- include "onyx.labels" . | nindent 4 }}
+    {{- range .Values.monitoring.podMonitors.labels }}
+    {{ .key }}: {{ .value }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "onyx.selectorLabels" . | nindent 6 }}
+      {{- if .Values.indexCapability.deploymentLabels }}
+      {{- toYaml .Values.indexCapability.deploymentLabels | nindent 6 }}
+      {{- end }}
+  podMetricsEndpoints:
+  - port: model-server
+    path: /metrics
+    interval: {{ .Values.monitoring.podMonitors.interval }}
+    scrapeTimeout: {{ .Values.monitoring.podMonitors.scrapeTimeout }}
+{{- end }}

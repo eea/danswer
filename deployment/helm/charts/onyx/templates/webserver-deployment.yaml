@@ -73,6 +73,11 @@ spec:
               protocol: TCP
           resources:
             {{- toYaml .Values.webserver.resources | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ .Values.config.envConfigMapName }}
+          env:
+            {{- include "onyx.envSecrets" . | nindent 12}}
           {{- with .Values.webserver.startupProbe }}
           startupProbe:
             {{- toYaml . | nindent 12 }}
@@ -85,17 +90,12 @@ spec:
           livenessProbe:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          envFrom:
-            - configMapRef:
-                name: {{ .Values.config.envConfigMapName }}
-          env:
-            {{- include "onyx.envSecrets" . | nindent 12}}
-          {{- with .Values.webserver.volumeMounts }}
-          volumeMounts:
-            {{- toYaml . | nindent 12 }}
+          {{- $webVolumeMounts := include "onyx.renderVolumeMounts" (dict "ctx" . "volumeMounts" .Values.webserver.volumeMounts) }}
+          {{- if $webVolumeMounts }}
+          {{- $webVolumeMounts | nindent 10 }}
           {{- end }}
-      {{- with .Values.webserver.volumes }}
-      volumes:
-        {{- toYaml . | nindent 8 }}
+      {{- $webVolumes := include "onyx.renderVolumes" (dict "ctx" . "volumes" .Values.webserver.volumes) }}
+      {{- if $webVolumes }}
+      {{- $webVolumes | nindent 6 }}
       {{- end }}
 {{- end }}
