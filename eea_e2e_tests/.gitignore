@@ -1,0 +1,7 @@
+reports/
+__pycache__/
+*.egg-info/
+.venv/
+storageState.json
+pytestdebug.log
+.env

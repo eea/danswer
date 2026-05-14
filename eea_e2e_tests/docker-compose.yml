@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  tests:
+    build: .
+    image: eea-onyx-e2e-tests
+    volumes:
+      - ./reports:/app/reports
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
