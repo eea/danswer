@@ -1,4 +1,4 @@
-{{- if and .Values.vectorDB.enabled (gt (int .Values.indexCapability.replicaCount) 0) }}
+{{- if gt (int .Values.indexCapability.replicaCount) 0 }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -10,10 +10,6 @@ metadata:
     {{- end }}
 spec:
   replicas: {{ .Values.indexCapability.replicaCount }}
-  {{- with .Values.indexCapability.strategy }}
-  strategy:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
   selector:
     matchLabels:
       {{- include "onyx.selectorLabels" . | nindent 6 }}
@@ -24,6 +20,10 @@ spec:
     metadata:
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- $pgIntoChecksum := include "onyx.pgInto.checksumAnnotation" . }}
+        {{- if $pgIntoChecksum }}
+        {{- $pgIntoChecksum | nindent 8 }}
+        {{- end }}
       {{- with .Values.indexCapability.podAnnotations }}
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -36,6 +36,9 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
+      {{- if .Values.indexCapability.runtimeClassName }}
+      runtimeClassName: {{ .Values.indexCapability.runtimeClassName }}
+      {{- end }}
       {{- if .Values.indexCapability.podSecurityContext }}
       securityContext:
         {{- toYaml .Values.indexCapability.podSecurityContext | nindent 8 }}
@@ -64,7 +67,7 @@ spec:
       - name: {{ .Values.indexCapability.name }}
         image: "{{ $modelRepo }}:{{ $modelTag }}"
         imagePullPolicy: {{ .Values.global.pullPolicy }}
-        command: [ "uvicorn", "model_server.main:app", "--host", "{{ .Values.global.host }}", "--port", "{{ .Values.indexCapability.containerPorts.server }}", "--limit-concurrency", "{{ .Values.indexCapability.limitConcurrency }}" ]
+        command: [ "uvicorn", "model_server.main:app", "--host", {{ .Values.global.host }}, "--port", "{{ .Values.indexCapability.containerPorts.server }}", "--limit-concurrency", "{{ .Values.indexCapability.limitConcurrency }}" ]
         ports:
         - name: model-server
           containerPort: {{ .Values.indexCapability.containerPorts.server }}
@@ -75,6 +78,10 @@ spec:
         env:
           - name: INDEXING_ONLY
             value: "{{ default "True" .Values.indexCapability.indexingOnly }}"
+          {{- if .Values.indexCapability.huggingfaceCacheDir }}
+          - name: HF_HOME
+            value: "{{ .Values.indexCapability.huggingfaceCacheDir }}"
+          {{- end }}
           {{- include "onyx.envSecrets" . | nindent 10}}
         {{- if .Values.indexCapability.securityContext }}
         securityContext:
@@ -84,11 +91,7 @@ spec:
         resources:
           {{- toYaml .Values.indexCapability.resources | nindent 10 }}
         {{- end }}
-        {{- with .Values.indexCapability.volumeMounts }}
-        volumeMounts:
-          {{- toYaml . | nindent 10 }}
-        {{- end }}
-        {{- with .Values.indexCapability.startupProbe }}
+               {{- with .Values.indexCapability.startupProbe }}
         startupProbe:
           {{- toYaml . | nindent 10 }}
         {{- end }}
@@ -100,9 +103,12 @@ spec:
         livenessProbe:
           {{- toYaml . | nindent 10 }}
         {{- end }}
-      {{- with .Values.indexCapability.volumes }}
-      volumes:
-        {{- toYaml . | nindent 8 }}
+        {{- $indexVolumeMounts := include "onyx.renderVolumeMounts" (dict "ctx" . "volumeMounts" .Values.indexCapability.volumeMounts) }}
+        {{- if $indexVolumeMounts }}
+        {{- $indexVolumeMounts | nindent 8 }}
+        {{- end }}
+      {{- $indexVolumes := include "onyx.renderVolumes" (dict "ctx" . "volumes" .Values.indexCapability.volumes) }}
+      {{- if $indexVolumes }}
+      {{- $indexVolumes | nindent 6 }}
       {{- end }}
-
 {{- end }}

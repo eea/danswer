@@ -5,7 +5,7 @@ metadata:
   labels:
     {{- include "onyx.labels" . | nindent 4 }}
 data:
-  ONYX_VERSION: "{{ .Values.global.version }}"
+  ONYX_VERSION: "{{ include "onyx.version" . }}"
   INTERNAL_URL: "http://{{ include "onyx.fullname" . }}-api-service:{{ .Values.api.service.servicePort | default .Values.api.service.port | default 8080 }}"
   {{- if .Values.postgresql.enabled }}
   {{- if .Values.postgresql.nameOverride }}
@@ -13,24 +13,29 @@ data:
   {{- else }}
   POSTGRES_HOST: {{ include "onyx.fullname" . }}-postgresql
   {{- end }}
-
+  {{- else if .Values.postgresql.external.host }}
+  POSTGRES_HOST: {{ .Values.postgresql.external.host | quote }}
+  POSTGRES_PORT: {{ .Values.postgresql.external.port | default 5432 | quote }}
   {{- end }}
   {{- if .Values.vespa.enabled }}
+  {{- if .Values.vespa.deployProxy.enabled }}
+  VESPA_HOST: {{ default (printf "%s-vespa-deploy-proxy" (include "onyx.fullname" .)) .Values.vespa.deployProxy.name }}.{{ .Release.Namespace }}.svc.cluster.local
+  {{- else }}
   VESPA_HOST: {{ .Values.vespa.name }}.{{ .Values.vespa.service.name }}.{{ .Release.Namespace }}.svc.cluster.local
+  {{- end }}
   {{- end }}
   {{- if .Values.opensearch.enabled }}
   OPENSEARCH_HOST: {{ .Values.opensearch.clusterName }}-{{ .Values.opensearch.nodeGroup }}.{{ .Release.Namespace }}.svc.cluster.local
   OPENSEARCH_REST_API_PORT: "9200"
-  ENABLE_OPENSEARCH_INDEXING_FOR_ONYX: "true"
-  ENABLE_OPENSEARCH_RETRIEVAL_FOR_ONYX: "false"
+  ENABLE_OPENSEARCH_INDEXING_FOR_ONYX: {{ ternary "true" "false" .Values.opensearch.indexingEnabled | quote }}
+  ENABLE_OPENSEARCH_RETRIEVAL_FOR_ONYX: {{ ternary "true" "false" .Values.opensearch.retrievalEnabled | quote }}
   {{- end }}
   {{- if .Values.redis.enabled }}
   REDIS_HOST: {{ .Values.redis.redisStandalone.name | default (printf "%s-redis" (include "onyx.fullname" .)) }}-master
-
   {{- end }}
   MODEL_SERVER_HOST: "{{ include "onyx.fullname" . }}-inference-model-service"
-  {{- if .Values.vectorDB.enabled }}
   INDEXING_MODEL_SERVER_HOST: "{{ include "onyx.fullname" . }}-indexing-model-service"
+  {{- if .Values.vectorDB.enabled }}
   DISABLE_VECTOR_DB: "false"
   {{- else }}
   DISABLE_VECTOR_DB: "true"

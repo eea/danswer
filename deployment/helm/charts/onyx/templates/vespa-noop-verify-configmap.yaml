@@ -1,0 +1,13 @@
+{{- if and .Values.vespa.enabled .Values.vespa.migrationFix.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.vespa.migrationFix.verifyRankSetupConfigMapName | default "vespa-noop-verify" }}
+  labels:
+    {{- include "onyx.labels" . | nindent 4 }}
+data:
+  vespa-verify-ranksetup-bin: |-
+    #!/bin/sh
+    # No-op verification during Vespa migration windows.
+    exit 0
+{{- end }}

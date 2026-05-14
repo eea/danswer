@@ -17,6 +17,27 @@ spec:
     - Ingress
 ---
 {{- end }}
+{{- if and .Values.networkPolicy.internalIngressAllow.enabled (gt (len .Values.networkPolicy.internalIngressAllow.allowFromCidrs) 0) }}
+---
+# Optional internal ingress allow-list (e.g. kubelet/node probe source CIDRs).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "onyx.fullname" . }}-internal-allow
+  labels:
+    {{- include "onyx.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    {{- toYaml .Values.networkPolicy.internalIngressAllow.podSelector | nindent 4 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+      {{- range .Values.networkPolicy.internalIngressAllow.allowFromCidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+      {{- end }}
+{{- end }}
 {{- if .Values.networkPolicy.adminAccess.enabled }}
 # Administrative access policy for kubectl exec, port-forward, SSH console
 # WARNING: This policy allows administrative access to all pods
@@ -219,6 +240,16 @@ spec:
           port: 8081
         - protocol: TCP
           port: 19071
+    {{- if .Values.opensearch.enabled }}
+    # Allow egress to OpenSearch REST API
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+      ports:
+        - protocol: TCP
+          port: 9200
+    {{- end }}
     # Allow egress to MinIO
     - to:
         - podSelector:
@@ -250,6 +281,16 @@ spec:
       ports:
         - protocol: TCP
           port: 25
+    {{- if .Values.codeInterpreter.enabled }}
+    # Allow egress to Code Interpreter
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+      ports:
+        - protocol: TCP
+          port: 8000
+    {{- end }}
     # DNS
     - to:
         - namespaceSelector: {}
@@ -519,6 +560,11 @@ spec:
       ports:
         - protocol: UDP
           port: 53
+    # Allow HTTPS egress for Vespa CLI downloads (used by backup jobs)
+    # Required for downloading Vespa CLI from github.com during backup operations
+    - ports:
+        - protocol: TCP
+          port: 443
 ---
 # MinIO network policy
 apiVersion: networking.k8s.io/v1
@@ -614,6 +660,16 @@ spec:
           port: 8081
         - protocol: TCP
           port: 19071
+    {{- if .Values.opensearch.enabled }}
+    # Allow egress to OpenSearch REST API
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+      ports:
+        - protocol: TCP
+          port: 9200
+    {{- end }}
     # Allow egress to MinIO
     - to:
         - podSelector:
@@ -653,6 +709,16 @@ spec:
       ports:
         - protocol: TCP
           port: 25
+    {{- if .Values.codeInterpreter.enabled }}
+    # Allow egress to Code Interpreter
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+      ports:
+        - protocol: TCP
+          port: 8000
+    {{- end }}
     # DNS
     - to:
         - namespaceSelector: {}
@@ -662,16 +728,49 @@ spec:
       ports:
         - protocol: UDP
           port: 53
-    # Allow HTTPS/HTTP egress for external APIs and connectors (COMMENTED OUT - TOO PERMISSIVE)
-    # Required for accessing external data sources and APIs
-    # Note: NetworkPolicies do not support domain-based filtering.
-    # Uncomment if external HTTPS access is required:
-    # - ports:
-    #     - protocol: TCP
-    #       port: 443
-    #     - protocol: TCP
-    #       port: 80
+    # Allow HTTPS egress for external APIs and connectors
+    # Required for accessing external data sources and APIs (web scraping, API calls, etc.)
+    # Note: NetworkPolicies do not support domain-based filtering
+    - ports:
+        - protocol: TCP
+          port: 443
 ---
+# Code Interpreter ingress policy
+{{- if .Values.codeInterpreter.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "onyx.fullname" . }}-code-interpreter
+  labels:
+    {{- include "onyx.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values:
+          - code-interpreter
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              scope: onyx-backend
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              scope: onyx-backend-celery
+      ports:
+        - protocol: TCP
+          port: 8000
+---
+{{- end }}
 # Model Servers network policy
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -736,6 +835,16 @@ spec:
           port: 8081
         - protocol: TCP
           port: 19071
+    {{- if .Values.opensearch.enabled }}
+    # Allow egress to OpenSearch REST API
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+      ports:
+        - protocol: TCP
+          port: 9200
+    {{- end }}
     # Allow egress to MinIO
     - to:
         - podSelector:
@@ -769,14 +878,12 @@ spec:
       ports:
         - protocol: UDP
           port: 53
-    # Allow HTTPS egress for model downloads, and page fetching (COMMENTED OUT - TOO PERMISSIVE)
-    # Required for:
-    # - HuggingFace model downloads (nomic-ai/nomic-embed-text-v1) from huggingface.co
-    # Note: NetworkPolicies do not support domain-based filtering.
-    # Uncomment if external HTTPS access is required:
-    # - ports:
-    #     - protocol: TCP
-    #       port: 443
+    # Allow HTTPS egress for model downloads
+    # Required for HuggingFace model downloads (nomic-ai/nomic-embed-text-v1) from huggingface.co
+    # Note: NetworkPolicies do not support domain-based filtering, this allows HTTPS to any destination
+    - ports:
+        - protocol: TCP
+          port: 443
 ---
 # Document Fetching Worker HTTPS egress policy
 # Allows HTTPS egress specifically for the docfetching worker to fetch external documents
@@ -799,6 +906,15 @@ spec:
     - ports:
         - protocol: TCP
           port: 443
+    # DNS - required to resolve external domain names
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
 ---
 # Vespa Backup HTTPS egress policy
 # Allows HTTPS egress specifically for the vespa backup job to download Vespa CLI from GitHub
@@ -913,6 +1029,14 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
+    # Allow egress to PostgreSQL
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgresql
+      ports:
+        - protocol: TCP
+          port: 5432
     # DNS
     - to:
         - namespaceSelector: {}

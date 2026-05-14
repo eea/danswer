@@ -1,4 +1,4 @@
-{{- if and .Values.vectorDB.enabled (gt (int .Values.celery_worker_docprocessing.replicaCount) 0) }}
+{{- if gt (int .Values.celery_worker_docprocessing.replicaCount) 0 }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -49,7 +49,7 @@ spec:
       {{- if and .Values.celery_shared.image .Values.celery_shared.image.repository }}
         {{- $backendRepo = .Values.celery_shared.image.repository }}
       {{- end }}
-      {{- $backendTag := default .Values.global.image.tags.backend (printf "backend-%s" .Values.global.version) }}
+      {{- $backendTag := default .Values.global.image.tags.backend (printf "backend-%s" (include "onyx.version" .)) }}
       {{- if and .Values.celery_shared.image .Values.celery_shared.image.tag }}
         {{- $backendTag = .Values.celery_shared.image.tag }}
       {{- end }}
@@ -76,15 +76,11 @@ spec:
               "--pool=threads",
               "--concurrency=6",
               "--prefetch-multiplier=1",
-              {{ printf "--loglevel=%s" .Values.celery_worker_docprocessing.logLevel | quote }},
+              "--loglevel=INFO",
               "--hostname=docprocessing@%n",
               "-Q",
               "docprocessing",
             ]
-          ports:
-            - name: metrics
-              containerPort: 9093
-              protocol: TCP
           resources:
             {{- toYaml .Values.celery_worker_docprocessing.resources | nindent 12 }}
           envFrom:
