@@ -1608,6 +1608,7 @@ configMap:
   # These should match the Dockerfile settings to use pre-downloaded content
   NLTK_DATA: "/usr/share/nltk_data"
   HF_HOME: "/usr/share/huggingface"
+  HF_HUB_OFFLINE: "1"
   TIKTOKEN_CACHE_DIR: "/usr/share/tiktoken_cache"
   # Indexing Configs
   VESPA_SEARCHER_THREADS: ""

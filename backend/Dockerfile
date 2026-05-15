@@ -23,6 +23,7 @@ ENV DANSWER_RUNNING_IN_DOCKER="true" \
     PLAYWRIGHT_BROWSERS_PATH="/app/.cache/ms-playwright" \
     NLTK_DATA="/usr/share/nltk_data" \
     HF_HOME="/usr/share/huggingface" \
+    HF_HUB_OFFLINE="1" \
     TIKTOKEN_CACHE_DIR="/usr/share/tiktoken_cache"
 
 # Create non-root user for security best practices
@@ -135,6 +136,8 @@ RUN uv pip install --system --no-cache-dir --upgrade \
 RUN python -c "import nltk; \
     nltk.download('stopwords', download_dir='/usr/share/nltk_data', quiet=True); \
     nltk.download('punkt_tab', download_dir='/usr/share/nltk_data', quiet=True);" && \
+python -c "from huggingface_hub import snapshot_download; \
+snapshot_download('nomic-ai/nomic-embed-text-v1', cache_dir='/usr/share/huggingface')" && \
 python -c "from tokenizers import Tokenizer; \
 Tokenizer.from_pretrained('nomic-ai/nomic-embed-text-v1')" && \
 python -c "import tiktoken; \

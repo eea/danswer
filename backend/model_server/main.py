@@ -1,6 +1,5 @@
 import logging
 import os
-import shutil
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -30,9 +29,10 @@ from shared_configs.configs import SENTRY_DSN
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+os.environ["HF_HUB_OFFLINE"] = "1"
 
-HF_CACHE_PATH = Path(".cache/huggingface")
-TEMP_HF_CACHE_PATH = Path(".cache/temp_huggingface")
+HF_HOME = os.environ.get("HF_HOME", "/usr/share/huggingface")
+HF_CACHE_PATH = Path(HF_HOME)
 
 transformer_logging.set_verbosity_error()
 
@@ -45,45 +45,12 @@ file_handlers = [
 setup_uvicorn_logger(shared_file_handlers=file_handlers)
 
 
-def _move_files_recursively(source: Path, dest: Path, overwrite: bool = False) -> None:
-    """
-    This moves the files from the temp huggingface cache to the huggingface cache
-
-    We have to move each file individually because the directories might
-    have the same name but not the same contents and we dont want to remove
-    the files in the existing huggingface cache that don't exist in the temp
-    huggingface cache.
-    """
-
-    for item in source.iterdir():
-        target_path = dest / item.relative_to(source)
-        if item.is_dir():
-            _move_files_recursively(item, target_path, overwrite)
-        else:
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            if target_path.exists() and not overwrite:
-                continue
-            shutil.move(str(item), str(target_path))
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator:
     gpu_type = get_gpu_type()
     logger.notice(f"Torch GPU Detection: gpu_type={gpu_type}")
 
     app.state.gpu_type = gpu_type
-
-    try:
-        if TEMP_HF_CACHE_PATH.is_dir():
-            logger.notice("Moving contents of temp_huggingface to huggingface cache.")
-            _move_files_recursively(TEMP_HF_CACHE_PATH, HF_CACHE_PATH)
-            shutil.rmtree(TEMP_HF_CACHE_PATH, ignore_errors=True)
-            logger.notice("Moved contents of temp_huggingface to huggingface cache.")
-    except Exception as e:
-        logger.warning(
-            f"Error moving contents of temp_huggingface to huggingface cache: {e}. "
-            "This is not a critical error and the model server will continue to run."
-        )
 
     torch.set_num_threads(max(MIN_THREADS_ML_MODELS, torch.get_num_threads()))
     logger.notice(f"Torch Threads: {torch.get_num_threads()}")
