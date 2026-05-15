@@ -86,6 +86,14 @@ Create env vars from secrets
 {{- end }}
 
 {{/*
+Return the version to use (global.version with fallback to Chart.AppVersion)
+Kept for backwards compatibility with our custom versioning.
+*/}}
+{{- define "onyx.version" -}}
+{{- default .Chart.AppVersion .Values.global.version -}}
+{{- end }}
+
+{{/*
 Helpers for mounting a psql convenience script into pods.
 */}}
 {{- define "onyx.pgInto.enabled" -}}
@@ -154,4 +162,13 @@ Return the configured autoscaling engine; defaults to HPA when unset.
 {{- define "onyx.autoscaling.engine" -}}
 {{- $engine := default "hpa" .Values.autoscaling.engine -}}
 {{- $engine | lower -}}
+{{- end }}
+
+{{/*
+Override postfix subchart selector labels to include app: postfix
+*/}}
+{{- define "postfix.selectorLabels" -}}
+app: postfix
+app.kubernetes.io/name: postfix
+app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}

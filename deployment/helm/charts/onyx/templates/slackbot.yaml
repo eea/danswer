@@ -46,7 +46,7 @@ spec:
       {{- if and .Values.slackbot.image .Values.slackbot.image.repository }}
         {{- $backendRepo = .Values.slackbot.image.repository }}
       {{- end }}
-      {{- $backendTag := default .Values.global.image.tags.backend (printf "backend-%s" .Values.global.version) }}
+      {{- $backendTag := default .Values.global.image.tags.backend (printf "backend-%s" (include "onyx.version" .)) }}
       {{- if and .Values.slackbot.image .Values.slackbot.image.tag }}
         {{- $backendTag = .Values.slackbot.image.tag }}
       {{- end }}
