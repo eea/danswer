@@ -10,6 +10,7 @@ import xml.etree.ElementTree as ET
 from fastapi import Depends
 from langfuse import Langfuse
 from usp.tree import sitemap_tree_for_homepage
+from usp.fetch_parse import SitemapFetcher
 
 from onyx.auth.users import current_curator_or_admin_user
 from onyx.db.engine.sql_engine import get_session
@@ -418,3 +419,47 @@ def get_connectors_health(
             message = "Indexing failed"
 
     return StatusResponse(success=success, message=message)
+
+def build_sitemap_content(pages: list[Any]) -> bytes:
+    """Serialize a list of sitemap page objects into XML bytes."""
+    urlset = ET.Element("urlset", xmlns="http://www.sitemaps.org/schemas/sitemap/0.9")
+    for page in pages:
+        url_element = ET.SubElement(urlset, "url")
+        loc = ET.SubElement(url_element, "loc")
+        loc.text = page.url
+        if page.last_modified:
+            lastmod = ET.SubElement(url_element, "lastmod")
+            # Convert datetime object to ISO 8601 string format
+            if hasattr(page.last_modified, "isoformat"):
+                lastmod.text = page.last_modified.isoformat()
+            else:
+                lastmod.text = str(page.last_modified)
+
+    xml_string = ET.tostring(urlset, encoding="utf-8", method="xml")
+    return b'<?xml version="1.0" encoding="UTF-8"?>\n' + xml_string
+
+
+def get_sitemap_content_from_gz(sitemap_url: str) -> bytes:
+    """Fetch and parse a .gz sitemap via SitemapFetcher, returning XML bytes.
+
+    Uses the ultimate-sitemap-parser library to handle gzipped sitemap
+    decompression and parsing, then re-serializes to standard sitemap XML
+    so that the caller can process it uniformly.
+    """
+    try:
+        fetcher = SitemapFetcher(sitemap_url, recursion_level=0)
+        sitemap_tree = fetcher.sitemap()
+        pages = list(sitemap_tree.all_pages())
+    except Exception:
+        logger.error(
+            f"SitemapFetcher failed to fetch/parse gzipped sitemap: {sitemap_url}",
+            exc_info=True,
+        )
+        raise
+
+    if not pages:
+        logger.warning(
+            f"SitemapFetcher returned 0 pages for gzipped sitemap: {sitemap_url}"
+        )
+
+    return build_sitemap_content(pages)
