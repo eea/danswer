@@ -43,6 +43,7 @@ from onyx.connectors.interfaces import LoadConnector
 from onyx.connectors.models import Document
 from onyx.connectors.models import HierarchyNode
 from onyx.connectors.models import TextSection
+from onyx.file_processing.extract_file_text import read_pdf_file
 from onyx.file_processing.html_utils import web_html_cleanup
 from onyx.utils.logger import setup_logger
 from onyx.utils.sitemap import list_pages_for_site
