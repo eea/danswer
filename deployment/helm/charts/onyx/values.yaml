@@ -1563,8 +1563,9 @@ configMap:
   MIN_THREADS_ML_MODELS: ""
   # Cache Directories - Pre-downloaded models and data
   # These should match the Dockerfile settings to use pre-downloaded content
-  NLTK_DATA: "/usr/share/nltk_data"
-  HF_HOME: "/tmp/huggingface"
+NLTK_DATA: "/usr/share/nltk_data"
+  HF_HOME: "/usr/share/huggingface"
+  HF_HUB_OFFLINE: "1"
   TIKTOKEN_CACHE_DIR: "/usr/share/tiktoken_cache"
   # Indexing Configs
   VESPA_SEARCHER_THREADS: ""

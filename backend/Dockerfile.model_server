@@ -2,11 +2,11 @@
 FROM python:3.11-slim-bookworm AS base
 
 ENV DANSWER_RUNNING_IN_DOCKER="true" \
-    HF_HOME=/app/.cache/huggingface
+    HF_HOME=/usr/share/huggingface
 
 COPY --from=ghcr.io/astral-sh/uv:0.9.9 /uv /uvx /bin/
 
-RUN mkdir -p /app/.cache/huggingface
+RUN mkdir -p /usr/share/huggingface
 
 COPY ./requirements/model_server.txt /tmp/requirements.txt
 RUN uv pip install --system --no-cache-dir --upgrade \
@@ -38,11 +38,8 @@ RUN groupadd -g 1001 onyx && \
     chmod 755 /var/log/onyx && \
     chown onyx:onyx /var/log/onyx
 
-# In case the user has volumes mounted to /app/.cache/huggingface that they've downloaded while
-# running Onyx, move the current contents of the cache folder to a temporary location to ensure
-# it's preserved in order to combine with the user's cache contents
-# Copy all downloaded models from each stage into the final image
-COPY --chown=onyx:onyx --from=embedding-models /app/.cache/huggingface /app/.cache/temp_huggingface
+# Copy all downloaded models from the embedding-models stage into the final image
+COPY --chown=onyx:onyx --from=embedding-models /usr/share/huggingface /usr/share/huggingface
 
 
 WORKDIR /app
