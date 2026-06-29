@@ -53,7 +53,6 @@ from onyx.utils.eea_utils import (
     list_pages_for_protected_site_eea,
     soer_login,
     remove_by_selector,
-    get_sitemap_content_from_gz,
 )
 from onyx.utils.web_content import extract_pdf_text
 from onyx.utils.web_content import is_pdf_resource
@@ -384,13 +383,12 @@ def extract_urls_from_sitemap(sitemap_url: str) -> list[str]:
     # a regression as someone says "Ah, looks like this brotli package isn't used anywhere, let's remove it"
     # import brotli
     try:
+        response = requests.get(sitemap_url, verify=False, headers=DEFAULT_HEADERS)
+        response.raise_for_status()
         if sitemap_url.endswith(".gz"):
-            # Delegate .gz fetching + decompression to SitemapFetcher
-            # (avoids a wasted requests.get since SitemapFetcher fetches internally)
-            content = get_sitemap_content_from_gz(sitemap_url)
+            with gzip.GzipFile(fileobj=io.BytesIO(response.content)) as f:
+                content = f.read()
         else:
-            response = requests.get(sitemap_url, verify=False, headers=DEFAULT_HEADERS)
-            response.raise_for_status()
             content = response.content
 
         urls_data: dict[str, str | None] = {}
