@@ -62,3 +62,12 @@ plans/
 
 # Added context for LLMs
 onyx-llm-context/
+
+
+# Local studio directories
+.opencode/
+.devcontainer/
+.serena
+openspec/
+build/
+deployment/helm
