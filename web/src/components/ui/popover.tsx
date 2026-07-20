@@ -3,8 +3,8 @@
 import React from "react";
 import * as PopoverPrimitive from "@radix-ui/react-popover";
 
-import { cn } from "@/lib/utils";
-import Separator from "@/refresh-components/Separator";
+import { cn } from "@opal/utils";
+import { Divider as Separator } from "@opal/components";
 
 const Popover = PopoverPrimitive.Root;
 
@@ -32,7 +32,11 @@ const PopoverContent = React.forwardRef<
 PopoverContent.displayName = PopoverPrimitive.Content.displayName;
 
 function SeparatorHelper() {
-  return <Separator className="py-0 px-2" />;
+  return (
+    <div className="py-0 px-2">
+      <Separator />
+    </div>
+  );
 }
 
 const sizeClasses = {

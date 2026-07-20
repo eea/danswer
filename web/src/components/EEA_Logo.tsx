@@ -1,7 +1,6 @@
 "use client";
 
-import { useContext } from "react";
-import { SettingsContext } from "@/providers/SettingsProvider";
+import { useSettings } from "@/lib/settings/hooks";
 import Image from "next/image";
 import { defaultTailwindCSS, IconProps } from "@/components/icons/icons";
 import { SiZeromq } from "react-icons/si";
@@ -16,16 +15,12 @@ export function Logo({
   width?: number;
   className?: string;
 }) {
-  const settings = useContext(SettingsContext);
+  const settings = useSettings();
 
   height = height || 32;
   width = width || 70;
 
-  if (
-    !settings ||
-    !settings.enterpriseSettings ||
-    !settings.enterpriseSettings.use_custom_logo
-  ) {
+  if (!settings || !settings.logoUrl) {
     return (
       <div style={{ height, width }} className={className}>
         <Image src="/EEA_logo_compact_EN.svg" alt="Logo" width={width} height={height} />
@@ -40,7 +35,7 @@ export function Logo({
     >
       {/* TODO: figure out how to use Next Image here */}
       <img
-        src="/api/enterprise-settings/logo"
+        src={settings.logoUrl}
         alt="Logo"
         style={{ objectFit: "contain", height, width }}
       />
@@ -56,15 +51,11 @@ export function Logo_empty({
   width?: number;
   className?: string;
 }) {
-  const settings = useContext(SettingsContext);
+  const settings = useSettings();
 
   height = height || 32;
   width = width || 32;
-  if (
-    !settings ||
-    !settings.enterpriseSettings ||
-    !settings.enterpriseSettings.use_custom_logo
-  ) {
+  if (!settings || !settings.logoUrl) {
     return (
       <div style={{ height, width }} className={className}>
       </div>
@@ -78,7 +69,7 @@ export function Logo_empty({
     >
       {/* TODO: figure out how to use Next Image here */}
       <img
-        src="/api/enterprise-settings/logo"
+        src={settings.logoUrl}
         alt="Logo"
         style={{ objectFit: "contain", height, width }}
       />

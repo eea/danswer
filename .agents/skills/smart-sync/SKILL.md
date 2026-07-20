@@ -77,6 +77,21 @@ The user account popover **must always** contain four EEA-specific navigation li
    ```
 4. **If missing**: Re-add them. This is a **Logic Violation** — do not require user approval.
 
+## EEA Admin Pages Sidebar Link
+
+The admin sidebar must include a link to the EEA Custom Pages configuration page. After any upstream sync that alters the admin sidebar:
+
+1. **Target File**: `web/src/sections/sidebar/AdminSidebar.tsx`
+2. **Logic Check**: Verify that `CUSTOMIZE_LAYOUT: "Customize Layout",` exists in the `SECTIONS` object.
+3. **Logic Check**: Verify that the `ADMIN_ROUTES.EEA_PAGES` route is added to the sidebar under this section:
+   ```tsx
+   // Customize Layout (admin only)
+   if (!isCurator) {
+     add(SECTIONS.CUSTOMIZE_LAYOUT, ADMIN_ROUTES.EEA_PAGES);
+   }
+   ```
+4. **If missing**: Re-add the section and the route insertion logic.
+
 ## Constraints
 - Do not delete our custom features.
 - Always use 'Planning Mode' for conflicts involving more than 3 files.
@@ -92,16 +107,16 @@ Execute the following verification steps in order:
 
 ### Phase 1: Build Check
 1. **Target Directory**: `cd deployment/docker_compose/eea`
-2. **Action**: Run `docker compose build --no-cache`
+2. **Action**: Run `docker compose build --no-cache api_server web_server`
 3. **On Build Failure**:
     - **Analyze**: Intercept stderr. Cross-reference with recent merge changes (missing files, broken imports, etc.).
     - **Propose & Wait**: Generate a fix, notify the user via "Logic Review," and if approved, apply and restart Phase 1.
 
-### Phase 2: Runtime Check (API Server)
+### Phase 2: Runtime Check (API & Web Server)
 4. **Action**: Run `docker compose up -d`
-5. **Monitor**: Run `docker compose logs -f api-server` for 30 seconds.
+5. **Monitor**: Run `docker compose logs -f api_server web_server` for 30 seconds.
 6. **On Runtime Failure**:
-    - **Detection**: If `api-server` exits or the logs contain a Python Traceback (e.g., `ImportError`, `AttributeError`, `ModuleNotFoundError`).
+    - **Detection**: If `api_server` or `web_server` exits or the logs contain a Traceback or crash loop.
     - **Analyze**: Compare the Traceback symbols against the `upstream` changes. (e.g., "Did the upstream change a database schema or an environment variable name?")
     - **Heal**: 
         - Stop the stack: `docker compose down`.

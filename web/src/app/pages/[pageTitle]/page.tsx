@@ -10,7 +10,7 @@ import { HealthCheckBanner } from "@/components/health/healthcheck";
 import { notFound } from 'next/navigation'
 import { fetchEEASettings } from "@/lib/eea/fetchEEASettings";
 //import { useRouter } from "next/navigation";
-import { BackIcon } from "@/components/icons/icons";
+import { FiChevronLeft as BackIcon } from "react-icons/fi";
 import Link from "next/link";
 
 // export default async function Page({

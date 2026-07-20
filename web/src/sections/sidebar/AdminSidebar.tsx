@@ -33,6 +33,7 @@ const SECTIONS = {
   PERMISSIONS: "Permissions",
   ORGANIZATION: "Organization",
   USAGE: "Usage",
+  CUSTOMIZE_LAYOUT: "Customize Layout",
 } as const;
 
 interface SidebarItemEntry {
@@ -150,6 +151,11 @@ function buildItems(
     if (hasSubscription) {
       add(SECTIONS.ORGANIZATION, ADMIN_ROUTES.BILLING);
     }
+  }
+
+  // Customize Layout (admin only)
+  if (!isCurator) {
+    add(SECTIONS.CUSTOMIZE_LAYOUT, ADMIN_ROUTES.EEA_PAGES);
   }
 
   // 8. Upgrade Plan (admin only, no subscription)

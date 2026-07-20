@@ -1,8 +1,7 @@
 "use client";
 
-import { useContext } from "react";
-import { SettingsContext } from "@/providers/SettingsProvider";
-import { OnyxIcon } from "../icons/icons";
+import { useSettings } from "@/lib/settings/hooks";
+
 import { EEAIcon } from "../EEA_Logo";
 
 export function Logo({
@@ -16,7 +15,7 @@ export function Logo({
   className?: string;
   size?: "small" | "default" | "large" | "eea_large";
 }) {
-  const settings = useContext(SettingsContext);
+  const settings = useSettings();
 
   const sizeMap = {
     small: { height: 24, width: 22 },
@@ -31,8 +30,7 @@ export function Logo({
 
   if (
     !settings ||
-    !settings.enterpriseSettings ||
-    !settings.enterpriseSettings.use_custom_logo
+    !settings.logoUrl
   ) {
     return (
       <div style={{ height, width }} className={className}>
@@ -51,7 +49,7 @@ export function Logo({
     >
       {/* TODO: figure out how to use Next Image here */}
       <img
-        src="/api/enterprise-settings/logo"
+        src={settings.logoUrl}
         alt="Logo"
         style={{ objectFit: "contain", height, width }}
       />

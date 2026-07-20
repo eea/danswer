@@ -7,7 +7,7 @@ import { errorHandlingFetcher } from "@/lib/fetcher";
 
 import { Text } from "@opal/components";
 import Button from "@/refresh-components/buttons/Button";
-import Separator from "@/refresh-components/Separator";
+import { Divider } from "@opal/components";
 
 import TableElement from "@opal/components/table/TableElement";
 import TableHeader from "@opal/components/table/TableHeader";
@@ -26,7 +26,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { DeleteButton } from "@/components/DeleteButton";
 import { useRouter } from "next/navigation";
-import { BookmarkIcon, InfoIcon } from "@/components/icons/icons";
+
 import { PageSelector } from "@/components/PageSelector";
 import { usePagesList } from "./hooks";
 
@@ -209,7 +209,7 @@ const Page = () => {
 
           {pages.length > 0 && (
             <>
-              <Separator />
+              <Divider />
               <PagesTable
                 pages={pages}
                 config_json={config_json}

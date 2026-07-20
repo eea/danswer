@@ -4,21 +4,36 @@ import { errorHandlingFetcher, RedirectError } from "@/lib/fetcher";
 import useSWR from "swr";
 import { useCallback, useEffect, useState, useRef } from "react";
 import Modal from "@/refresh-components/Modal";
-import { getSecondsUntilExpiration } from "@/lib/time";
+import { getSecondsUntilExpiration } from "@opal/time";
 import { User } from "@/lib/types";
 import { refreshToken } from "@/lib/user";
 import { NEXT_PUBLIC_CUSTOM_REFRESH_URL } from "@/lib/constants";
 import Button from "@/refresh-components/buttons/Button";
 import { logout } from "@/lib/user";
 import { usePathname, useRouter } from "next/navigation";
+
+function getUserSecondsUntilExpiration(u: User | null): number | null {
+  if (!u) return null;
+  const expiries: Date[] = [];
+  if (u.current_token_created_at && u.current_token_expiry_length !== undefined) {
+    const createdAt = new Date(u.current_token_created_at);
+    expiries.push(new Date(createdAt.getTime() + u.current_token_expiry_length * 1000));
+  }
+  if (u.oidc_expiry) {
+    expiries.push(new Date(u.oidc_expiry));
+  }
+  if (expiries.length === 0) return null;
+  return Math.min(...expiries.map(getSecondsUntilExpiration));
+}
+
 export const HealthCheckBanner = () => {
   const router = useRouter();
   const { error } = useSWR("/api/health", errorHandlingFetcher);
   const [expired, setExpired] = useState(false);
   const [showLoggedOutModal, setShowLoggedOutModal] = useState(false);
   const pathname = usePathname();
-  const expirationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const refreshIntervalRef = useRef<NodeJS.Timer | null>(null);
+  const expirationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refreshIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Reduce revalidation frequency with dedicated SWR config
   const {
@@ -86,7 +101,7 @@ export const HealthCheckBanner = () => {
   useEffect(() => {
     if (!user) return;
 
-    const secondsUntilExpiration = getSecondsUntilExpiration(user);
+    const secondsUntilExpiration = getUserSecondsUntilExpiration(user);
     if (secondsUntilExpiration === null) return;
 
     // Set up expiration timeout based on current user data
@@ -129,7 +144,7 @@ export const HealthCheckBanner = () => {
             if (updatedUser) {
               // Reset expiration timeout with new expiration time
               const newSecondsUntilExpiration =
-                getSecondsUntilExpiration(updatedUser);
+                getUserSecondsUntilExpiration(updatedUser);
               if (newSecondsUntilExpiration !== null) {
                 setupExpirationTimeout(newSecondsUntilExpiration);
                 console.debug(
