@@ -3,12 +3,15 @@ from collections.abc import Iterator
 from datetime import datetime
 from datetime import timezone
 from enum import Enum
+from typing import Any
 from typing import cast
 from urllib.parse import parse_qs
 from urllib.parse import urlparse
 
-from googleapiclient.discovery import Resource  # type: ignore
-from googleapiclient.errors import HttpError  # type: ignore
+from google.auth.exceptions import RefreshError
+from googleapiclient.discovery import Resource
+from googleapiclient.errors import HttpError
+from googleapiclient.http import BatchHttpRequest
 
 from onyx.access.models import ExternalAccess
 from onyx.connectors.google_drive.constants import DRIVE_FOLDER_TYPE
@@ -31,8 +34,10 @@ from onyx.utils.variable_functionality import (
 )
 from onyx.utils.variable_functionality import noop_fallback
 
-
 logger = setup_logger()
+
+DRIVE_RESOURCE_KEY_HEADER = "X-Goog-Drive-Resource-Keys"
+DRIVE_RESOURCE_KEY_FIELD = "resourceKey"
 
 
 class DriveFileFieldType(Enum):
@@ -58,7 +63,15 @@ SLIM_FILE_FIELDS = (
     f"nextPageToken, files(mimeType, driveId, id, name, parents, {PERMISSION_FULL_DESCRIPTION}, "
     "permissionIds, webViewLink, owners(emailAddress), modifiedTime)"
 )
-FOLDER_FIELDS = "nextPageToken, files(id, name, permissions, modifiedTime, webViewLink, shortcutDetails)"
+FOLDER_FIELDS = (
+    "nextPageToken, files(id, name, mimeType, permissions, modifiedTime, webViewLink, "
+    "shortcutDetails)"
+)
+SHORTCUT_FIELDS = (
+    "id, name, mimeType, shortcutDetails(targetId,targetMimeType,targetResourceKey)"
+)
+
+MAX_BATCH_SIZE = 100
 
 HIERARCHY_FIELDS = "id, name, parents, webViewLink, mimeType, driveId"
 
@@ -104,7 +117,6 @@ def _get_folders_in_parent(
     service: Resource,
     parent_id: str | None = None,
 ) -> Iterator[GoogleDriveFileType]:
-    # Follow shortcuts to folders
     query = f"(mimeType = '{DRIVE_FOLDER_TYPE}' or mimeType = '{DRIVE_SHORTCUT_TYPE}')"
     query += " and trashed = false"
 
@@ -112,7 +124,7 @@ def _get_folders_in_parent(
         query += f" and '{parent_id}' in parents"
 
     for file in execute_paginated_retrieval(
-        retrieval_function=service.files().list,
+        retrieval_function=service.files().list,  # ty: ignore[unresolved-attribute]
         list_key="files",
         continue_on_404_or_403=True,
         corpora="allDrives",
@@ -121,7 +133,9 @@ def _get_folders_in_parent(
         fields=FOLDER_FIELDS,
         q=query,
     ):
-        yield file
+        folder = _resolve_folder_or_shortcut(service, file)
+        if folder:
+            yield folder
 
 
 def get_folder_metadata(
@@ -133,7 +147,7 @@ def get_folder_metadata(
     fields = _get_hierarchy_fields_for_file_type(field_type)
     try:
         return (
-            service.files()
+            service.files()  # ty: ignore[unresolved-attribute]
             .get(
                 fileId=folder_id,
                 fields=fields,
@@ -143,9 +157,11 @@ def get_folder_metadata(
         )
     except HttpError as e:
         if e.resp.status in (403, 404):
-            logger.debug(f"Cannot access folder {folder_id}: {e}")
+            logger.debug("Cannot access folder %s: %s", folder_id, e)
         else:
             raise e
+    except RefreshError:
+        logger.debug("Cannot access folder %s: impersonation failed", folder_id)
     return None
 
 
@@ -166,13 +182,19 @@ def get_shared_drive_name(
     folders. Only drives().get() returns the real user-assigned name.
     """
     try:
-        drive = service.drives().get(driveId=drive_id, fields="name").execute()
+        drive = (
+            service.drives()  # ty: ignore[unresolved-attribute]
+            .get(driveId=drive_id, fields="name")
+            .execute()
+        )
         return drive.get("name")
     except HttpError as e:
         if e.resp.status in (403, 404):
-            logger.debug(f"Cannot access drive {drive_id}: {e}")
+            logger.debug("Cannot access drive %s: %s", drive_id, e)
         else:
             raise
+    except RefreshError:
+        logger.debug("Cannot access drive %s: impersonation failed", drive_id)
     return None
 
 
@@ -216,13 +238,175 @@ def get_external_access_for_folder(
 
 
 def _get_fields_for_file_type(field_type: DriveFileFieldType) -> str:
-    """Get the appropriate fields string based on the field type enum"""
+    """Get the appropriate fields string for files().list() based on the field type enum."""
     if field_type == DriveFileFieldType.SLIM:
         return SLIM_FILE_FIELDS
     elif field_type == DriveFileFieldType.WITH_PERMISSIONS:
         return FILE_FIELDS_WITH_PERMISSIONS
     else:  # DriveFileFieldType.STANDARD
         return FILE_FIELDS
+
+
+def _extract_single_file_fields(list_fields: str) -> str:
+    """Convert a files().list() fields string to one suitable for files().get().
+
+    List fields look like "nextPageToken, files(field1, field2, ...)"
+    Single-file fields should be just "field1, field2, ..."
+    """
+    start = list_fields.find("files(")
+    if start == -1:
+        return list_fields
+    inner_start = start + len("files(")
+    inner_end = list_fields.rfind(")")
+    return list_fields[inner_start:inner_end]
+
+
+def _get_single_file_fields(field_type: DriveFileFieldType) -> str:
+    """Get the appropriate fields string for files().get() based on the field type enum."""
+    return _extract_single_file_fields(_get_fields_for_file_type(field_type))
+
+
+def add_drive_resource_key_header(
+    request: Any, file_id: str, resource_key: str | None
+) -> None:
+    if not resource_key:
+        return
+    request.headers[DRIVE_RESOURCE_KEY_HEADER] = f"{file_id}/{resource_key}"
+
+
+def _get_file_by_id(
+    service: Resource,
+    file_id: str,
+    fields: str,
+    resource_key: str | None = None,
+) -> GoogleDriveFileType | None:
+    kwargs: dict[str, object] = {
+        "fileId": file_id,
+        "fields": fields,
+        "supportsAllDrives": True,
+    }
+
+    try:
+        request = service.files().get(**kwargs)  # ty: ignore[unresolved-attribute]
+        add_drive_resource_key_header(request, file_id, resource_key)
+        file = request.execute()
+        if resource_key:
+            file[DRIVE_RESOURCE_KEY_FIELD] = resource_key
+        return file
+    except HttpError as e:
+        if e.resp.status in (403, 404):
+            logger.debug("Cannot access Drive file %s: %s", file_id, e)
+            return None
+        raise
+    except RefreshError:
+        logger.debug("Cannot access Drive file %s: impersonation failed", file_id)
+        return None
+
+
+def _is_drive_shortcut(file: GoogleDriveFileType) -> bool:
+    return file.get("mimeType") == DRIVE_SHORTCUT_TYPE
+
+
+def _get_shortcut_details(
+    service: Resource,
+    shortcut: GoogleDriveFileType,
+) -> dict[str, str] | None:
+    existing_details = shortcut.get("shortcutDetails")
+    if isinstance(existing_details, dict) and existing_details.get("targetId"):
+        return cast(dict[str, str], existing_details)
+
+    shortcut_id = shortcut.get("id")
+    if not isinstance(shortcut_id, str):
+        logger.debug("Skipping shortcut without id: %s", shortcut.get("name"))
+        return None
+
+    shortcut_file = _get_file_by_id(service, shortcut_id, SHORTCUT_FIELDS)
+    if not shortcut_file:
+        return None
+
+    shortcut_details = shortcut_file.get("shortcutDetails")
+    if isinstance(shortcut_details, dict) and shortcut_details.get("targetId"):
+        return cast(dict[str, str], shortcut_details)
+
+    logger.debug("Skipping shortcut without target metadata: %s", shortcut_id)
+    return None
+
+
+def _resolve_shortcut_target(
+    service: Resource,
+    shortcut: GoogleDriveFileType,
+    target_fields: str,
+) -> GoogleDriveFileType | None:
+    details = _get_shortcut_details(service, shortcut)
+    if details is None:
+        return None
+
+    return _get_file_by_id(
+        service=service,
+        file_id=details["targetId"],
+        fields=target_fields,
+        resource_key=details.get("targetResourceKey"),
+    )
+
+
+def _resolve_file_or_shortcut(
+    service: Resource,
+    file: GoogleDriveFileType,
+    field_type: DriveFileFieldType,
+) -> GoogleDriveFileType | None:
+    if not _is_drive_shortcut(file):
+        return file
+
+    target = _resolve_shortcut_target(
+        service=service,
+        shortcut=file,
+        target_fields=_get_single_file_fields(field_type),
+    )
+    if target is None or target.get("mimeType") == DRIVE_FOLDER_TYPE:
+        return None
+
+    logger.debug(
+        "Resolved Drive shortcut %s to target %s", file.get("id"), target.get("id")
+    )
+    return target
+
+
+def _resolve_folder_or_shortcut(
+    service: Resource,
+    file: GoogleDriveFileType,
+) -> GoogleDriveFileType | None:
+    if not _is_drive_shortcut(file):
+        return file
+
+    target = _resolve_shortcut_target(
+        service=service,
+        shortcut=file,
+        target_fields=HIERARCHY_FIELDS,
+    )
+    if target is None or target.get("mimeType") != DRIVE_FOLDER_TYPE:
+        return None
+
+    logger.debug(
+        "Resolved Drive folder shortcut %s to target %s",
+        file.get("id"),
+        target.get("id"),
+    )
+    return target
+
+
+def _resolve_file_shortcuts(
+    service: Resource,
+    files: Iterator[GoogleDriveFileType | str],
+    field_type: DriveFileFieldType,
+) -> Iterator[GoogleDriveFileType | str]:
+    for file in files:
+        if isinstance(file, str):
+            yield file
+            continue
+
+        resolved_file = _resolve_file_or_shortcut(service, file, field_type)
+        if resolved_file is not None:
+            yield resolved_file
 
 
 def _get_files_in_parent(
@@ -239,7 +423,7 @@ def _get_files_in_parent(
     kwargs = {ORDER_BY_KEY: GoogleFields.MODIFIED_TIME.value}
 
     for file in execute_paginated_retrieval(
-        retrieval_function=service.files().list,
+        retrieval_function=service.files().list,  # ty: ignore[unresolved-attribute]
         list_key="files",
         continue_on_404_or_403=True,
         corpora="allDrives",
@@ -249,7 +433,9 @@ def _get_files_in_parent(
         q=query,
         **kwargs,
     ):
-        yield file
+        resolved_file = _resolve_file_or_shortcut(service, file, field_type)
+        if resolved_file is not None:
+            yield resolved_file
 
 
 def crawl_folders_for_files(
@@ -261,70 +447,86 @@ def crawl_folders_for_files(
     update_traversed_ids_func: Callable[[str], None],
     start: SecondsSinceUnixEpoch | None = None,
     end: SecondsSinceUnixEpoch | None = None,
+    active_parent_ids: set[str] | None = None,
 ) -> Iterator[RetrievedDriveFile]:
     """
     This function starts crawling from any folder. It is slower though.
     """
     logger.info("Entered crawl_folders_for_files with parent_id: " + parent_id)
-    if parent_id not in traversed_parent_ids:
-        logger.info("Parent id not in traversed parent ids, getting files")
-        found_files = False
-        file = {}
-        try:
-            for file in _get_files_in_parent(
+    if active_parent_ids is None:
+        active_parent_ids = set()
+    if parent_id in active_parent_ids:
+        logger.info("Skipping folder cycle at parent_id: %s", parent_id)
+        return
+
+    active_parent_ids.add(parent_id)
+    try:
+        if parent_id not in traversed_parent_ids:
+            logger.info("Parent id not in traversed parent ids, getting files")
+            found_files = False
+            file = {}
+            try:
+                for file in _get_files_in_parent(
+                    service=service,
+                    parent_id=parent_id,
+                    field_type=field_type,
+                    start=start,
+                    end=end,
+                ):
+                    logger.info(
+                        "Found file: %s, user email: %s", file["name"], user_email
+                    )
+                    found_files = True
+                    yield RetrievedDriveFile(
+                        drive_file=file,
+                        user_email=user_email,
+                        parent_id=parent_id,
+                        completion_stage=DriveRetrievalStage.FOLDER_FILES,
+                    )
+                # Only mark a folder as done if it was fully traversed without errors
+                # This usually indicates that the owner of the folder was impersonated.
+                # In cases where this never happens, most likely the folder owner is
+                # not part of the google workspace in question (or for oauth, the authenticated
+                # user doesn't own the folder)
+                if found_files:
+                    update_traversed_ids_func(parent_id)
+            except Exception as e:
+                if isinstance(e, HttpError) and e.status_code == 403:
+                    # don't yield an error here because this is expected behavior
+                    # when a user doesn't have access to a folder
+                    logger.debug("Error getting files in parent %s: %s", parent_id, e)
+                else:
+                    logger.error("Error getting files in parent %s: %s", parent_id, e)
+                    yield RetrievedDriveFile(
+                        drive_file=file,
+                        user_email=user_email,
+                        parent_id=parent_id,
+                        completion_stage=DriveRetrievalStage.FOLDER_FILES,
+                        error=e,
+                    )
+        else:
+            logger.info(
+                "Skipping files since parent is already traversed: %s", parent_id
+            )
+
+        for subfolder in _get_folders_in_parent(
+            service=service,
+            parent_id=parent_id,
+        ):
+            logger.info("Fetching all files in subfolder: " + subfolder["name"])
+            yield from crawl_folders_for_files(
                 service=service,
-                parent_id=parent_id,
+                parent_id=subfolder["id"],
                 field_type=field_type,
+                user_email=user_email,
+                traversed_parent_ids=traversed_parent_ids,
+                update_traversed_ids_func=update_traversed_ids_func,
                 start=start,
                 end=end,
-            ):
-                logger.info(f"Found file: {file['name']}, user email: {user_email}")
-                found_files = True
-                yield RetrievedDriveFile(
-                    drive_file=file,
-                    user_email=user_email,
-                    parent_id=parent_id,
-                    completion_stage=DriveRetrievalStage.FOLDER_FILES,
-                )
-            # Only mark a folder as done if it was fully traversed without errors
-            # This usually indicates that the owner of the folder was impersonated.
-            # In cases where this never happens, most likely the folder owner is
-            # not part of the google workspace in question (or for oauth, the authenticated
-            # user doesn't own the folder)
-            if found_files:
-                update_traversed_ids_func(parent_id)
-        except Exception as e:
-            if isinstance(e, HttpError) and e.status_code == 403:
-                # don't yield an error here because this is expected behavior
-                # when a user doesn't have access to a folder
-                logger.debug(f"Error getting files in parent {parent_id}: {e}")
-            else:
-                logger.error(f"Error getting files in parent {parent_id}: {e}")
-                yield RetrievedDriveFile(
-                    drive_file=file,
-                    user_email=user_email,
-                    parent_id=parent_id,
-                    completion_stage=DriveRetrievalStage.FOLDER_FILES,
-                    error=e,
-                )
-    else:
-        logger.info(f"Skipping subfolder files since already traversed: {parent_id}")
-
-    for subfolder in _get_folders_in_parent(
-        service=service,
-        parent_id=parent_id,
-    ):
-        logger.info("Fetching all files in subfolder: " + subfolder["name"])
-        yield from crawl_folders_for_files(
-            service=service,
-            parent_id=subfolder["id"],
-            field_type=field_type,
-            user_email=user_email,
-            traversed_parent_ids=traversed_parent_ids,
-            update_traversed_ids_func=update_traversed_ids_func,
-            start=start,
-            end=end,
-        )
+                active_parent_ids=active_parent_ids,
+            )
+    finally:
+        active_parent_ids.remove(parent_id)
 
 
 def get_files_in_shared_drive(
@@ -340,7 +542,7 @@ def get_files_in_shared_drive(
 ) -> Iterator[GoogleDriveFileType | str]:
     kwargs = {ORDER_BY_KEY: GoogleFields.MODIFIED_TIME.value}
     if page_token:
-        logger.info(f"Using page token: {page_token}")
+        logger.info("Using page token: %s", page_token)
         kwargs[PAGE_TOKEN_KEY] = page_token
 
     if cache_folders:
@@ -349,7 +551,7 @@ def get_files_in_shared_drive(
         folder_query = f"mimeType = '{DRIVE_FOLDER_TYPE}'"
         folder_query += " and trashed = false"
         for folder in execute_paginated_retrieval(
-            retrieval_function=service.files().list,
+            retrieval_function=service.files().list,  # ty: ignore[unresolved-attribute]
             list_key="files",
             continue_on_404_or_403=True,
             corpora="drive",
@@ -367,7 +569,7 @@ def get_files_in_shared_drive(
     file_query += generate_time_range_filter(start, end)
 
     for file in execute_paginated_retrieval_with_max_pages(
-        retrieval_function=service.files().list,
+        retrieval_function=service.files().list,  # ty: ignore[unresolved-attribute]
         max_num_pages=max_num_pages,
         list_key="files",
         continue_on_404_or_403=True,
@@ -379,6 +581,13 @@ def get_files_in_shared_drive(
         q=file_query,
         **kwargs,
     ):
+        if isinstance(file, str):
+            yield file
+            continue
+
+        resolved_file = _resolve_file_or_shortcut(service, file, field_type)
+        if resolved_file is None:
+            continue
         # If we found any files, mark this drive as traversed. When a user has access to a drive,
         # they have access to all the files in the drive. Also not a huge deal if we re-traverse
         # empty drives.
@@ -386,7 +595,7 @@ def get_files_in_shared_drive(
         # https://support.google.com/a/users/answer/12380484?hl=en
         # So we may have to change this logic for people who use folder restrictions.
         update_traversed_ids_func(drive_id)
-        yield file
+        yield resolved_file
 
 
 def get_all_files_in_my_drive_and_shared(
@@ -402,7 +611,7 @@ def get_all_files_in_my_drive_and_shared(
 ) -> Iterator[GoogleDriveFileType | str]:
     kwargs = {ORDER_BY_KEY: GoogleFields.MODIFIED_TIME.value}
     if page_token:
-        logger.info(f"Using page token: {page_token}")
+        logger.info("Using page token: %s", page_token)
         kwargs[PAGE_TOKEN_KEY] = page_token
 
     if cache_folders:
@@ -414,7 +623,7 @@ def get_all_files_in_my_drive_and_shared(
             folder_query += " and 'me' in owners"
         found_folders = False
         for folder in execute_paginated_retrieval(
-            retrieval_function=service.files().list,
+            retrieval_function=service.files().list,  # ty: ignore[unresolved-attribute]
             list_key="files",
             corpora="user",
             fields=_get_fields_for_file_type(field_type),
@@ -431,15 +640,19 @@ def get_all_files_in_my_drive_and_shared(
     if not include_shared_with_me:
         file_query += " and 'me' in owners"
     file_query += generate_time_range_filter(start, end)
-    yield from execute_paginated_retrieval_with_max_pages(
-        retrieval_function=service.files().list,
-        max_num_pages=max_num_pages,
-        list_key="files",
-        continue_on_404_or_403=False,
-        corpora="user",
-        fields=_get_fields_for_file_type(field_type),
-        q=file_query,
-        **kwargs,
+    yield from _resolve_file_shortcuts(
+        service,
+        execute_paginated_retrieval_with_max_pages(
+            retrieval_function=service.files().list,  # ty: ignore[unresolved-attribute]
+            max_num_pages=max_num_pages,
+            list_key="files",
+            continue_on_404_or_403=False,
+            corpora="user",
+            fields=_get_fields_for_file_type(field_type),
+            q=file_query,
+            **kwargs,
+        ),
+        field_type,
     )
 
 
@@ -457,7 +670,7 @@ def get_all_files_for_oauth(
 ) -> Iterator[GoogleDriveFileType | str]:
     kwargs = {ORDER_BY_KEY: GoogleFields.MODIFIED_TIME.value}
     if page_token:
-        logger.info(f"Using page token: {page_token}")
+        logger.info("Using page token: %s", page_token)
         kwargs[PAGE_TOKEN_KEY] = page_token
 
     should_get_all = (
@@ -475,17 +688,21 @@ def get_all_files_for_oauth(
         if not include_files_shared_with_me and include_my_drives:
             file_query += " and 'me' in owners"
 
-    yield from execute_paginated_retrieval_with_max_pages(
-        max_num_pages=max_num_pages,
-        retrieval_function=service.files().list,
-        list_key="files",
-        continue_on_404_or_403=False,
-        corpora=corpora,
-        includeItemsFromAllDrives=should_get_all,
-        supportsAllDrives=should_get_all,
-        fields=_get_fields_for_file_type(field_type),
-        q=file_query,
-        **kwargs,
+    yield from _resolve_file_shortcuts(
+        service,
+        execute_paginated_retrieval_with_max_pages(
+            max_num_pages=max_num_pages,
+            retrieval_function=service.files().list,  # ty: ignore[unresolved-attribute]
+            list_key="files",
+            continue_on_404_or_403=False,
+            corpora=corpora,
+            includeItemsFromAllDrives=should_get_all,
+            supportsAllDrives=should_get_all,
+            fields=_get_fields_for_file_type(field_type),
+            q=file_query,
+            **kwargs,
+        ),
+        field_type,
     )
 
 
@@ -494,7 +711,7 @@ def get_root_folder_id(service: Resource) -> str:
     # we dont paginate here because there is only one root folder per user
     # https://developers.google.com/drive/api/guides/v2-to-v3-reference
     return (
-        service.files()
+        service.files()  # ty: ignore[unresolved-attribute]
         .get(fileId="root", fields=GoogleFields.ID.value)
         .execute()[GoogleFields.ID.value]
     )
@@ -528,7 +745,7 @@ def get_file_by_web_view_link(
     """Retrieve a Google Drive file using its webViewLink."""
     file_id = _extract_file_id_from_web_view_link(web_view_link)
     return (
-        service.files()
+        service.files()  # ty: ignore[unresolved-attribute]
         .get(
             fileId=file_id,
             supportsAllDrives=True,
@@ -536,3 +753,79 @@ def get_file_by_web_view_link(
         )
         .execute()
     )
+
+
+class BatchRetrievalResult:
+    """Result of a batch file retrieval, separating successes from errors."""
+
+    def __init__(self) -> None:
+        self.files: dict[str, GoogleDriveFileType] = {}
+        self.errors: dict[str, Exception] = {}
+
+
+def get_files_by_web_view_links_batch(
+    service: GoogleDriveService,
+    web_view_links: list[str],
+    field_type: DriveFileFieldType,
+) -> BatchRetrievalResult:
+    """Retrieve multiple Google Drive files by webViewLink using the batch API.
+
+    Returns a BatchRetrievalResult containing successful file retrievals
+    and errors for any files that could not be fetched.
+    Automatically splits into chunks of MAX_BATCH_SIZE.
+    """
+    fields = _get_single_file_fields(field_type)
+    if len(web_view_links) <= MAX_BATCH_SIZE:
+        return _get_files_by_web_view_links_batch(service, web_view_links, fields)
+
+    combined = BatchRetrievalResult()
+    for i in range(0, len(web_view_links), MAX_BATCH_SIZE):
+        chunk = web_view_links[i : i + MAX_BATCH_SIZE]
+        chunk_result = _get_files_by_web_view_links_batch(service, chunk, fields)
+        combined.files.update(chunk_result.files)
+        combined.errors.update(chunk_result.errors)
+    return combined
+
+
+def _get_files_by_web_view_links_batch(
+    service: GoogleDriveService,
+    web_view_links: list[str],
+    fields: str,
+) -> BatchRetrievalResult:
+    """Single-batch implementation."""
+
+    result = BatchRetrievalResult()
+
+    def callback(
+        request_id: str,
+        response: GoogleDriveFileType,
+        exception: Exception | None,
+    ) -> None:
+        if exception:
+            logger.warning("Error retrieving file %s: %s", request_id, exception)
+            result.errors[request_id] = exception
+        else:
+            result.files[request_id] = response
+
+    batch = cast(
+        BatchHttpRequest,
+        service.new_batch_http_request(  # ty: ignore[unresolved-attribute]
+            callback=callback
+        ),
+    )
+
+    for web_view_link in web_view_links:
+        try:
+            file_id = _extract_file_id_from_web_view_link(web_view_link)
+            request = service.files().get(  # ty: ignore[unresolved-attribute]
+                fileId=file_id,
+                supportsAllDrives=True,
+                fields=fields,
+            )
+            batch.add(request, request_id=web_view_link)
+        except ValueError as e:
+            logger.warning("Failed to extract file ID from %s: %s", web_view_link, e)
+            result.errors[web_view_link] = e
+
+    batch.execute()
+    return result

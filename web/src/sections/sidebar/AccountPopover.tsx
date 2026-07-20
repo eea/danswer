@@ -2,51 +2,56 @@
 
 import { useState } from "react";
 import { LOGOUT_DISABLED } from "@/lib/constants";
-import { Notification } from "@/interfaces/settings";
-import useSWR, { preload } from "swr";
+import { preload } from "swr";
 import { errorHandlingFetcher } from "@/lib/fetcher";
-import { SWR_KEYS } from "@/lib/swr-keys";
-import { checkUserIsNoAuthUser, getUserDisplayName, logout } from "@/lib/user";
+import {
+  checkUserIsNoAuthUser,
+  getUserDisplayName,
+  getUserEmail,
+  logout,
+} from "@/lib/user";
 import { useUser } from "@/providers/UserProvider";
-import LineItem from "@/refresh-components/buttons/LineItem";
-import Popover, { PopoverMenu } from "@/refresh-components/Popover";
+import { Popover, PopoverMenu } from "@opal/components";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { SidebarTab } from "@opal/components";
+import { SidebarTab, LineItemButton } from "@opal/components";
 import NotificationsPopover from "@/sections/sidebar/NotificationsPopover";
 import {
   SvgBell,
   SvgExternalLink,
   SvgFileText,
+  SvgHelpCircle,
   SvgLogOut,
+  SvgSliders,
   SvgUser,
   SvgNotificationBubble,
 } from "@opal/icons";
+import { Content } from "@opal/layouts";
 import { Section } from "@/layouts/general-layouts";
 import { toast } from "@/hooks/useToast";
 import useAppFocus from "@/hooks/useAppFocus";
-import { useVectorDbEnabled } from "@/providers/SettingsProvider";
+import { useSettings } from "@/lib/settings/hooks";
 import UserAvatar from "@/refresh-components/avatars/UserAvatar";
+import { useNotificationSummary } from "@/hooks/useNotifications";
+import { SvgOnyxLogo } from "@opal/logos";
+import { markdown } from "@opal/utils";
 
 interface SettingsPopoverProps {
   onUserSettingsClick: () => void;
   onOpenNotifications: () => void;
+  undismissedCount: number;
 }
 
 function SettingsPopover({
   onUserSettingsClick,
   onOpenNotifications,
+  undismissedCount,
 }: SettingsPopoverProps) {
   const { user } = useUser();
-  const { data: notifications } = useSWR<Notification[]>(
-    SWR_KEYS.notifications,
-    errorHandlingFetcher,
-    { revalidateOnFocus: false }
-  );
+  const settings = useSettings();
+  const enterpriseSettings = settings.enterprise;
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const undismissedCount =
-    notifications?.filter((n) => !n.dismissed).length ?? 0;
   const isAnonymousUser =
     user?.is_anonymous_user || checkUserIsNoAuthUser(user?.id ?? "");
   const showLogout = user && !isAnonymousUser && !LOGOUT_DISABLED;
@@ -85,80 +90,139 @@ function SettingsPopover({
   };
 
   return (
-    <>
-      <PopoverMenu>
-        {[
-          <div key="user-settings" data-testid="Settings/user-settings">
-            <LineItem
-              icon={SvgUser}
-              href="/app/settings"
-              onClick={onUserSettingsClick}
-            >
-              User Settings
-            </LineItem>
-          </div>,
-          <LineItem
-            key="notifications"
-            icon={SvgBell}
-            onClick={onOpenNotifications}
-          >
-            {`Notifications${
-              undismissedCount > 0 ? ` (${undismissedCount})` : ""
-            }`}
-          </LineItem>,
-          <LineItem
-            key="help-faq"
+    <PopoverMenu>
+      {[
+        <div key="user-email" className="p-2">
+          <Content sizePreset="main-ui" title={getUserEmail(user)} />
+        </div>,
+        null,
+        <div key="user-settings" data-testid="Settings/user-settings">
+          <LineItemButton
+            sizePreset="main-ui"
+            variant="section"
+            rounding="sm"
+            icon={SvgSliders}
+            title="Settings"
+            href="/app/settings"
+            onClick={onUserSettingsClick}
+          />
+        </div>,
+        <LineItemButton
+          key="notifications"
+          sizePreset="main-ui"
+          variant="section"
+          rounding="sm"
+          icon={SvgBell}
+          title="Notifications"
+          onClick={onOpenNotifications}
+          rightChildren={
+            undismissedCount ? (
+              <SvgNotificationBubble count={undismissedCount} />
+            ) : undefined
+          }
+        />,
+        <LineItemButton
+          key="help-faq"
+          sizePreset="main-ui"
+          variant="section"
+          rounding="sm"
+          icon={SvgHelpCircle}
+          title="Help & FAQ"
+          href="https://docs.onyx.app"
+          target="_blank"
+        />,
+        enterpriseSettings?.custom_help_link_url && (
+          <LineItemButton
+            key="custom-help-link"
+            sizePreset="main-ui"
+            variant="section"
+            rounding="sm"
             icon={SvgExternalLink}
-            href="https://docs.onyx.app"
+            title={
+              enterpriseSettings.custom_help_link_label ||
+              enterpriseSettings.custom_help_link_url
+            }
+            href={enterpriseSettings.custom_help_link_url}
             target="_blank"
-            rel="noopener noreferrer"
-          >
-            Help &amp; FAQ
-          </LineItem>,
-          // EEA: legal & informational page links
-          <LineItem key="disclaimer" icon={SvgFileText} href="/pages/disclaimer">
-            Disclaimer
-          </LineItem>,
-          <LineItem
-            key="privacy-architecture"
-            icon={SvgFileText}
-            href="/pages/privacy"
-          >
-            Privacy Architecture
-          </LineItem>,
-          <LineItem
-            key="privacy-statement"
-            icon={SvgFileText}
-            href="/pages/privacy-statement"
-          >
-            Privacy Statement
-          </LineItem>,
-          <LineItem
-            key="whats-new"
-            icon={SvgFileText}
-            href="/pages/whats-new"
-          >
-            What&apos;s new
-          </LineItem>,
-          null,
-          showLogin && (
-            <LineItem key="log-in" icon={SvgUser} onClick={handleLogin}>
-              Log in
-            </LineItem>
-          ),
-          showLogout && (
-            <LineItem
-              key="log-out"
-              icon={SvgLogOut}
-              danger
-              onClick={handleLogout}
-            >
-              Log out
-            </LineItem>
-          ),
-        ]}
-      </PopoverMenu>
-    </>
+          />
+        ),
+        // EEA: legal & informational page links
+        <LineItemButton
+          key="disclaimer"
+          sizePreset="main-ui"
+          variant="section"
+          rounding="sm"
+          icon={SvgFileText}
+          href="/pages/disclaimer"
+          title="Disclaimer"
+        />,
+        <LineItemButton
+          key="privacy-architecture"
+          sizePreset="main-ui"
+          variant="section"
+          rounding="sm"
+          icon={SvgFileText}
+          href="/pages/privacy"
+          title="Privacy Architecture"
+        />,
+        <LineItemButton
+          key="privacy-statement"
+          sizePreset="main-ui"
+          variant="section"
+          rounding="sm"
+          icon={SvgFileText}
+          href="/pages/privacy-statement"
+          title="Privacy Statement"
+        />,
+        <LineItemButton
+          key="whats-new"
+          sizePreset="main-ui"
+          variant="section"
+          rounding="sm"
+          icon={SvgFileText}
+          href="/pages/whats-new"
+          title="What's new"
+        />,
+        showLogin && (
+          <LineItemButton
+            key="log-in"
+            sizePreset="main-ui"
+            variant="section"
+            rounding="sm"
+            icon={SvgUser}
+            title="Log in"
+            onClick={handleLogin}
+          />
+        ),
+        showLogout && (
+          <LineItemButton
+            key="log-out"
+            sizePreset="main-ui"
+            variant="section"
+            color="danger"
+            rounding="sm"
+            icon={SvgLogOut}
+            title="Log Out"
+            onClick={handleLogout}
+          />
+        ),
+        null,
+        <div key="version" className="p-2">
+          <Content
+            sizePreset="secondary"
+            variant="body"
+            color="muted"
+            orientation="reverse"
+            icon={SvgOnyxLogo}
+            title={markdown(
+              `[Onyx ${
+                settings.version ?? "dev"
+              }](https://docs.onyx.app/changelog)`
+            )}
+          />
+        </div>,
+      ]}
+    </PopoverMenu>
   );
 }
 
@@ -176,19 +240,10 @@ export default function AccountPopover({
   >(undefined);
   const { user } = useUser();
   const appFocus = useAppFocus();
-  const vectorDbEnabled = useVectorDbEnabled();
-
-  // Fetch notifications for display
-  // The GET endpoint also triggers a refresh if release notes are stale
-  const { data: notifications } = useSWR<Notification[]>(
-    SWR_KEYS.notifications,
-    errorHandlingFetcher
-  );
-
+  const { vectorDbEnabled } = useSettings();
+  const { undismissedCount, refresh: refreshNotificationSummary } =
+    useNotificationSummary();
   const userDisplayName = getUserDisplayName(user);
-  const undismissedCount =
-    notifications?.filter((n) => !n.dismissed).length ?? 0;
-  const hasNotifications = undismissedCount > 0;
 
   const handlePopoverOpen = (state: boolean) => {
     if (state) {
@@ -199,6 +254,7 @@ export default function AccountPopover({
         preload("/api/manage/connector-status", errorHandlingFetcher);
       }
       preload("/api/llm/provider", errorHandlingFetcher);
+      void refreshNotificationSummary();
       setPopupState("Settings");
     } else {
       setPopupState(undefined);
@@ -210,15 +266,15 @@ export default function AccountPopover({
       <Popover.Trigger asChild>
         <div id="onyx-user-dropdown">
           <SidebarTab
-            icon={() => (
+            icon={(props) => (
               <div className="w-[16px] flex flex-col justify-center items-center">
-                <UserAvatar user={user} size={18} />
+                <UserAvatar user={user} {...props} size={props.size} />
               </div>
             )}
             rightChildren={
-              hasNotifications ? (
+              undismissedCount ? (
                 <Section padding={0.5}>
-                  <SvgNotificationBubble size={6} />
+                  <SvgNotificationBubble count={undismissedCount} />
                 </Section>
               ) : undefined
             }
@@ -234,7 +290,7 @@ export default function AccountPopover({
       <Popover.Content
         align="end"
         side="right"
-        width={popupState === "Notifications" ? "xl" : "md"}
+        width={popupState === "Notifications" ? "2xl" : "lg"}
       >
         {popupState === "Settings" && (
           <SettingsPopover
@@ -242,6 +298,7 @@ export default function AccountPopover({
               setPopupState(undefined);
             }}
             onOpenNotifications={() => setPopupState("Notifications")}
+            undismissedCount={undismissedCount}
           />
         )}
         {popupState === "Notifications" && (

@@ -38,6 +38,7 @@ from onyx.configs.constants import OnyxRedisConstants
 from onyx.configs.constants import OnyxRedisLocks
 from onyx.configs.constants import OnyxRedisSignals
 from onyx.connectors.factory import instantiate_connector
+from onyx.connectors.interfaces import BaseConnector
 from onyx.connectors.models import InputType
 from onyx.db.connector import mark_ccpair_as_pruned
 from onyx.db.connector_credential_pair import get_connector_credential_pair
@@ -50,7 +51,6 @@ from onyx.db.enums import ConnectorCredentialPairStatus
 from onyx.db.enums import SyncStatus
 from onyx.db.enums import SyncType
 from onyx.db.hierarchy import delete_orphaned_hierarchy_nodes
-from onyx.db.hierarchy import link_hierarchy_nodes_to_documents
 from onyx.db.hierarchy import remove_stale_hierarchy_node_cc_pair_entries
 from onyx.db.hierarchy import reparent_orphaned_hierarchy_nodes
 from onyx.db.hierarchy import update_document_parent_hierarchy_nodes
@@ -72,6 +72,8 @@ from onyx.redis.redis_hierarchy import get_source_node_id_from_cache
 from onyx.redis.redis_hierarchy import HierarchyNodeCacheEntry
 from onyx.redis.redis_pool import get_redis_client
 from onyx.redis.redis_pool import get_redis_replica_client
+from onyx.redis.redis_tenant_work_gating import maybe_mark_tenant_active
+from onyx.redis.tenant_redis_client import TenantRedisClient
 from onyx.server.metrics.pruning_metrics import observe_pruning_diff_duration
 from onyx.server.runtime.onyx_runtime import OnyxRuntime
 from onyx.server.utils import make_short_id
@@ -128,7 +130,7 @@ class PruneCallback(IndexingCallbackBase):
 
 def _resolve_and_update_document_parents(
     db_session: Session,
-    redis_client: Redis,
+    redis_client: TenantRedisClient,
     source: DocumentSource,
     raw_id_to_parent: dict[str, str | None],
 ) -> None:
@@ -228,6 +230,7 @@ def check_for_pruning(self: Task, *, tenant_id: str) -> bool | None:
                 for cc_pair_entry in cc_pairs:
                     cc_pair_ids.append(cc_pair_entry.id)
 
+            prune_dispatched = False
             for cc_pair_id in cc_pair_ids:
                 lock_beat.reacquire()
                 with get_session_with_current_tenant() as db_session:
@@ -236,23 +239,40 @@ def check_for_pruning(self: Task, *, tenant_id: str) -> bool | None:
                         cc_pair_id=cc_pair_id,
                     )
                     if not cc_pair:
-                        logger.error(f"CC pair not found: {cc_pair_id}")
+                        logger.error("CC pair not found: %s", cc_pair_id)
                         continue
 
                     if not _is_pruning_due(cc_pair):
-                        logger.info(f"CC pair not due for pruning: {cc_pair_id}")
+                        logger.info("CC pair not due for pruning: %s", cc_pair_id)
+                        continue
+
+                    # Skip auto-scheduling during a prune failure backoff; a manual
+                    # prune (API) bypasses this path and can still force a run.
+                    if RedisConnector(tenant_id, cc_pair_id).prune.in_failure_backoff:
+                        logger.info(
+                            "CC pair in pruning failure backoff: %s", cc_pair_id
+                        )
                         continue
 
                     payload_id = try_creating_prune_generator_task(
                         self.app, cc_pair, db_session, r, tenant_id
                     )
                     if not payload_id:
-                        logger.info(f"Pruning not created: {cc_pair_id}")
+                        logger.info("Pruning not created: %s", cc_pair_id)
                         continue
 
+                    prune_dispatched = True
                     task_logger.info(
                         f"Pruning queued: cc_pair={cc_pair.id} id={payload_id}"
                     )
+
+            # Tenant-work-gating hook: mark only when at least one cc_pair
+            # was actually due for pruning AND a prune task was dispatched.
+            # Marking on bare cc_pair existence over-counts the population
+            # since most tenants have cc_pairs but almost none are due on
+            # any given cycle.
+            if prune_dispatched:
+                maybe_mark_tenant_active(tenant_id, caller="check_for_pruning")
             r.set(OnyxRedisSignals.BLOCK_PRUNING, 1, ex=_get_pruning_block_expiration())
 
         # we want to run this less frequently than the overall task
@@ -307,7 +327,7 @@ def try_creating_prune_generator_task(
     celery_app: Celery,
     cc_pair: ConnectorCredentialPair,
     db_session: Session,
-    r: Redis,
+    r: TenantRedisClient,
     tenant_id: str,
 ) -> str | None:
     """Checks for any conditions that should block the pruning generator task from being
@@ -317,7 +337,7 @@ def try_creating_prune_generator_task(
     is used to trigger prunes immediately, e.g. via the web ui.
     """
 
-    logger.info(f"try_creating_prune_generator_task: cc_pair={cc_pair.id}")
+    logger.info("try_creating_prune_generator_task: cc_pair=%s", cc_pair.id)
 
     redis_connector = RedisConnector(tenant_id, cc_pair.id)
 
@@ -325,7 +345,8 @@ def try_creating_prune_generator_task(
         count = redis_connector.prune.get_active_task_count()
         if count > 0:
             logger.info(
-                f"try_creating_prune_generator_task: cc_pair={cc_pair.id} no simultaneous pruning allowed"
+                "try_creating_prune_generator_task: cc_pair=%s no simultaneous pruning allowed",
+                cc_pair.id,
             )
             return None
 
@@ -341,7 +362,8 @@ def try_creating_prune_generator_task(
     acquired = lock.acquire(blocking_timeout=LOCK_TIMEOUT / 2)
     if not acquired:
         logger.info(
-            f"try_creating_prune_generator_task: cc_pair={cc_pair.id} lock not acquired"
+            "try_creating_prune_generator_task: cc_pair=%s lock not acquired",
+            cc_pair.id,
         )
         return None
 
@@ -349,28 +371,30 @@ def try_creating_prune_generator_task(
         # skip pruning if already pruning
         if redis_connector.prune.fenced:
             logger.info(
-                f"try_creating_prune_generator_task: cc_pair={cc_pair.id} already pruning"
+                "try_creating_prune_generator_task: cc_pair=%s already pruning",
+                cc_pair.id,
             )
             return None
 
         # skip pruning if the cc_pair is deleting
         if redis_connector.delete.fenced:
             logger.info(
-                f"try_creating_prune_generator_task: cc_pair={cc_pair.id} deleting"
+                "try_creating_prune_generator_task: cc_pair=%s deleting", cc_pair.id
             )
             return None
 
         # skip pruning if doc permissions sync is running
         if redis_connector.permissions.fenced:
             logger.info(
-                f"try_creating_prune_generator_task: cc_pair={cc_pair.id} permissions sync running"
+                "try_creating_prune_generator_task: cc_pair=%s permissions sync running",
+                cc_pair.id,
             )
             return None
 
         db_session.refresh(cc_pair)
         if cc_pair.status == ConnectorCredentialPairStatus.DELETING:
             logger.info(
-                f"try_creating_prune_generator_task: cc_pair={cc_pair.id} deleting"
+                "try_creating_prune_generator_task: cc_pair=%s deleting", cc_pair.id
             )
             return None
 
@@ -414,6 +438,7 @@ def try_creating_prune_generator_task(
             queue=OnyxCeleryQueues.CONNECTOR_PRUNING,
             task_id=custom_task_id,
             priority=OnyxCeleryPriority.LOW,
+            headers={"enqueued_at": time.time()},
         )
 
         # fill in the celery task id
@@ -495,7 +520,8 @@ def connector_pruning_generator_task(
 
         if payload.celery_task_id is None:
             logger.info(
-                f"connector_prune_generator_task - Waiting for fence: fence={redis_connector.prune.fence_key}"
+                "connector_prune_generator_task - Waiting for fence: fence=%s",
+                redis_connector.prune.fence_key,
             )
             time.sleep(1)
             continue
@@ -503,9 +529,9 @@ def connector_pruning_generator_task(
         payload_id = payload.id
 
         logger.info(
-            f"connector_prune_generator_task - Fence found, continuing...: "
-            f"fence={redis_connector.prune.fence_key} "
-            f"payload_id={payload.id}"
+            "connector_prune_generator_task - Fence found, continuing...: fence=%s payload_id=%s",
+            redis_connector.prune.fence_key,
+            payload.id,
         )
         break
 
@@ -525,6 +551,14 @@ def connector_pruning_generator_task(
         return None
 
     try:
+        # Session 1: pre-enumeration — load cc_pair and instantiate the connector.
+        # The session is closed before enumeration so the DB connection is not held
+        # open during the 10–30+ minute connector crawl.
+        connector_source: DocumentSource | None = None
+        connector_type: str = ""
+        is_connector_public: bool = False
+        runnable_connector: BaseConnector | None = None
+
         with get_session_with_current_tenant() as db_session:
             cc_pair = get_connector_credential_pair(
                 db_session=db_session,
@@ -550,49 +584,51 @@ def connector_pruning_generator_task(
             )
             redis_connector.prune.set_fence(new_payload)
 
+            connector_source = cc_pair.connector.source
+            connector_type = connector_source.value
+            is_connector_public = cc_pair.access_type == AccessType.PUBLIC
+
             task_logger.info(
-                f"Pruning generator running connector: cc_pair={cc_pair_id} connector_source={cc_pair.connector.source}"
+                f"Pruning generator running connector: cc_pair={cc_pair_id} connector_source={connector_source}"
             )
 
             runnable_connector = instantiate_connector(
                 db_session,
-                cc_pair.connector.source,
+                connector_source,
                 InputType.SLIM_RETRIEVAL,
                 cc_pair.connector.connector_specific_config,
                 cc_pair.credential,
             )
+        # Session 1 closed here — connection released before enumeration.
 
-            callback = PruneCallback(
-                0,
-                redis_connector,
-                lock,
-                r,
-                timeout_seconds=JOB_TIMEOUT,
-            )
+        callback = PruneCallback(
+            0,
+            redis_connector,
+            lock,
+            r,
+            timeout_seconds=JOB_TIMEOUT,
+        )
 
-            # Extract docs and hierarchy nodes from the source
-            connector_type = cc_pair.connector.source.value
-            extraction_result = extract_ids_from_runnable_connector(
-                runnable_connector, callback, connector_type=connector_type
-            )
-            all_connector_doc_ids = extraction_result.raw_id_to_parent
+        # Extract docs and hierarchy nodes from the source (no DB session held).
+        extraction_result = extract_ids_from_runnable_connector(
+            runnable_connector, callback, connector_type=connector_type
+        )
+        all_connector_doc_ids = extraction_result.raw_id_to_parent
 
-            # Process hierarchy nodes (same as docfetching):
-            # upsert to Postgres and cache in Redis
-            source = cc_pair.connector.source
+        # Session 2: post-enumeration — hierarchy upserts, diff computation, task dispatch.
+        with get_session_with_current_tenant() as db_session:
+            source = connector_source
             redis_client = get_redis_client(tenant_id=tenant_id)
 
             ensure_source_node_exists(redis_client, db_session, source)
 
             upserted_nodes: list[DBHierarchyNode] = []
             if extraction_result.hierarchy_nodes:
-                is_connector_public = cc_pair.access_type == AccessType.PUBLIC
-
                 upserted_nodes = upsert_hierarchy_nodes_batch(
                     db_session=db_session,
                     nodes=extraction_result.hierarchy_nodes,
                     source=source,
-                    commit=True,
+                    commit=False,
                     is_connector_public=is_connector_public,
                 )
 
@@ -601,8 +637,12 @@ def connector_pruning_generator_task(
                     hierarchy_node_ids=[n.id for n in upserted_nodes],
                     connector_id=connector_id,
                     credential_id=credential_id,
-                    commit=True,
+                    commit=False,
                 )
+
+                # Single commit so the FK reference in the join table can never
+                # outrun the parent hierarchy_node insert.
+                db_session.commit()
 
                 cache_entries = [
                     HierarchyNodeCacheEntry.from_db_model(node)
@@ -628,16 +668,6 @@ def connector_pruning_generator_task(
                 raw_id_to_parent=all_connector_doc_ids,
             )
 
-            # Link hierarchy nodes to documents for sources where pages can be
-            # both hierarchy nodes AND documents (e.g. Notion, Confluence)
-            all_doc_id_list = list(all_connector_doc_ids.keys())
-            link_hierarchy_nodes_to_documents(
-                db_session=db_session,
-                document_ids=all_doc_id_list,
-                source=source,
-                commit=True,
-            )
-
             diff_start = time.monotonic()
             try:
                 # a list of docs in our local index
@@ -658,7 +688,7 @@ def connector_pruning_generator_task(
                 task_logger.info(
                     "Pruning set collected: "
                     f"cc_pair={cc_pair_id} "
-                    f"connector_source={cc_pair.connector.source} "
+                    f"connector_source={connector_source} "
                     f"docs_to_remove={len(doc_ids_to_remove)}"
                 )
 
@@ -722,7 +752,19 @@ def connector_pruning_generator_task(
             f"Pruning exceptioned: cc_pair={cc_pair_id} connector={connector_id} payload_id={payload_id}"
         )
 
-        redis_connector.prune.reset()
+        # Back off so a failing prune isn't re-dispatched on the next beat.
+        redis_connector.prune.set_failure_backoff()
+
+        # Only reset (clears the fence + taskset) if cleanup tasks were never
+        # fanned out. If they were, reset would orphan them (it doesn't revoke
+        # them) and the next beat would re-enumerate and re-queue the whole set;
+        # keeping the fence lets the monitor finalize the in-flight taskset, and
+        # generator_failed makes it record a FAILED prune instead of a false success.
+        if redis_connector.prune.generator_complete is None:
+            redis_connector.prune.reset()
+        else:
+            redis_connector.prune.set_generator_failed()
+
         raise e
     finally:
         if lock.owned():
@@ -739,7 +781,7 @@ def connector_pruning_generator_task(
 def monitor_ccpair_pruning_taskset(
     tenant_id: str,
     key_bytes: bytes,
-    r: Redis,  # noqa: ARG001
+    r: TenantRedisClient,
     db_session: Session,
 ) -> None:
     fence_key = key_bytes.decode("utf-8")
@@ -760,23 +802,35 @@ def monitor_ccpair_pruning_taskset(
     if initial is None:
         return
 
-    remaining = redis_connector.prune.get_remaining()
-    task_logger.info(
-        f"Connector pruning progress: cc_pair={cc_pair_id} remaining={remaining} initial={initial}"
-    )
-    if remaining > 0:
+    # Check if the taskset still exists in Redis without reading its size.
+    # redis.exists() is O(1) and very cheap, whereas scard() on a large taskset
+    # (1M+ items during a big pruning fan-out) was OOMKilling the monitoring
+    # pod. Mirrors the deletion-side fix in #11155.
+    if r.exists(redis_connector.prune.taskset_key):
+        task_logger.info(
+            f"Connector pruning progress: cc_pair={cc_pair_id} initial={initial}"
+        )
         return
 
-    mark_ccpair_as_pruned(int(cc_pair_id), db_session)
-    task_logger.info(
-        f"Connector pruning finished: cc_pair={cc_pair_id} num_pruned={initial}"
-    )
+    # A generator that threw after fan-out still drains its tasks; record FAILED
+    # so the prune retries after the backoff instead of advancing last_pruned.
+    failed = redis_connector.prune.generator_failed
+    if failed:
+        task_logger.warning(
+            f"Connector pruning failed after fan-out: cc_pair={cc_pair_id} num_pruned={initial}"
+        )
+    else:
+        mark_ccpair_as_pruned(int(cc_pair_id), db_session)
+        redis_connector.prune.clear_failure_backoff()
+        task_logger.info(
+            f"Connector pruning finished: cc_pair={cc_pair_id} num_pruned={initial}"
+        )
 
     update_sync_record_status(
         db_session=db_session,
         entity_id=cc_pair_id,
         sync_type=SyncType.PRUNING,
-        sync_status=SyncStatus.SUCCESS,
+        sync_status=SyncStatus.FAILED if failed else SyncStatus.SUCCESS,
         num_docs_synced=initial,
     )
 
@@ -789,8 +843,8 @@ def monitor_ccpair_pruning_taskset(
 
 def validate_pruning_fences(
     tenant_id: str,
-    r: Redis,
-    r_replica: Redis,
+    r: TenantRedisClient,
+    r_replica: TenantRedisClient,
     r_celery: Redis,
     lock_beat: RedisLock,
 ) -> None:
@@ -840,7 +894,7 @@ def validate_pruning_fence(
     key_bytes: bytes,
     reserved_tasks: set[str],
     queued_tasks: set[str],
-    r: Redis,
+    r: TenantRedisClient,
     r_celery: Redis,
 ) -> None:
     """See validate_indexing_fence for an overall idea of validation flows.
@@ -923,8 +977,7 @@ def validate_pruning_fence(
     for member in r.sscan_iter(redis_connector.prune.taskset_key):
         tasks_scanned += 1
 
-        member_bytes = cast(bytes, member)
-        member_str = member_bytes.decode("utf-8")
+        member_str = member.decode("utf-8")
         if member_str in queued_tasks:
             continue
 

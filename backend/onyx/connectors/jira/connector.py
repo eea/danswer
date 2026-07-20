@@ -34,6 +34,7 @@ from onyx.connectors.interfaces import CheckpointedConnectorWithPermSync
 from onyx.connectors.interfaces import CheckpointOutput
 from onyx.connectors.interfaces import GenerateSlimDocumentOutput
 from onyx.connectors.interfaces import SecondsSinceUnixEpoch
+from onyx.connectors.interfaces import SlimConnector
 from onyx.connectors.interfaces import SlimConnectorWithPermSync
 from onyx.connectors.jira.access import get_project_permissions
 from onyx.connectors.jira.utils import best_effort_basic_expert_info
@@ -54,7 +55,6 @@ from onyx.connectors.models import TextSection
 from onyx.db.enums import HierarchyNodeType
 from onyx.indexing.indexing_heartbeat import IndexingHeartbeatInterface
 from onyx.utils.logger import setup_logger
-
 
 logger = setup_logger()
 
@@ -184,13 +184,13 @@ def _handle_jira_search_error(e: Exception, jql: str) -> None:
         else:
             error_text = str(raw_text)
     elif hasattr(e, "response") and e.response is not None:
-        status_code = e.response.status_code
+        status_code = e.response.status_code  # ty: ignore[unresolved-attribute]
         # Try JSON first, fall back to text
         try:
-            error_json = e.response.json()
+            error_json = e.response.json()  # ty: ignore[unresolved-attribute]
             error_text = _format_error_text(error_json)
         except Exception:
-            error_text = e.response.text
+            error_text = e.response.text  # ty: ignore[unresolved-attribute]
 
     # Handle specific status codes
     if status_code == 400:
@@ -230,7 +230,9 @@ def enhanced_search_ids(
         "fields": "id",
     }
     try:
-        response = jira_client._session.get(enhanced_search_path, params=params)
+        response = jira_client._session.get(  # ty: ignore[unresolved-attribute]
+            enhanced_search_path, params=params
+        )
         response.raise_for_status()
         response_json = response.json()
     except Exception as e:
@@ -253,7 +255,9 @@ def _bulk_fetch_request(
     # to avoid reading unnecessary data
     payload["fields"] = fields.split(",") if fields else ["*all"]
 
-    resp = jira_client._session.post(bulk_fetch_path, json=payload)
+    resp = jira_client._session.post(  # ty: ignore[unresolved-attribute]
+        bulk_fetch_path, json=payload
+    )
     return resp.json()["issues"]
 
 
@@ -267,15 +271,17 @@ def _bulk_fetch_batch(
     except requests.exceptions.JSONDecodeError:
         if len(issue_ids) <= 1:
             logger.exception(
-                f"Jira bulk-fetch response for issue(s) {issue_ids} could not "
-                f"be decoded as JSON (response too large or truncated)."
+                "Jira bulk-fetch response for issue(s) %s could not be decoded as JSON (response too large or truncated).",
+                issue_ids,
             )
             raise
 
         mid = len(issue_ids) // 2
         logger.warning(
-            f"Jira bulk-fetch JSON decode failed for batch of {len(issue_ids)} issues. "
-            f"Splitting into sub-batches of {mid} and {len(issue_ids) - mid}."
+            "Jira bulk-fetch JSON decode failed for batch of %s issues. Splitting into sub-batches of %s and %s.",
+            len(issue_ids),
+            mid,
+            len(issue_ids) - mid,
         )
         left = _bulk_fetch_batch(jira_client, issue_ids[:mid], fields)
         right = _bulk_fetch_batch(jira_client, issue_ids[mid:], fields)
@@ -294,11 +300,15 @@ def bulk_fetch_issues(
         try:
             raw_issues.extend(_bulk_fetch_batch(jira_client, list(batch), fields))
         except Exception as e:
-            logger.error(f"Error fetching issues: {e}")
+            logger.error("Error fetching issues: %s", e)
             raise
 
     return [
-        Issue(jira_client._options, jira_client._session, raw=issue)
+        Issue(
+            jira_client._options,
+            jira_client._session,  # ty: ignore[invalid-argument-type]
+            raw=issue,
+        )
         for issue in raw_issues
     ]
 
@@ -351,7 +361,10 @@ def _perform_jql_search_v2(
     Unfortunately, jira server/data center will forever use the v2 APIs that are now deprecated.
     """
     logger.debug(
-        f"Fetching Jira issues with JQL: {jql}, starting at {start}, max results: {max_results}"
+        "Fetching Jira issues with JQL: %s, starting at %s, max results: %s",
+        jql,
+        start,
+        max_results,
     )
     try:
         issues = jira_client.search_issues(
@@ -381,8 +394,10 @@ def process_jira_issue(
     if labels_to_skip:
         if any(label in issue.fields.labels for label in labels_to_skip):
             logger.info(
-                f"Skipping {issue.key} because it has a label to skip. Found "
-                f"labels: {issue.fields.labels}. Labels to skip: {labels_to_skip}."
+                "Skipping %s because it has a label to skip. Found labels: %s. Labels to skip: %s.",
+                issue.key,
+                issue.fields.labels,
+                labels_to_skip,
             )
             return None
 
@@ -402,7 +417,9 @@ def process_jira_issue(
     # Check ticket size
     if len(ticket_content.encode("utf-8")) > JIRA_CONNECTOR_MAX_TICKET_SIZE:
         logger.info(
-            f"Skipping {issue.key} because it exceeds the maximum size of {JIRA_CONNECTOR_MAX_TICKET_SIZE} bytes."
+            "Skipping %s because it exceeds the maximum size of %s bytes.",
+            issue.key,
+            JIRA_CONNECTOR_MAX_TICKET_SIZE,
         )
         return None
 
@@ -415,18 +432,22 @@ def process_jira_issue(
     if creator is not None and (
         basic_expert_info := best_effort_basic_expert_info(creator)
     ):
-        people.add(basic_expert_info)
-        metadata_dict[_FIELD_REPORTER] = basic_expert_info.get_semantic_name()
-        if email := basic_expert_info.get_email():
+        people.add(basic_expert_info)  # ty: ignore[possibly-unresolved-reference]
+        metadata_dict[_FIELD_REPORTER] = basic_expert_info.get_semantic_name()  # ty: ignore[possibly-unresolved-reference]
+        if (
+            email := basic_expert_info.get_email()  # ty: ignore[possibly-unresolved-reference]
+        ):
             metadata_dict[_FIELD_REPORTER_EMAIL] = email
 
     assignee = best_effort_get_field_from_issue(issue, _FIELD_ASSIGNEE)
     if assignee is not None and (
         basic_expert_info := best_effort_basic_expert_info(assignee)
     ):
-        people.add(basic_expert_info)
-        metadata_dict[_FIELD_ASSIGNEE] = basic_expert_info.get_semantic_name()
-        if email := basic_expert_info.get_email():
+        people.add(basic_expert_info)  # ty: ignore[possibly-unresolved-reference]
+        metadata_dict[_FIELD_ASSIGNEE] = basic_expert_info.get_semantic_name()  # ty: ignore[possibly-unresolved-reference]
+        if (
+            email := basic_expert_info.get_email()  # ty: ignore[possibly-unresolved-reference]
+        ):
             metadata_dict[_FIELD_ASSIGNEE_EMAIL] = email
 
     metadata_dict[_FIELD_KEY] = issue.key
@@ -460,7 +481,7 @@ def process_jira_issue(
         metadata_dict[_FIELD_PROJECT_NAME] = project.name
         metadata_dict[_FIELD_PROJECT] = project.key
     else:
-        logger.error(f"Project should exist but does not for {issue.key}")
+        logger.error("Project should exist but does not for %s", issue.key)
 
     return Document(
         id=page_url,
@@ -489,6 +510,7 @@ class JiraConnectorCheckpoint(ConnectorCheckpoint):
 
 class JiraConnector(
     CheckpointedConnectorWithPermSync[JiraConnectorCheckpoint],
+    SlimConnector,
     SlimConnectorWithPermSync,
 ):
     def __init__(
@@ -818,7 +840,7 @@ class JiraConnector(
                     # Add permission information to the document if requested
                     if include_permissions:
                         document.external_access = self._get_project_permissions(
-                            project_key,
+                            project_key,  # ty: ignore[invalid-argument-type]
                             add_prefix=True,  # Indexing path - prefix here
                         )
                     yield document
@@ -862,11 +884,35 @@ class JiraConnector(
             # if we didn't retrieve a full batch, we're done
             checkpoint.has_more = current_offset - starting_offset == page_size
 
+    def retrieve_all_slim_docs(
+        self,
+        start: SecondsSinceUnixEpoch | None = None,
+        end: SecondsSinceUnixEpoch | None = None,
+        callback: IndexingHeartbeatInterface | None = None,
+    ) -> GenerateSlimDocumentOutput:
+        # ID-only path (e.g. pruning): pruning diffs document IDs and never consumes
+        # permission data, so skip the admin-gated per-project permission resolution.
+        yield from self._retrieve_all_slim_docs(
+            start=start, end=end, callback=callback, include_permissions=False
+        )
+
     def retrieve_all_slim_docs_perm_sync(
         self,
         start: SecondsSinceUnixEpoch | None = None,
         end: SecondsSinceUnixEpoch | None = None,
+        callback: IndexingHeartbeatInterface | None = None,
+    ) -> GenerateSlimDocumentOutput:
+        yield from self._retrieve_all_slim_docs(
+            start=start, end=end, callback=callback, include_permissions=True
+        )
+
+    def _retrieve_all_slim_docs(
+        self,
+        start: SecondsSinceUnixEpoch | None = None,
+        end: SecondsSinceUnixEpoch | None = None,
         callback: IndexingHeartbeatInterface | None = None,  # noqa: ARG002
+        *,
+        include_permissions: bool,
     ) -> GenerateSlimDocumentOutput:
         one_day = timedelta(hours=24).total_seconds()
 
@@ -934,8 +980,10 @@ class JiraConnector(
                     SlimDocument(
                         id=doc_id,
                         # Permission sync path - don't prefix, upsert_document_external_perms handles it
-                        external_access=self._get_project_permissions(
-                            project_key, add_prefix=False
+                        external_access=(
+                            self._get_project_permissions(project_key, add_prefix=False)
+                            if include_permissions
+                            else None
                         ),
                         parent_hierarchy_raw_node_id=(
                             self._get_parent_hierarchy_raw_node_id(issue, project_key)
@@ -1010,7 +1058,7 @@ class JiraConnector(
             ConnectorValidationError: For other HTTP errors with extracted error messages
         """
         status_code = getattr(e, "status_code", None)
-        logger.error(f"Jira API error during validation: {e}")
+        logger.error("Jira API error during validation: %s", e)
 
         # Handle specific status codes with appropriate exceptions
         if status_code == 401:
@@ -1065,6 +1113,7 @@ def make_checkpoint_callback(
 
 if __name__ == "__main__":
     import os
+
     from onyx.utils.variable_functionality import global_version
     from tests.daily.connectors.utils import load_all_from_connector
 

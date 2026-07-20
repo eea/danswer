@@ -32,8 +32,9 @@ from onyx.auth.permissions import require_permission
 from onyx.auth.schemas import UserRole
 from onyx.auth.users import anonymous_user_enabled
 from onyx.auth.users import current_curator_or_admin_user
-from onyx.auth.users import enforce_seat_limit
+from onyx.auth.users import enforce_seat_limit_locked
 from onyx.auth.users import optional_user
+from onyx.auth.users import scope_exempt
 from onyx.configs.app_configs import AUTH_BACKEND
 from onyx.configs.app_configs import AUTH_TYPE
 from onyx.configs.app_configs import AuthBackend
@@ -44,17 +45,19 @@ from onyx.configs.app_configs import NUM_FREE_TRIAL_USER_INVITES
 from onyx.configs.app_configs import REDIS_AUTH_KEY_PREFIX
 from onyx.configs.app_configs import SESSION_EXPIRE_TIME_SECONDS
 from onyx.configs.app_configs import USER_AUTH_SECRET
-from onyx.configs.app_configs import VALID_EMAIL_DOMAINS
 from onyx.configs.constants import FASTAPI_USERS_AUTH_COOKIE_NAME
 from onyx.configs.constants import PUBLIC_API_TAGS
 from onyx.db.api_key import is_api_key_email_address
 from onyx.db.auth import get_live_users_count
 from onyx.db.engine.sql_engine import get_session
+from onyx.db.engine.sql_engine import get_session_with_shared_schema
 from onyx.db.enums import AccountType
 from onyx.db.enums import Permission
 from onyx.db.enums import UserFileStatus
 from onyx.db.models import User
 from onyx.db.models import UserFile
+from onyx.db.tenant_invite_counter import release_trial_invites
+from onyx.db.tenant_invite_counter import reserve_trial_invites
 from onyx.db.user_preferences import activate_user
 from onyx.db.user_preferences import deactivate_user
 from onyx.db.user_preferences import get_all_user_assistant_specific_configs
@@ -66,6 +69,8 @@ from onyx.db.user_preferences import update_user_auto_scroll
 from onyx.db.user_preferences import update_user_chat_background
 from onyx.db.user_preferences import update_user_default_app_mode
 from onyx.db.user_preferences import update_user_default_model
+from onyx.db.user_preferences import update_user_language
+from onyx.db.user_preferences import update_user_paste_as_tile
 from onyx.db.user_preferences import update_user_personalization
 from onyx.db.user_preferences import update_user_pinned_assistants
 from onyx.db.user_preferences import update_user_role
@@ -81,16 +86,22 @@ from onyx.db.users import get_total_filtered_users_count
 from onyx.db.users import get_user_by_email
 from onyx.db.users import get_user_counts_by_role_and_status
 from onyx.db.users import validate_user_role_update
+from onyx.error_handling.error_codes import OnyxErrorCode
+from onyx.error_handling.exceptions import OnyxError
 from onyx.key_value_store.factory import get_kv_store
 from onyx.redis.redis_pool import get_raw_redis_client
+from onyx.redis.redis_pool import get_redis_client
 from onyx.server.documents.models import PaginatedReturn
 from onyx.server.features.projects.models import UserFileSnapshot
+from onyx.server.manage.invite_rate_limit import enforce_invite_rate_limit
+from onyx.server.manage.invite_rate_limit import enforce_remove_invited_rate_limit
 from onyx.server.manage.models import AllUsersResponse
 from onyx.server.manage.models import AutoScrollRequest
 from onyx.server.manage.models import BulkInviteResponse
 from onyx.server.manage.models import ChatBackgroundRequest
 from onyx.server.manage.models import DefaultAppModeRequest
 from onyx.server.manage.models import EmailInviteStatus
+from onyx.server.manage.models import LanguageRequest
 from onyx.server.manage.models import MemoryItem
 from onyx.server.manage.models import PersonalizationUpdateRequest
 from onyx.server.manage.models import TenantInfo
@@ -107,8 +118,14 @@ from onyx.server.models import FullUserSnapshot
 from onyx.server.models import InvitedUserSnapshot
 from onyx.server.models import MinimalUserSnapshot
 from onyx.server.models import UserGroupInfo
+from onyx.server.security.store import get_security_settings
 from onyx.server.usage_limits import is_tenant_on_trial_fn
 from onyx.server.utils import BasicAuthenticationError
+from onyx.utils.audit import actor_from_user
+from onyx.utils.audit import AuditAction
+from onyx.utils.audit import AuditOutcome
+from onyx.utils.audit import emit_audit_event
+from onyx.utils.csv_utils import sanitize_csv_cell
 from onyx.utils.logger import setup_logger
 from onyx.utils.variable_functionality import fetch_ee_implementation_or_noop
 from onyx.utils.variable_functionality import (
@@ -163,6 +180,19 @@ def set_user_role(
         )(db_session, user_to_update)
 
     update_user_role(user_to_update, requested_role, db_session)
+
+    emit_audit_event(
+        AuditAction.USER_ROLE_CHANGE,
+        AuditOutcome.SUCCESS,
+        actor=actor_from_user(current_user),
+        resource_type="user",
+        resource_id=str(user_to_update.id),
+        extra={
+            "target_email": user_to_update.email,
+            "old_role": current_role.value,
+            "new_role": requested_role.value,
+        },
+    )
 
 
 class TestUpsertRequest(BaseModel):
@@ -374,8 +404,7 @@ def list_all_users(
             accepted_page * USERS_PAGE_SIZE : (accepted_page + 1) * USERS_PAGE_SIZE
         ],
         slack_users=[FullUserSnapshot.from_user_model(user) for user in slack_users][
-            slack_users_page
-            * USERS_PAGE_SIZE : (slack_users_page + 1)
+            slack_users_page * USERS_PAGE_SIZE : (slack_users_page + 1)
             * USERS_PAGE_SIZE
         ],
         invited=[InvitedUserSnapshot(email=email) for email in invited_emails][
@@ -403,11 +432,13 @@ def download_users_csv(
     # Write CSV header
     writer.writerow(["Email", "Role", "Status"])
 
-    # Write user data
+    # Write user data. Emails are user-supplied (a local part can legally
+    # start with a formula trigger like `=`), so sanitize to prevent
+    # CSV/formula injection against the admin opening the export.
     for user in users:
         writer.writerow(
             [
-                user.email,
+                sanitize_csv_cell(user.email),
                 user.role.value if user.role else "",
                 "Active" if user.is_active else "Inactive",
             ]
@@ -448,7 +479,7 @@ def bulk_invite_users(
     except (EmailUndeliverableError, EmailNotValidError) as e:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid email address: {email} - {str(e)}",
+            detail=f"Invalid email address: {email} - {str(e)}",  # ty: ignore[possibly-unresolved-reference]
         )
 
     # Count only new users (not already invited or existing) that need seats
@@ -460,33 +491,79 @@ def bulk_invite_users(
         if e not in existing_users and e not in already_invited
     ]
 
-    # Limit bulk invites for trial tenants to prevent email spam
-    # Only count new invites, not re-invites of existing users
-    if MULTI_TENANT and is_tenant_on_trial_fn(tenant_id):
-        current_invited = len(already_invited)
-        if current_invited + len(emails_needing_seats) > NUM_FREE_TRIAL_USER_INVITES:
-            raise HTTPException(
-                status_code=403,
-                detail="You have hit your invite limit. Please upgrade for unlimited invites.",
-            )
+    # Must run before the trial counter reservation — a seat-limit
+    # failure must not burn trial quota. Self-hosted only: the cloud
+    # check runs inside add_users_to_tenant, atomic with the mapping
+    # insert. Locking here too re-acquires the tenant advisory lock on
+    # a second connection and self-deadlocks (#10900).
+    if emails_needing_seats and not MULTI_TENANT:
+        enforce_seat_limit_locked(db_session, seats_needed=len(emails_needing_seats))
 
-    # Check seat availability for new users
-    if emails_needing_seats:
-        enforce_seat_limit(db_session, seats_needed=len(emails_needing_seats))
+    # Enforce the trial invite cap via the monotonic `tenant_invite_counter`.
+    # The UPSERT holds a row-level lock on `tenant_id` during the UPDATE, so
+    # concurrent bulk-invite flows for the same tenant are serialized without
+    # an advisory lock. On reject we ROLLBACK so the reservation does not stick.
+    trial_invite_reservation = 0
+    if MULTI_TENANT and is_tenant_on_trial_fn(tenant_id):
+        num_new_invites = len(emails_needing_seats)
+        if num_new_invites > 0:
+            with get_session_with_shared_schema() as shared_session:
+                new_total = reserve_trial_invites(
+                    shared_session, tenant_id, num_new_invites
+                )
+                if new_total > NUM_FREE_TRIAL_USER_INVITES:
+                    shared_session.rollback()
+                    raise OnyxError(
+                        OnyxErrorCode.TRIAL_INVITE_LIMIT_EXCEEDED,
+                        "You have hit your invite limit. Please upgrade for unlimited invites.",
+                    )
+                shared_session.commit()
+                trial_invite_reservation = num_new_invites
+        enforce_invite_rate_limit(
+            redis_client=get_redis_client(tenant_id=tenant_id),
+            admin_user_id=current_user.id,
+            num_invites=len(emails_needing_seats),
+            tenant_id=tenant_id,
+        )
 
     if MULTI_TENANT:
         try:
             fetch_ee_implementation_or_noop(
                 "onyx.server.tenants.provisioning", "add_users_to_tenant", None
             )(new_invited_emails, tenant_id)
-
+        except OnyxError:
+            # Seat-limit / billing declines from the cloud check must reach
+            # the caller now that this is the only enforcement point.
+            raise
         except Exception as e:
-            logger.error(f"Failed to add users to tenant {tenant_id}: {str(e)}")
+            logger.error("Failed to add users to tenant %s: %s", tenant_id, str(e))
 
     initial_invited_users = get_invited_users()
 
     all_emails = list(set(new_invited_emails) | set(initial_invited_users))
-    number_of_invited_users = write_invited_users(all_emails)
+    try:
+        number_of_invited_users = write_invited_users(all_emails)
+    except Exception:
+        # KV write failed after the counter already reserved slots. Release
+        # the reservation so the counter tracks invites that actually reached
+        # the store. Compensation failures are logged and never re-raised —
+        # the original KV error is what the caller needs to see.
+        if trial_invite_reservation > 0:
+            try:
+                with get_session_with_shared_schema() as comp_session:
+                    release_trial_invites(
+                        comp_session, tenant_id, trial_invite_reservation
+                    )
+                    comp_session.commit()
+            except Exception as comp_err:
+                logger.error(
+                    "tenant_invite_counter release failed for tenant=%s, "
+                    "slots burned=%d: %s",
+                    tenant_id,
+                    trial_invite_reservation,
+                    comp_err,
+                )
+        raise
 
     # send out email invitations only to new users (not already invited or existing)
     if not ENABLE_EMAIL_INVITES:
@@ -499,7 +576,7 @@ def bulk_invite_users(
                 send_user_email_invite(email, current_user, AUTH_TYPE)
             email_invite_status = EmailInviteStatus.SENT
         except Exception as e:
-            logger.error(f"Error sending email invite to invited users: {e}")
+            logger.error("Error sending email invite to invited users: %s", e)
             email_invite_status = EmailInviteStatus.SEND_FAILED
 
     if MULTI_TENANT and not DEV_MODE:
@@ -510,15 +587,47 @@ def bulk_invite_users(
                 "onyx.server.tenants.billing", "register_tenant_users", None
             )(tenant_id, get_live_users_count(db_session))
         except Exception as e:
-            logger.error(f"Failed to register tenant users: {str(e)}")
+            logger.error("Failed to register tenant users: %s", str(e))
             logger.info(
                 "Reverting changes: removing users from tenant and resetting invited users"
             )
-            write_invited_users(initial_invited_users)  # Reset to original state
-            fetch_ee_implementation_or_noop(
-                "onyx.server.tenants.user_mapping", "remove_users_from_tenant", None
-            )(new_invited_emails, tenant_id)
+            try:
+                write_invited_users(initial_invited_users)  # Reset to original state
+                fetch_ee_implementation_or_noop(
+                    "onyx.server.tenants.user_mapping", "remove_users_from_tenant", None
+                )(new_invited_emails, tenant_id)
+            finally:
+                # Release the counter reservation regardless of whether the KV /
+                # user-mapping reverts above succeeded — otherwise a double-fault
+                # (billing failure + revert failure) permanently inflates the
+                # counter for an invite batch the system considers rolled back.
+                if trial_invite_reservation > 0:
+                    try:
+                        with get_session_with_shared_schema() as comp_session:
+                            release_trial_invites(
+                                comp_session, tenant_id, trial_invite_reservation
+                            )
+                            comp_session.commit()
+                    except Exception as comp_err:
+                        logger.error(
+                            "tenant_invite_counter release failed for tenant=%s, "
+                            "slots burned=%d: %s",
+                            tenant_id,
+                            trial_invite_reservation,
+                            comp_err,
+                        )
             raise e
+
+    # Genuinely-new invites (not existing or already-invited) are the accounts
+    # an admin is provisioning access for; re-invites of known emails are no-ops.
+    if emails_needing_seats:
+        emit_audit_event(
+            AuditAction.USER_CREATE,
+            AuditOutcome.SUCCESS,
+            actor=actor_from_user(current_user),
+            resource_type="user",
+            extra={"invited_emails": emails_needing_seats},
+        )
 
     return BulkInviteResponse(
         invited_count=number_of_invited_users,
@@ -529,10 +638,17 @@ def bulk_invite_users(
 @router.patch("/manage/admin/remove-invited-user", tags=PUBLIC_API_TAGS)
 def remove_invited_user(
     user_email: UserByEmail,
-    _: User = Depends(require_permission(Permission.FULL_ADMIN_PANEL_ACCESS)),
+    current_user: User = Depends(
+        require_permission(Permission.FULL_ADMIN_PANEL_ACCESS)
+    ),
     db_session: Session = Depends(get_session),
 ) -> int:
     tenant_id = get_current_tenant_id()
+    if MULTI_TENANT and is_tenant_on_trial_fn(tenant_id):
+        enforce_remove_invited_rate_limit(
+            redis_client=get_redis_client(tenant_id=tenant_id),
+            admin_user_id=current_user.id,
+        )
     if MULTI_TENANT:
         fetch_ee_implementation_or_noop(
             "onyx.server.tenants.user_mapping", "remove_users_from_tenant", None
@@ -573,9 +689,18 @@ def deactivate_user_api(
         raise HTTPException(status_code=404, detail="User not found")
 
     if user_to_deactivate.is_active is False:
-        logger.warning("{} is already deactivated".format(user_to_deactivate.email))
+        logger.warning("%s is already deactivated", user_to_deactivate.email)
 
     deactivate_user(user_to_deactivate, db_session)
+
+    emit_audit_event(
+        AuditAction.USER_DEACTIVATE,
+        AuditOutcome.SUCCESS,
+        actor=actor_from_user(current_user),
+        resource_type="user",
+        resource_id=str(user_to_deactivate.id),
+        extra={"target_email": user_to_deactivate.email},
+    )
 
     # Invalidate license cache so used_seats reflects the new count
     # Only for self-hosted (non-multi-tenant) deployments
@@ -588,7 +713,9 @@ def deactivate_user_api(
 @router.delete("/manage/admin/delete-user", tags=PUBLIC_API_TAGS)
 async def delete_user(
     user_email: UserByEmail,
-    _: User = Depends(require_permission(Permission.FULL_ADMIN_PANEL_ACCESS)),
+    current_user: User = Depends(
+        require_permission(Permission.FULL_ADMIN_PANEL_ACCESS)
+    ),
     db_session: Session = Depends(get_session),
 ) -> None:
     user_to_delete = get_user_by_email(
@@ -598,12 +725,14 @@ async def delete_user(
         raise HTTPException(status_code=404, detail="User not found")
 
     if user_to_delete.is_active is True:
-        logger.warning(
-            "{} must be deactivated before deleting".format(user_to_delete.email)
-        )
+        logger.warning("%s must be deactivated before deleting", user_to_delete.email)
         raise HTTPException(
             status_code=400, detail="User must be deactivated before deleting"
         )
+
+    # Capture identifiers before the row is detached/deleted below.
+    deleted_user_id = str(user_to_delete.id)
+    deleted_user_email = user_to_delete.email
 
     # Detach the user from the current session
     db_session.expunge(user_to_delete)
@@ -614,7 +743,16 @@ async def delete_user(
             "onyx.server.tenants.user_mapping", "remove_users_from_tenant", None
         )([user_email.user_email], tenant_id)
         delete_user_from_db(user_to_delete, db_session)
-        logger.info(f"Deleted user {user_to_delete.email}")
+        logger.info("Deleted user %s", user_to_delete.email)
+
+        emit_audit_event(
+            AuditAction.USER_DELETE,
+            AuditOutcome.SUCCESS,
+            actor=actor_from_user(current_user),
+            resource_type="user",
+            resource_id=deleted_user_id,
+            extra={"target_email": deleted_user_email},
+        )
 
         # Invalidate license cache so used_seats reflects the new count
         # Only for self-hosted (non-multi-tenant) deployments
@@ -625,14 +763,16 @@ async def delete_user(
 
     except Exception as e:
         db_session.rollback()
-        logger.error(f"Error deleting user {user_to_delete.email}: {str(e)}")
+        logger.error("Error deleting user %s: %s", user_to_delete.email, str(e))
         raise HTTPException(status_code=500, detail="Error deleting user")
 
 
 @router.patch("/manage/admin/activate-user", tags=PUBLIC_API_TAGS)
 def activate_user_api(
     user_email: UserByEmail,
-    _: User = Depends(require_permission(Permission.FULL_ADMIN_PANEL_ACCESS)),
+    current_user: User = Depends(
+        require_permission(Permission.FULL_ADMIN_PANEL_ACCESS)
+    ),
     db_session: Session = Depends(get_session),
 ) -> None:
     user_to_activate = get_user_by_email(
@@ -642,14 +782,21 @@ def activate_user_api(
         raise HTTPException(status_code=404, detail="User not found")
 
     if user_to_activate.is_active is True:
-        logger.warning("{} is already activated".format(user_to_activate.email))
+        logger.warning("%s is already activated", user_to_activate.email)
         return
 
-    # Check seat availability before activating
-    # Only for self-hosted (non-multi-tenant) deployments
-    enforce_seat_limit(db_session)
+    enforce_seat_limit_locked(db_session)
 
     activate_user(user_to_activate, db_session)
+
+    emit_audit_event(
+        AuditAction.USER_REACTIVATE,
+        AuditOutcome.SUCCESS,
+        actor=actor_from_user(current_user),
+        resource_type="user",
+        resource_id=str(user_to_activate.id),
+        extra={"target_email": user_to_activate.email},
+    )
 
     # Invalidate license cache so used_seats reflects the new count
     # Only for self-hosted (non-multi-tenant) deployments
@@ -663,7 +810,7 @@ def activate_user_api(
 def get_valid_domains(
     _: User = Depends(require_permission(Permission.FULL_ADMIN_PANEL_ACCESS)),
 ) -> list[str]:
-    return VALID_EMAIL_DOMAINS
+    return list(get_security_settings().valid_email_domains)
 
 
 """Endpoints for all"""
@@ -672,15 +819,24 @@ def get_valid_domains(
 @router.get("/users", tags=PUBLIC_API_TAGS)
 def list_all_users_basic_info(
     include_api_keys: bool = False,
-    _: User = Depends(require_permission(Permission.BASIC_ACCESS)),
+    user: User = Depends(require_permission(Permission.BASIC_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> list[MinimalUserSnapshot]:
+    if (
+        get_security_settings().user_directory_admin_only
+        and Permission.READ_USERS not in get_effective_permissions(user)
+    ):
+        raise OnyxError(
+            OnyxErrorCode.INSUFFICIENT_PERMISSIONS,
+            "You do not have the required permissions for this action.",
+        )
+
     users = get_all_users(db_session)
     return [
-        MinimalUserSnapshot(id=user.id, email=user.email)
-        for user in users
-        if user.account_type != AccountType.BOT
-        and (include_api_keys or not is_api_key_email_address(user.email))
+        MinimalUserSnapshot(id=u.id, email=u.email)
+        for u in users
+        if u.account_type != AccountType.BOT
+        and (include_api_keys or not is_api_key_email_address(u.email))
     ]
 
 
@@ -730,7 +886,7 @@ def get_current_auth_token_creation_redis(
         return token_creation_time
 
     except Exception as e:
-        logger.error(f"Error retrieving token expiration from Redis: {e}")
+        logger.error("Error retrieving token expiration from Redis: %s", e)
         return None
 
 
@@ -791,7 +947,7 @@ def get_current_user_permissions(
     return sorted(p.value for p in get_effective_permissions(user))
 
 
-@router.get("/me", tags=PUBLIC_API_TAGS)
+@router.get("/me", tags=PUBLIC_API_TAGS, dependencies=[Depends(scope_exempt)])
 def verify_user_logged_in(
     request: Request,
     user: User | None = Depends(optional_user),
@@ -848,6 +1004,7 @@ def verify_user_logged_in(
 
     user_info = UserInfo.from_model(
         user,
+        track_external_idp_expiry=get_security_settings().track_external_idp_expiry,
         current_token_created_at=token_created_at,
         expiry_length=SESSION_EXPIRE_TIME_SECONDS,
         is_cloud_superuser=user.email in super_users_list,
@@ -889,6 +1046,15 @@ def update_user_shortcut_enabled_api(
     update_user_shortcut_enabled(user.id, shortcut_enabled, db_session)
 
 
+@router.patch("/paste-as-tile")
+def update_user_paste_as_tile_api(
+    paste_as_tile: bool,
+    user: User = Depends(require_permission(Permission.BASIC_ACCESS)),
+    db_session: Session = Depends(get_session),
+) -> None:
+    update_user_paste_as_tile(user.id, paste_as_tile, db_session)
+
+
 @router.patch("/auto-scroll")
 def update_user_auto_scroll_api(
     request: AutoScrollRequest,
@@ -905,6 +1071,15 @@ def update_user_theme_preference_api(
     db_session: Session = Depends(get_session),
 ) -> None:
     update_user_theme_preference(user.id, request.theme_preference, db_session)
+
+
+@router.patch("/user/language")
+def update_user_language_api(
+    request: LanguageRequest,
+    user: User = Depends(require_permission(Permission.BASIC_ACCESS)),
+    db_session: Session = Depends(get_session),
+) -> None:
+    update_user_language(user.id, request.language.value, db_session)
 
 
 @router.patch("/user/chat-background")
@@ -1025,7 +1200,10 @@ def update_user_assistant_visibility_api(
     user: User = Depends(require_permission(Permission.BASIC_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> None:
-    user_preferences = UserInfo.from_model(user).preferences
+    user_preferences = UserInfo.from_model(
+        user,
+        track_external_idp_expiry=get_security_settings().track_external_idp_expiry,
+    ).preferences
     updated_preferences = update_assistant_visibility(
         user_preferences, assistant_id, show
     )

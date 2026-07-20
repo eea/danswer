@@ -1,22 +1,22 @@
 "use client";
 
-import * as SettingsLayouts from "@/layouts/settings-layouts";
+import { SettingsLayouts } from "@opal/layouts";
 import { ADMIN_ROUTES } from "@/lib/admin-routes";
 import { DocumentSetCreationForm } from "../DocumentSetCreationForm";
 import { useConnectorStatus, useUserGroups } from "@/lib/hooks";
-import { ThreeDotsLoader } from "@/components/Loading";
+import { PageLoader } from "@/refresh-components/PageLoader";
 import { ErrorCallout } from "@/components/ErrorCallout";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { refreshDocumentSets } from "../hooks";
 import CardSection from "@/components/admin/CardSection";
-import { useVectorDbEnabled } from "@/providers/SettingsProvider";
+import { useSettings } from "@/lib/settings/hooks";
 
 const route = ADMIN_ROUTES.DOCUMENT_SETS;
 
 function Main() {
   const router = useRouter();
-  const vectorDbEnabled = useVectorDbEnabled();
+  const { vectorDbEnabled } = useSettings();
 
   const {
     data: ccPairs,
@@ -35,7 +35,7 @@ function Main() {
   if ((vectorDbEnabled && isCCPairsLoading) || userGroupsIsLoading) {
     return (
       <div className="flex justify-center items-center min-h-[400px]">
-        <ThreeDotsLoader />
+        <PageLoader />
       </div>
     );
   }
@@ -71,7 +71,7 @@ export default function Page() {
       <SettingsLayouts.Header
         icon={route.icon}
         title="New Document Set"
-        separator
+        divider
         backButton
       />
       <SettingsLayouts.Body>

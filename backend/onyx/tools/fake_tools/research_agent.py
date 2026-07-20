@@ -18,6 +18,7 @@ from onyx.chat.llm_step import run_llm_step_pkt_generator
 from onyx.chat.models import ChatMessageSimple
 from onyx.chat.models import LlmStepResult
 from onyx.chat.models import ToolCallSimple
+from onyx.configs.chat_configs import DR_REPORT_LLM_TIMEOUT_S
 from onyx.configs.constants import MessageType
 from onyx.context.search.models import SearchDocsResponse
 from onyx.deep_research.dr_mock_tools import (
@@ -67,6 +68,8 @@ from onyx.tools.tool_implementations.search.search_tool import SearchTool
 from onyx.tools.tool_implementations.web_search.utils import extract_url_snippet_map
 from onyx.tools.tool_implementations.web_search.web_search_tool import WebSearchTool
 from onyx.tools.tool_runner import run_tool_calls
+from onyx.tools.utils import compute_all_tool_tokens
+from onyx.tools.utils import compute_tool_definition_tokens
 from onyx.tools.utils import generate_tools_description
 from onyx.tracing.framework.create import function_span
 from onyx.utils.logger import setup_logger
@@ -139,7 +142,7 @@ def generate_intermediate_report(
             max_tokens=MAX_INTERMEDIATE_REPORT_LENGTH_TOKENS,
             use_existing_tab_index=True,
             is_deep_research=True,
-            timeout_override=300,  # 5 minute read timeout for long report generation
+            timeout_override=DR_REPORT_LLM_TIMEOUT_S,
         )
 
         while True:
@@ -260,8 +263,9 @@ def run_research_agent_call(
                 elapsed_seconds = time.monotonic() - start_time
                 if elapsed_seconds > RESEARCH_AGENT_FORCE_REPORT_SECONDS:
                     logger.info(
-                        f"Research agent exceeded {RESEARCH_AGENT_FORCE_REPORT_SECONDS}s "
-                        f"(elapsed: {elapsed_seconds:.1f}s), forcing intermediate report generation"
+                        "Research agent exceeded %ss (elapsed: %ss), forcing intermediate report generation",
+                        RESEARCH_AGENT_FORCE_REPORT_SECONDS,
+                        format(elapsed_seconds, ".1f"),
                     )
                     break
 
@@ -284,11 +288,10 @@ def run_research_agent_call(
                     if any(isinstance(tool, WebSearchTool) for tool in current_tools)
                     else ""
                 )
-                open_urls_tip = (
-                    OPEN_URLS_TOOL_DESCRIPTION
-                    if any(isinstance(tool, OpenURLTool) for tool in current_tools)
-                    else ""
+                has_open_url_tool: bool = any(
+                    isinstance(tool, OpenURLTool) for tool in current_tools
                 )
+                open_urls_tip = OPEN_URLS_TOOL_DESCRIPTION if has_open_url_tool else ""
                 if is_reasoning_model and open_urls_tip:
                     open_urls_tip = OPEN_URLS_TOOL_DESCRIPTION_REASONING
 
@@ -312,7 +315,8 @@ def run_research_agent_call(
                     message_type=MessageType.SYSTEM,
                 )
 
-                if just_ran_web_search:
+                # Gate the open_url nudge on the tool actually being available.
+                if just_ran_web_search and has_open_url_tool:
                     reminder_message = ChatMessageSimple(
                         message=OPEN_URL_REMINDER_RESEARCH_AGENT,
                         token_count=100,
@@ -321,18 +325,24 @@ def run_research_agent_call(
                 else:
                     reminder_message = None
 
+                research_agent_tools = get_research_agent_additional_tool_definitions(
+                    include_think_tool=not is_reasoning_model
+                )
+                tool_token_budget = compute_all_tool_tokens(
+                    current_tools, token_counter
+                ) + compute_tool_definition_tokens(research_agent_tools, token_counter)
+
                 constructed_history = construct_message_history(
                     system_prompt=system_prompt,
                     custom_agent_prompt=None,
                     simple_chat_history=msg_history,
                     reminder_message=reminder_message,
                     context_files=None,
-                    available_tokens=llm.config.max_input_tokens,
+                    available_tokens=max(
+                        0, llm.config.max_input_tokens - tool_token_budget
+                    ),
                 )
 
-                research_agent_tools = get_research_agent_additional_tool_definitions(
-                    include_think_tool=not is_reasoning_model
-                )
                 # Use think tool processor for non-reasoning models to convert
                 # think_tool calls to reasoning content (same as dr_loop.py)
                 custom_processor = (
@@ -608,7 +618,7 @@ def run_research_agent_call(
             )
 
         except Exception as e:
-            logger.error(f"Error running research agent call: {e}")
+            logger.error("Error running research agent call: %s", e)
             emitter.emit(
                 Packet(
                     placement=Placement(turn_index=turn_index, tab_index=tab_index),
@@ -633,7 +643,9 @@ def _on_research_agent_timeout(
         RESEARCH_AGENT_TASK_KEY, "unknown"
     )
     logger.warning(
-        f"Research agent timed out after {RESEARCH_AGENT_TIMEOUT_SECONDS} seconds for task: {research_task}"
+        "Research agent timed out after %s seconds for task: %s",
+        RESEARCH_AGENT_TIMEOUT_SECONDS,
+        research_task,
     )
     return ResearchAgentCallResult(
         intermediate_report=RESEARCH_AGENT_TIMEOUT_MESSAGE,
@@ -762,9 +774,9 @@ if __name__ == "__main__":
             if tool.name != "generate_image"
         ]
 
-        logger.info(f"Running research agent with prompt: {RESEARCH_PROMPT}")
-        logger.info(f"LLM: {llm.config.model_provider}/{llm.config.model_name}")
-        logger.info(f"Tools: {[t.name for t in tools]}")
+        logger.info("Running research agent with prompt: %s", RESEARCH_PROMPT)
+        logger.info("LLM: %s/%s", llm.config.model_provider, llm.config.model_name)
+        logger.info("Tools: %s", [t.name for t in tools])
 
         result = run_research_agent_call(
             research_agent_call=ToolCallKickoff(

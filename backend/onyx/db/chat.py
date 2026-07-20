@@ -41,7 +41,6 @@ from onyx.server.query_and_chat.models import ChatMessageDetail
 from onyx.utils.logger import setup_logger
 from onyx.utils.postgres_sanitization import sanitize_string
 
-
 logger = setup_logger()
 
 
@@ -371,24 +370,40 @@ def delete_chat_session(
 
 
 def get_chat_sessions_older_than(
-    days_old: int, db_session: Session
+    days_old: float, db_session: Session, limit: int | None = None
 ) -> list[tuple[UUID | None, UUID]]:
     """
-    Retrieves chat sessions older than a specified number of days.
+    Retrieves chat sessions whose last activity is older than a specified number of days.
+
+    "Last activity" is the time of the most recent message in the session, so an
+    old session that is still being used is retained. Sessions without any messages
+    fall back to their creation time.
 
     Args:
         days_old: The number of days to consider as "old".
         db_session: The database session.
+        limit: Optional cap on the number of sessions returned. When set, the
+            oldest sessions are returned first so callers can drain the backlog
+            in bounded batches without loading every matching row at once.
 
     Returns:
         A list of tuples, where each tuple contains the user_id (can be None) and the chat_session_id of an old chat session.
     """
 
-    cutoff_time = datetime.utcnow() - timedelta(days=days_old)
+    cutoff_time = datetime.now(tz=timezone.utc) - timedelta(days=days_old)
+    last_activity = func.coalesce(
+        func.max(ChatMessage.time_sent), ChatSession.time_created
+    )
+    stmt = (
+        select(ChatSession.user_id, ChatSession.id)
+        .outerjoin(ChatMessage, ChatMessage.chat_session_id == ChatSession.id)
+        .group_by(ChatSession.id, ChatSession.user_id)
+        .having(last_activity < cutoff_time)
+    )
+    if limit is not None:
+        stmt = stmt.order_by(last_activity.asc()).limit(limit)
     old_sessions: Sequence[Row[Tuple[UUID | None, UUID]]] = db_session.execute(
-        select(ChatSession.user_id, ChatSession.id).where(
-            ChatSession.time_created < cutoff_time
-        )
+        stmt
     ).fetchall()
 
     # convert old_sessions to a conventional list of tuples
@@ -417,7 +432,8 @@ def get_chat_message(
 
     if expected_user_id != user_id:
         logger.error(
-            f"User {user_id} tried to fetch a chat message that does not belong to them"
+            "User %s tried to fetch a chat message that does not belong to them",
+            user_id,
         )
         raise ValueError("Chat message does not belong to user")
 
@@ -541,6 +557,7 @@ def get_chat_messages_by_session(
     db_session: Session,
     skip_permission_check: bool = False,
     prefetch_top_two_level_tool_calls: bool = True,
+    prefetch_message_details: bool = False,
 ) -> list[ChatMessage]:
     if not skip_permission_check:
         # bug if we ever call this expecting the permission check to not be skipped
@@ -553,6 +570,12 @@ def get_chat_messages_by_session(
         .where(ChatMessage.chat_session_id == chat_session_id)
         .order_by(nullsfirst(ChatMessage.parent_message_id))
     )
+
+    if prefetch_message_details:
+        stmt = stmt.options(
+            selectinload(ChatMessage.chat_message_feedbacks),
+            selectinload(ChatMessage.search_docs),
+        )
 
     # This should handle both the top level tool calls and deep research
     # If there are future nested agents, this can be extended.
@@ -609,6 +632,7 @@ def reserve_message_id(
     chat_session_id: UUID,
     parent_message: int,
     message_type: MessageType = MessageType.ASSISTANT,
+    model_display_name: str | None = None,
 ) -> ChatMessage:
     # Create an temporary holding chat message to the updated and saved at the end
     empty_message = ChatMessage(
@@ -618,6 +642,7 @@ def reserve_message_id(
         message="Response was terminated prior to completion, try regenerating.",
         token_count=15,
         message_type=message_type,
+        model_display_name=model_display_name,
     )
 
     # Add the empty message to the session

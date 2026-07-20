@@ -49,14 +49,6 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- $backendRepo := .Values.global.image.repository }}
-      {{- if and .Values.api.image .Values.api.image.repository }}
-        {{- $backendRepo = .Values.api.image.repository }}
-      {{- end }}
-      {{- $backendTag := default .Values.global.image.tags.backend (printf "backend-%s" .Values.global.version) }}
-      {{- if and .Values.api.image .Values.api.image.tag }}
-        {{- $backendTag = .Values.api.image.tag }}
-      {{- end }}
       {{- with .Values.api.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
@@ -69,29 +61,26 @@ spec:
         - name: api-server
           securityContext:
             {{- toYaml .Values.api.securityContext | nindent 12 }}
-          image: "{{ $backendRepo }}:{{ $backendTag }}"
+          image: "{{ .Values.api.image.repository }}:{{ .Values.api.image.tag | default .Values.global.version }}"
           imagePullPolicy: {{ .Values.global.pullPolicy }}
           command:
             - "/bin/sh"
             - "-c"
             - |
-              alembic upgrade head &&
-              echo "Starting Onyx Api Server" &&
-              {{- if .Values.api.runUpdateCaCertificates }}
+              {{- if or .Values.api.runUpdateCaCertificates (include "onyx.customCACerts.enabled" .) }}
               update-ca-certificates &&
               {{- end }}
-              uvicorn onyx.main:app --host {{ .Values.global.host | quote }} --port {{ .Values.api.containerPorts.server }}
+              {{- if or (not (hasKey .Values.api "runStartupMigrations")) .Values.api.runStartupMigrations }}
+              alembic upgrade head &&
+              {{- end }}
+              echo "Starting Onyx Api Server" &&
+              uvicorn onyx.main:app --host {{ .Values.global.host }} --port {{ .Values.api.containerPorts.server }}{{ if gt (int (.Values.api.workers | default 1)) 1 }} --workers {{ .Values.api.workers }}{{ end }}{{ if .Values.api.limitConcurrency }} --limit-concurrency {{ .Values.api.limitConcurrency }}{{ end }}
           ports:
             - name: api-server-port
               containerPort: {{ .Values.api.containerPorts.server }}
               protocol: TCP
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
-          envFrom:
-            - configMapRef:
-                name: {{ .Values.config.envConfigMapName }}
-          env:
-            {{- include "onyx.envSecrets" . | nindent 12}}
           {{- with .Values.api.startupProbe }}
           startupProbe:
             {{- toYaml . | nindent 12 }}
@@ -104,6 +93,26 @@ spec:
           livenessProbe:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          envFrom:
+            - configMapRef:
+                name: {{ .Values.config.envConfigMapName }}
+            {{- with .Values.extraEnvFromSecret }}
+            - secretRef:
+                name: {{ . }}
+            {{- end }}
+          env:
+            {{- if .Values.api.threadpoolSize }}
+            - name: ONYX_API_THREADPOOL_SIZE
+              value: "{{ .Values.api.threadpoolSize }}"
+            {{- end }}
+            {{- include "onyx.envSecrets" . | nindent 12}}
+            {{- include "onyx.envSecretsRestricted" . | nindent 12}}
+            {{- with include "onyx.customCACerts.env" . }}
+            {{- . | nindent 12 }}
+            {{- end }}
+            {{- with .Values.api.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- $apiVolumeMounts := include "onyx.renderVolumeMounts" (dict "ctx" . "volumeMounts" .Values.api.volumeMounts) }}
           {{- if $apiVolumeMounts }}
           {{- $apiVolumeMounts | nindent 10 }}

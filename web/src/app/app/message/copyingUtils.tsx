@@ -5,6 +5,7 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import remarkRehype from "remark-rehype";
 import rehypeHighlight from "rehype-highlight";
+import { loadHighlightLanguages } from "@/lib/highlightLanguages";
 import rehypeKatex from "rehype-katex";
 import rehypeSanitize from "rehype-sanitize";
 import rehypeStringify from "rehype-stringify";
@@ -46,9 +47,9 @@ export function convertMarkdownTablesToTsv(content: string): string {
     // Check if line is a markdown table row (starts and ends with |)
     const trimmed = line.trim();
     if (trimmed.startsWith("|") && trimmed.endsWith("|")) {
-      // Check if it's a separator row (contains only |, -, :, and spaces)
+      // Check if it's a divider row (contains only |, -, :, and spaces)
       if (/^\|[\s\-:|\s]+\|$/.test(trimmed)) {
-        // Skip separator rows
+        // Skip divider rows
         continue;
       }
       // Convert table row: split by |, trim cells, join with tabs
@@ -69,26 +70,29 @@ export function convertMarkdownTablesToTsv(content: string): string {
 
 // For copying the entire content
 export function copyAll(content: string) {
-  // Convert markdown to HTML using unified ecosystem
-  unified()
-    .use(remarkParse)
-    .use(remarkGfm)
-    .use(remarkMath)
-    .use(remarkRehype)
-    .use(rehypeHighlight)
-    .use(rehypeKatex)
-    .use(rehypeSanitize)
-    .use(rehypeStringify)
-    .process(content)
-    .then((file: any) => {
-      const htmlContent = String(file);
+  // Convert markdown to HTML using unified ecosystem. Grammars load dynamically
+  // so the highlight.js corpus stays out of the chat bundle.
+  loadHighlightLanguages().then((languages) => {
+    unified()
+      .use(remarkParse)
+      .use(remarkGfm)
+      .use(remarkMath)
+      .use(remarkRehype)
+      .use(rehypeHighlight, { languages })
+      .use(rehypeKatex)
+      .use(rehypeSanitize)
+      .use(rehypeStringify)
+      .process(content)
+      .then((file: any) => {
+        const htmlContent = String(file);
 
-      // Create clipboard data
-      const clipboardItem = new ClipboardItem({
-        "text/html": new Blob([htmlContent], { type: "text/html" }),
-        "text/plain": new Blob([content], { type: "text/plain" }),
+        // Create clipboard data
+        const clipboardItem = new ClipboardItem({
+          "text/html": new Blob([htmlContent], { type: "text/html" }),
+          "text/plain": new Blob([content], { type: "text/plain" }),
+        });
+
+        navigator.clipboard.write([clipboardItem]);
       });
-
-      navigator.clipboard.write([clipboardItem]);
-    });
+  });
 }

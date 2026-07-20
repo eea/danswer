@@ -6,7 +6,7 @@ import {
   nameChatSession,
   updateLlmOverrideForChatSession,
 } from "@/app/app/services/lib";
-import { getMaxSelectedDocumentTokens } from "@/app/app/projects/projectsService";
+import { getMaxSelectedDocumentTokens } from "@/lib/projects/svc";
 import { DEFAULT_CONTEXT_TOKENS } from "@/lib/constants";
 import { StreamStopInfo } from "@/lib/search/interfaces";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -20,7 +20,7 @@ import {
   buildImmediateMessages,
   buildEmptyMessage,
 } from "@/app/app/services/messageTree";
-import { MinimalPersonaSnapshot } from "@/app/admin/agents/interfaces";
+import { MinimalAgent } from "@/lib/agents/types";
 import { SEARCH_PARAM_NAMES } from "@/app/app/services/searchParams";
 import { SEARCH_TOOL_ID } from "@/app/app/components/tools/constants";
 import { OnyxDocument } from "@/lib/search/interfaces";
@@ -46,7 +46,7 @@ import {
   getFinalLLM,
   modelSupportsImageInput,
   structureValue,
-} from "@/lib/llmConfig/utils";
+} from "@/lib/languageModels/utils";
 import {
   CurrentMessageFIFO,
   updateCurrentMessageFIFO,
@@ -59,10 +59,10 @@ import {
   useRouter,
   useSearchParams,
 } from "next/navigation";
-import { track, AnalyticsEvent } from "@/lib/analytics";
+import { track, AnalyticsEvent } from "@/lib/analytics/utils";
 import { getExtensionContext } from "@/lib/extension/utils";
 import useChatSessions from "@/hooks/useChatSessions";
-import { usePinnedAgents } from "@/hooks/useAgents";
+import { usePinnedAgents } from "@/lib/agents/hooks";
 import {
   useChatSessionStore,
   useCurrentMessageTree,
@@ -70,12 +70,12 @@ import {
   useCurrentMessageHistory,
 } from "@/app/app/stores/useChatSessionStore";
 import { Packet, MessageStart } from "@/app/app/services/streamingModels";
-import { SelectedModel } from "@/refresh-components/popovers/ModelSelector";
-import useAgentPreferences from "@/hooks/useAgentPreferences";
+import { SelectedModel } from "@/sections/model-selector/MultiModelSelector";
+import { useAgentPreferences } from "@/lib/agents/hooks";
 import { useForcedTools } from "@/lib/hooks/useForcedTools";
 import { ProjectFile, useProjectsContext } from "@/providers/ProjectsContext";
 import { useAppParams } from "@/hooks/appNavigation";
-import { projectFilesToFileDescriptors } from "@/app/app/services/fileUtils";
+import { projectFilesToFileDescriptors } from "@/lib/projects/utils";
 
 const SYSTEM_MESSAGE_ID = -3;
 
@@ -109,8 +109,8 @@ interface RegenerationRequest {
 interface UseChatControllerProps {
   filterManager: FilterManager;
   llmManager: LlmManager;
-  liveAgent: MinimalPersonaSnapshot | undefined;
-  availableAgents: MinimalPersonaSnapshot[];
+  liveAgent: MinimalAgent | undefined;
+  availableAgents: MinimalAgent[];
   existingChatSessionId: string | null;
   selectedDocuments: OnyxDocument[];
   searchParams: ReadonlyURLSearchParams;
@@ -161,6 +161,9 @@ export default function useChatController({
   // Store actions - these don't cause re-renders
   const updateChatStateAction = useChatSessionStore(
     (state) => state.updateChatState
+  );
+  const setLatestMessageRenderComplete = useChatSessionStore(
+    (state) => state.setLatestMessageRenderComplete
   );
   const updateRegenerationStateAction = useChatSessionStore(
     (state) => state.updateRegenerationState
@@ -360,6 +363,8 @@ export default function useChatController({
     // The stream will close naturally when the backend sends the STOP packet
     setStreamingStartTime(currentSession, null);
     updateChatStateAction(currentSession, "input");
+    // On stop nothing else flips the queue gate, so release it here or queued follow-ups never auto-send.
+    setLatestMessageRenderComplete(currentSession, true);
   }, [currentMessageHistory, currentMessageTree]);
 
   const onSubmit = useCallback(
@@ -584,10 +589,11 @@ export default function useChatController({
       // (and its files), so merging here would send duplicates.
       const effectiveFileDescriptors = [
         ...projectFilesToFileDescriptors(currentMessageFiles),
-        ...(!regenerationRequest ? messageToResend?.files ?? [] : []),
+        ...(!regenerationRequest ? (messageToResend?.files ?? []) : []),
       ];
 
       updateChatStateAction(frozenSessionId, "loading");
+      setLatestMessageRenderComplete(frozenSessionId, false);
 
       // find the parent
       const currMessageHistory =
@@ -644,6 +650,7 @@ export default function useChatController({
             });
             node.modelDisplayName = model.displayName;
             node.overridden_model = model.modelName;
+            node.is_generating = true;
             return node;
           });
         }
@@ -674,7 +681,7 @@ export default function useChatController({
           ? RetrievalType.SelectedDocs
           : RetrievalType.None;
       let documents: OnyxDocument[] = selectedDocuments;
-      let citations: CitationMap | null = null;
+      let citations: CitationMap = {};
       let aiMessageImages: FileDescriptor[] | null = null;
       let error: string | null = null;
       let stackTrace: string | null = null;
@@ -702,14 +709,21 @@ export default function useChatController({
       const documentsPerModel: OnyxDocument[][] = isMultiModel
         ? Array.from({ length: numModels }, () => [])
         : [];
-      const citationsPerModel: (CitationMap | null)[] = isMultiModel
-        ? Array(numModels).fill(null)
+      const citationsPerModel: CitationMap[] = isMultiModel
+        ? Array.from({ length: numModels }, () => ({}))
         : [];
       // Track which models have errored so the bottom-of-loop upsert skips them
       const erroredModelIndices = new Set<number>();
       let modelDisplayNames: string[] = isMultiModel
-        ? selectedModels?.map((m) => m.displayName) ?? []
+        ? (selectedModels?.map((m) => m.displayName) ?? [])
         : [];
+
+      // rAF-batched flush state. One Zustand write per frame instead of
+      // one per packet.
+      const dirtyModelIndices = new Set<number>();
+      let singleModelDirty = false;
+      let userNodeDirty = false;
+      let pendingFlush = false;
 
       /** Build a non-errored multi-model assistant node for upsert. */
       function buildAssistantNodeUpdate(
@@ -740,14 +754,122 @@ export default function useChatController({
         };
       }
 
-      /** Build updated nodes for all non-errored models. */
-      function buildNonErroredNodes(overrides?: Partial<Message>): Message[] {
+      /** With `onlyDirty`, rebuilds only those model nodes — unchanged
+       *  siblings keep their stable Message ref so React memo short-circuits. */
+      function buildNonErroredNodes(
+        overrides?: Partial<Message>,
+        onlyDirty?: Set<number> | null
+      ): Message[] {
         const nodes: Message[] = [];
         for (let idx = 0; idx < initialAssistantNodes.length; idx++) {
           if (erroredModelIndices.has(idx)) continue;
+          if (onlyDirty && !onlyDirty.has(idx)) continue;
           nodes.push(buildAssistantNodeUpdate(idx, overrides));
         }
         return nodes;
+      }
+
+      /** Flush accumulated packet state into the tree as one Zustand
+       *  update. No-op when nothing is pending. */
+      function flushPendingUpdates() {
+        if (!pendingFlush) return;
+        pendingFlush = false;
+
+        parentMessage =
+          parentMessage || currentMessageTreeLocal!.get(SYSTEM_NODE_ID)!;
+
+        let messagesToUpsert: Message[];
+
+        if (isMultiModel) {
+          if (dirtyModelIndices.size === 0 && !userNodeDirty) return;
+
+          const dirtySnapshot = new Set(dirtyModelIndices);
+          dirtyModelIndices.clear();
+          const dirtyNodes = buildNonErroredNodes(undefined, dirtySnapshot);
+
+          if (userNodeDirty) {
+            userNodeDirty = false;
+            // Read current user node to preserve childrenNodeIds
+            // (initialUserNode's are stale from creation time).
+            const currentUserNode =
+              currentMessageTreeLocal.get(initialUserNode.nodeId) ||
+              initialUserNode;
+            const updatedUserNode: Message = {
+              ...currentUserNode,
+              messageId: newUserMessageId ?? undefined,
+              files: files,
+            };
+            messagesToUpsert = [updatedUserNode, ...dirtyNodes];
+          } else {
+            messagesToUpsert = dirtyNodes;
+          }
+
+          if (messagesToUpsert.length === 0) return;
+        } else {
+          if (!singleModelDirty) return;
+          singleModelDirty = false;
+
+          messagesToUpsert = [
+            {
+              ...initialUserNode,
+              messageId: newUserMessageId ?? undefined,
+              files: files,
+            },
+            {
+              ...initialAgentNode,
+              messageId: newAgentMessageId ?? undefined,
+              message: error || answer,
+              type: error ? "error" : "assistant",
+              retrievalType,
+              query: finalMessage?.rephrased_query || query,
+              documents: documents,
+              citations: finalMessage?.citations || citations || {},
+              files: finalMessage?.files || aiMessageImages || [],
+              toolCall: finalMessage?.tool_call || toolCall,
+              stackTrace: stackTrace,
+              overridden_model: finalMessage?.overridden_model,
+              stopReason: stopReason,
+              packets: packets,
+              packetCount: packets.length,
+              processingDurationSeconds:
+                finalMessage?.processing_duration_seconds ??
+                (() => {
+                  const startTime = useChatSessionStore
+                    .getState()
+                    .getStreamingStartTime(frozenSessionId);
+                  return startTime
+                    ? Math.floor((Date.now() - startTime) / 1000)
+                    : undefined;
+                })(),
+            },
+          ];
+        }
+
+        currentMessageTreeLocal = upsertToCompleteMessageTree({
+          messages: messagesToUpsert,
+          completeMessageTreeOverride: currentMessageTreeLocal,
+          chatSessionId: frozenSessionId!,
+        });
+      }
+
+      /** Awaits next animation frame (or a setTimeout fallback when the
+       *  tab is hidden — rAF is paused in background tabs, which would
+       *  otherwise hang the stream loop here), then flushes. Aligns
+       *  React updates with the paint cycle when visible. */
+      function flushViaRAF(): Promise<void> {
+        return new Promise<void>((resolve) => {
+          let done = false;
+          const flush = () => {
+            if (done) return;
+            done = true;
+            flushPendingUpdates();
+            resolve();
+          };
+          requestAnimationFrame(flush);
+          // Fallback for hidden tabs where rAF is paused. Throttled to
+          // ~1s by browsers, matching the previous setTimeout(500) cadence.
+          setTimeout(flush, 100);
+        });
       }
 
       let streamSucceeded = false;
@@ -769,7 +891,7 @@ export default function useChatController({
         // 1. If forceSearch is true, use the search tool's numeric ID
         // 2. Otherwise, use the first forced tool ID from the forcedToolIds array
         const effectiveForcedToolId = forceSearch
-          ? searchToolNumericId ?? null
+          ? (searchToolNumericId ?? null)
           : forcedToolIds.length > 0
             ? forcedToolIds[0]
             : null;
@@ -836,7 +958,12 @@ export default function useChatController({
         await delay(50);
         while (!stack.isComplete || !stack.isEmpty()) {
           if (stack.isEmpty()) {
-            await delay(0.5);
+            // Flush the burst on the next paint, or idle briefly.
+            if (pendingFlush) {
+              await flushViaRAF();
+            } else {
+              await delay(0.5);
+            }
           }
 
           if (!stack.isEmpty() && !controller.signal.aborted) {
@@ -860,6 +987,7 @@ export default function useChatController({
             if ((packet as MessageResponseIDInfo).user_message_id) {
               newUserMessageId = (packet as MessageResponseIDInfo)
                 .user_message_id;
+              userNodeDirty = true;
 
               // Track extension queries in PostHog (reuses isExtension/extensionContext from above)
               if (isExtension) {
@@ -898,6 +1026,8 @@ export default function useChatController({
                   modelDisplayNames[mi] = slot.model_name;
                 }
               }
+              userNodeDirty = true;
+              pendingFlush = true;
               continue;
             }
 
@@ -909,6 +1039,7 @@ export default function useChatController({
                   !files.some((existingFile) => existingFile.id === newFile.id)
               );
               files = files.concat(newUserFiles);
+              if (newUserFiles.length > 0) userNodeDirty = true;
             }
 
             if (Object.hasOwn(packet, "file_ids")) {
@@ -928,15 +1059,20 @@ export default function useChatController({
 
               // In multi-model mode, route per-model errors to the specific model's
               // node instead of killing the entire stream. Other models keep streaming.
-              if (isMultiModel && streamingError.details?.model_index != null) {
-                const errorModelIndex = streamingError.details
-                  .model_index as number;
+              if (isMultiModel) {
+                // Multi-model: isolate the error to its panel. Never throw
+                // or set global error state — other models keep streaming.
+                const errorModelIndex = streamingError.details?.model_index as
+                  | number
+                  | undefined;
                 if (
+                  errorModelIndex != null &&
                   errorModelIndex >= 0 &&
                   errorModelIndex < initialAssistantNodes.length
                 ) {
                   const errorNode = initialAssistantNodes[errorModelIndex]!;
                   erroredModelIndices.add(errorModelIndex);
+                  dirtyModelIndices.delete(errorModelIndex);
                   currentMessageTreeLocal = upsertToCompleteMessageTree({
                     messages: [
                       {
@@ -963,8 +1099,15 @@ export default function useChatController({
                     completeMessageTreeOverride: currentMessageTreeLocal,
                     chatSessionId: frozenSessionId!,
                   });
+                } else {
+                  // Error without model_index in multi-model — can't route
+                  // to a specific panel. Log and continue; the stream loop
+                  // stays alive for other models.
+                  console.warn(
+                    "Multi-model error without model_index:",
+                    streamingError.error
+                  );
                 }
-                // Skip the normal per-packet upsert — we already upserted the error node
                 continue;
               } else {
                 // Single-model: kill the stream
@@ -993,19 +1136,21 @@ export default function useChatController({
 
               if (isMultiModel) {
                 // Multi-model: route packet by placement.model_index.
-                // OverallStop (type "stop") has model_index=null — it's a global
-                // terminal packet that must be delivered to ALL models so each
-                // panel's AgentMessage sees the stop and exits "Thinking..." state.
+                // OverallStop (type "stop") has model_index=null — it's a
+                // global terminal packet that must be delivered to ALL
+                // models so each panel's AgentMessage sees the stop and
+                // exits "Thinking..." state.
                 const isGlobalStop =
                   packetObj.type === "stop" &&
                   typedPacket.placement?.model_index == null;
 
                 if (isGlobalStop) {
                   for (let mi = 0; mi < packetsPerModel.length; mi++) {
-                    packetsPerModel[mi] = [
-                      ...packetsPerModel[mi]!,
-                      typedPacket,
-                    ];
+                    // Mutated in place — change detection uses packetCount, not array identity.
+                    packetsPerModel[mi]!.push(typedPacket);
+                    if (!erroredModelIndices.has(mi)) {
+                      dirtyModelIndices.add(mi);
+                    }
                   }
                 }
 
@@ -1015,10 +1160,10 @@ export default function useChatController({
                   modelIndex >= 0 &&
                   modelIndex < packetsPerModel.length
                 ) {
-                  packetsPerModel[modelIndex] = [
-                    ...packetsPerModel[modelIndex]!,
-                    typedPacket,
-                  ];
+                  packetsPerModel[modelIndex]!.push(typedPacket);
+                  if (!erroredModelIndices.has(modelIndex)) {
+                    dirtyModelIndices.add(modelIndex);
+                  }
 
                   if (packetObj.type === "citation_info") {
                     const citationInfo = packetObj as {
@@ -1027,7 +1172,7 @@ export default function useChatController({
                       document_id: string;
                     };
                     citationsPerModel[modelIndex] = {
-                      ...(citationsPerModel[modelIndex] || {}),
+                      ...citationsPerModel[modelIndex],
                       [citationInfo.citation_number]: citationInfo.document_id,
                     };
                   } else if (packetObj.type === "message_start") {
@@ -1048,6 +1193,7 @@ export default function useChatController({
                 // Single-model
                 packets.push(typedPacket);
                 packetsVersion++;
+                singleModelDirty = true;
 
                 if (packetObj.type === "citation_info") {
                   const citationInfo = packetObj as {
@@ -1056,7 +1202,7 @@ export default function useChatController({
                     document_id: string;
                   };
                   citations = {
-                    ...(citations || {}),
+                    ...citations,
                     [citationInfo.citation_number]: citationInfo.document_id,
                   };
                 } else if (packetObj.type === "message_start") {
@@ -1074,73 +1220,16 @@ export default function useChatController({
               console.warn("Unknown packet:", JSON.stringify(packet));
             }
 
-            // on initial message send, we insert a dummy system message
-            // set this as the parent here if no parent is set
-            parentMessage =
-              parentMessage || currentMessageTreeLocal?.get(SYSTEM_NODE_ID)!;
-
-            // Build the messages to upsert based on single vs multi-model mode
-            let messagesToUpsertInLoop: Message[];
-
-            if (isMultiModel) {
-              // Read the current user node from the tree to preserve childrenNodeIds
-              // (initialUserNode has stale/empty children from creation time).
-              const currentUserNode =
-                currentMessageTreeLocal.get(initialUserNode.nodeId) ||
-                initialUserNode;
-              const updatedUserNode: Message = {
-                ...currentUserNode,
-                messageId: newUserMessageId ?? undefined,
-                files: files,
-              };
-              messagesToUpsertInLoop = [
-                updatedUserNode,
-                ...buildNonErroredNodes(),
-              ];
-            } else {
-              messagesToUpsertInLoop = [
-                {
-                  ...initialUserNode,
-                  messageId: newUserMessageId ?? undefined,
-                  files: files,
-                },
-                {
-                  ...initialAgentNode,
-                  messageId: newAgentMessageId ?? undefined,
-                  message: error || answer,
-                  type: error ? "error" : "assistant",
-                  retrievalType,
-                  query: finalMessage?.rephrased_query || query,
-                  documents: documents,
-                  citations: finalMessage?.citations || citations || {},
-                  files: finalMessage?.files || aiMessageImages || [],
-                  toolCall: finalMessage?.tool_call || toolCall,
-                  stackTrace: stackTrace,
-                  overridden_model: finalMessage?.overridden_model,
-                  stopReason: stopReason,
-                  packets: packets,
-                  packetCount: packets.length,
-                  processingDurationSeconds:
-                    finalMessage?.processing_duration_seconds ??
-                    (() => {
-                      const startTime = useChatSessionStore
-                        .getState()
-                        .getStreamingStartTime(frozenSessionId);
-                      return startTime
-                        ? Math.floor((Date.now() - startTime) / 1000)
-                        : undefined;
-                    })(),
-                },
-              ];
-            }
-
-            currentMessageTreeLocal = upsertToCompleteMessageTree({
-              messages: messagesToUpsertInLoop,
-              completeMessageTreeOverride: currentMessageTreeLocal,
-              chatSessionId: frozenSessionId!,
-            });
+            // Mark dirty — flushViaRAF coalesces bursts into one React update per frame.
+            if (!isMultiModel) singleModelDirty = true;
+            pendingFlush = true;
           }
         }
+        // Flush any tail state from the final packet(s) before declaring
+        // the stream complete. Without this, the last ≤1 frame of packets
+        // could get stranded in local state.
+        flushPendingUpdates();
+
         // Surface FIFO errors (e.g. 429 before any packets arrive) so the
         // catch block replaces the thinking placeholder with an error message.
         if (stack.error) {
@@ -1174,6 +1263,7 @@ export default function useChatController({
               errorCode,
               isRetryable,
               errorDetails,
+              is_generating: false,
             })
           : [
               {
@@ -1213,6 +1303,13 @@ export default function useChatController({
       resetRegenerationState(frozenSessionId);
       setStreamingStartTime(frozenSessionId, null);
       updateChatStateAction(frozenSessionId, "input");
+      // Error paths replace the streaming node with an empty-packets error
+      // node, so MessageTextRenderer never fires streamFullyDisplayed and
+      // never flips the queue gate back to true. Reset it here so queued
+      // follow-ups aren't silently dropped after a stream failure.
+      if (!streamSucceeded) {
+        setLatestMessageRenderComplete(frozenSessionId, true);
+      }
 
       // Name the chat now that we have the first AI response (navigation already happened before streaming)
       if (shouldAutoNameChatSessionAfterResponse) {

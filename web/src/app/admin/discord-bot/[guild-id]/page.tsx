@@ -1,18 +1,18 @@
 "use client";
 
 import { use, useState, useEffect, useCallback, useMemo } from "react";
-import { cn } from "@/lib/utils";
-import { ThreeDotsLoader } from "@/components/Loading";
+import { cn } from "@opal/utils";
+import SvgSimpleLoader from "@opal/icons/simple-loader";
+import { PageLoader } from "@/refresh-components/PageLoader";
 import { ErrorCallout } from "@/components/ErrorCallout";
 import { toast } from "@/hooks/useToast";
 import { Section } from "@/layouts/general-layouts";
 import { ContentAction } from "@opal/layouts";
-import * as SettingsLayouts from "@/layouts/settings-layouts";
+import { SettingsLayouts } from "@opal/layouts";
 import Text from "@/refresh-components/texts/Text";
 import Card from "@/refresh-components/cards/Card";
 import { Callout } from "@/components/ui/callout";
-import Message from "@/refresh-components/messages/Message";
-import { Button } from "@opal/components";
+import { Button, MessageCard } from "@opal/components";
 import { SvgServer } from "@opal/icons";
 import InputSelect from "@/refresh-components/inputs/InputSelect";
 import {
@@ -25,8 +25,8 @@ import {
 } from "@/app/admin/discord-bot/lib";
 import { DiscordChannelsTable } from "@/app/admin/discord-bot/[guild-id]/DiscordChannelsTable";
 import { DiscordChannelConfig } from "@/app/admin/discord-bot/types";
-import { useAdminPersonas } from "@/hooks/useAdminPersonas";
-import { Persona } from "@/app/admin/agents/interfaces";
+import { useAdminAgents } from "@/lib/agents/hooks";
+import { Agent } from "@/lib/agents/types";
 
 interface Props {
   params: Promise<{ "guild-id": string }>;
@@ -42,7 +42,7 @@ function GuildDetailContent({
   disabled,
 }: {
   guildId: number;
-  personas: Persona[];
+  personas: Agent[];
   localChannels: DiscordChannelConfig[];
   onChannelUpdate: (
     channelId: number,
@@ -66,7 +66,7 @@ function GuildDetailContent({
     useDiscordChannels(guildId);
 
   if (guildLoading) {
-    return <ThreeDotsLoader />;
+    return <PageLoader />;
   }
 
   if (guildError || !guild) {
@@ -129,7 +129,9 @@ function GuildDetailContent({
             registered.
           </Text>
         ) : channelsLoading ? (
-          <ThreeDotsLoader />
+          <div className="flex justify-center py-12">
+            <SvgSimpleLoader className="h-6 w-6" />
+          </div>
         ) : channelsError ? (
           <ErrorCallout
             errorTitle="Failed to load channels"
@@ -158,9 +160,11 @@ export default function Page({ params }: Props) {
     error: channelsError,
     refreshChannels,
   } = useDiscordChannels(guildId);
-  const { personas, isLoading: personasLoading } = useAdminPersonas({
-    includeDefault: true,
-  });
+  const { agents, isLoading: personasLoading } = useAdminAgents(
+    false,
+    false,
+    true
+  );
   const [isUpdating, setIsUpdating] = useState(false);
 
   // Local state for channel configurations
@@ -344,7 +348,7 @@ export default function Page({ params }: Props) {
         }
       />
       <SettingsLayouts.Body>
-        {/* Default Persona Selector */}
+        {/* Default Agent Selector */}
         <Card variant={!guild?.enabled ? "disabled" : "primary"}>
           <ContentAction
             title="Default Agent"
@@ -366,7 +370,7 @@ export default function Page({ params }: Props) {
                   <InputSelect.Item value="default">
                     Default Agent
                   </InputSelect.Item>
-                  {personas.map((persona) => (
+                  {agents.map((persona) => (
                     <InputSelect.Item
                       key={persona.id}
                       value={persona.id.toString()}
@@ -382,7 +386,7 @@ export default function Page({ params }: Props) {
 
         <GuildDetailContent
           guildId={guildId}
-          personas={personas}
+          personas={agents}
           localChannels={localChannels}
           onChannelUpdate={handleChannelUpdate}
           handleEnableAll={handleEnableAll}
@@ -402,11 +406,10 @@ export default function Page({ params }: Props) {
               : "opacity-0 translate-y-4 pointer-events-none"
           )}
         >
-          <Message
-            warning
-            text="You have unsaved changes"
+          <MessageCard
+            variant="warning"
+            title="You have unsaved changes"
             description="Click Update to save them."
-            close={false}
           />
         </div>
       </SettingsLayouts.Body>

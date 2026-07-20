@@ -1,6 +1,5 @@
-import { EEAIcon } from "../EEA_Logo";
 import Link from "next/link";
-import { OnyxIcon } from "../icons/icons";
+import { SvgOnyxLogo } from "@opal/logos";
 
 export default function AuthFlowContainer({
   children,
@@ -12,12 +11,9 @@ export default function AuthFlowContainer({
   footerContent?: React.ReactNode;
 }) {
   return (
-    // <div className="flex flex-col items-center justify-center min-h-screen bg-background">
-    //   <div className="w-full max-w-md bg-black pt-8 pb-4 px-8 mx-4 gap-y-4 bg-white flex items-center flex-col rounded-xl shadow-lg border border-bacgkround-100">
-    //     <Logo width={92} height={70} />
     <div className="p-4 flex flex-col items-center justify-center min-h-screen bg-background">
-      <div className="w-full max-w-md flex items-start flex-col bg-background-tint-00 rounded-16 shadow-lg shadow-02 p-6">
-        <EEAIcon size={44} className="text-theme-primary-05" />
+      <div className="w-full max-w-md flex items-start flex-col bg-background-tint-00 rounded-16 shadow-lg shadow-box-02 p-6">
+        <SvgOnyxLogo size={44} className="text-theme-primary-05" />
         <div className="w-full mt-3">{children}</div>
       </div>
       {authState === "login" && (

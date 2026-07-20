@@ -1,4 +1,4 @@
-{{- if gt (int .Values.celery_worker_docfetching.replicaCount) 0 }}
+{{- if and .Values.vectorDB.enabled (gt (int .Values.celery_worker_docfetching.replicaCount) 0) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -45,14 +45,6 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- $backendRepo := .Values.global.image.repository }}
-      {{- if and .Values.celery_shared.image .Values.celery_shared.image.repository }}
-        {{- $backendRepo = .Values.celery_shared.image.repository }}
-      {{- end }}
-      {{- $backendTag := default .Values.global.image.tags.backend (printf "backend-%s" (include "onyx.version" .)) }}
-      {{- if and .Values.celery_shared.image .Values.celery_shared.image.tag }}
-        {{- $backendTag = .Values.celery_shared.image.tag }}
-      {{- end }}
       {{- with .Values.celery_worker_docfetching.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
@@ -65,11 +57,13 @@ spec:
         - name: celery-worker-docfetching
           securityContext:
             {{- toYaml .Values.celery_shared.securityContext | nindent 12 }}
-          image: "{{ $backendRepo }}:{{ $backendTag }}"
+          image: "{{ .Values.celery_shared.image.repository }}:{{ .Values.celery_shared.image.tag | default .Values.global.version }}"
           imagePullPolicy: {{ .Values.global.pullPolicy }}
           command:
-            [ 
-              "/usr/bin/tini", "--",
+            [
+              {{- with include "onyx.customCACerts.commandPrefix" . }}
+              {{- . | nindent 14 }}
+              {{- end }}
               "celery",
               "-A",
               "onyx.background.celery.versioned_apps.docfetching",
@@ -77,21 +71,36 @@ spec:
               "--pool=threads",
               "--concurrency=2",
               "--prefetch-multiplier=1",
-              "--loglevel=INFO",
+              {{- with .Values.celery_worker_docfetching.logLevel }}
+              {{ printf "--loglevel=%s" . | quote }},
+              {{- end }}
               "--hostname=docfetching@%n",
               "-Q",
-              "connector_doc_fetching,user_files_indexing",
+              "connector_doc_fetching",
             ]
+          ports:
+            - name: metrics
+              containerPort: 9092
+              protocol: TCP
           resources:
             {{- toYaml .Values.celery_worker_docfetching.resources | nindent 12 }}
           envFrom:
             - configMapRef:
                 name: {{ .Values.config.envConfigMapName }}
+            {{- with .Values.extraEnvFromSecret }}
+            - secretRef:
+                name: {{ . }}
+            {{- end }}
           env:
             {{- include "onyx.envSecrets" . | nindent 12}}
-          {{- with .Values.celery_worker_docfetching.volumeMounts }}
-          volumeMounts:
+            {{- with include "onyx.customCACerts.env" . }}
+            {{- . | nindent 12 }}
+            {{- end }}
+            {{- with .Values.celery_worker_docfetching.extraEnv }}
             {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with include "onyx.volumeMountsWithCA" (dict "ctx" . "volumeMounts" .Values.celery_worker_docfetching.volumeMounts) }}
+          {{- . | nindent 10 }}
           {{- end }}
           startupProbe:
             {{ .Values.celery_shared.startupProbe | toYaml | nindent 12}}
@@ -115,8 +124,7 @@ spec:
                     python onyx/background/celery/celery_k8s_probe.py
                     --probe liveness
                     --filename /tmp/onyx_k8s_docfetching_liveness.txt
-      {{- with .Values.celery_worker_docfetching.volumes }}
-      volumes:
-        {{- toYaml . | nindent 8 }}
+      {{- with include "onyx.volumesWithCA" (dict "ctx" . "volumes" .Values.celery_worker_docfetching.volumes) }}
+      {{- . | nindent 6 }}
       {{- end }}
 {{- end }}

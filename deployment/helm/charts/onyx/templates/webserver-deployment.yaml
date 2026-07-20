@@ -45,14 +45,6 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- $webRepo := .Values.global.image.repository }}
-      {{- if and .Values.webserver.image .Values.webserver.image.repository }}
-        {{- $webRepo = .Values.webserver.image.repository }}
-      {{- end }}
-      {{- $webTag := default .Values.global.image.tags.web (printf "web-%s" .Values.global.version) }}
-      {{- if and .Values.webserver.image .Values.webserver.image.tag }}
-        {{- $webTag = .Values.webserver.image.tag }}
-      {{- end }}
       {{- with .Values.webserver.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
@@ -65,7 +57,7 @@ spec:
         - name: web-server
           securityContext:
             {{- toYaml .Values.webserver.securityContext | nindent 12 }}
-          image: "{{ $webRepo }}:{{ $webTag }}"
+          image: "{{ .Values.webserver.image.repository }}:{{ .Values.webserver.image.tag | default .Values.global.version }}"
           imagePullPolicy: {{ .Values.global.pullPolicy }}
           ports:
             - name: http
@@ -73,11 +65,6 @@ spec:
               protocol: TCP
           resources:
             {{- toYaml .Values.webserver.resources | nindent 12 }}
-          envFrom:
-            - configMapRef:
-                name: {{ .Values.config.envConfigMapName }}
-          env:
-            {{- include "onyx.envSecrets" . | nindent 12}}
           {{- with .Values.webserver.startupProbe }}
           startupProbe:
             {{- toYaml . | nindent 12 }}
@@ -90,12 +77,24 @@ spec:
           livenessProbe:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- $webVolumeMounts := include "onyx.renderVolumeMounts" (dict "ctx" . "volumeMounts" .Values.webserver.volumeMounts) }}
-          {{- if $webVolumeMounts }}
-          {{- $webVolumeMounts | nindent 10 }}
+          envFrom:
+            - configMapRef:
+                name: {{ .Values.config.envConfigMapName }}
+            {{- with .Values.extraEnvFromSecret }}
+            - secretRef:
+                name: {{ . }}
+            {{- end }}
+          env:
+            {{- include "onyx.envSecrets" . | nindent 12}}
+            {{- with .Values.webserver.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.webserver.volumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
           {{- end }}
-      {{- $webVolumes := include "onyx.renderVolumes" (dict "ctx" . "volumes" .Values.webserver.volumes) }}
-      {{- if $webVolumes }}
-      {{- $webVolumes | nindent 6 }}
+      {{- with .Values.webserver.volumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
       {{- end }}
 {{- end }}

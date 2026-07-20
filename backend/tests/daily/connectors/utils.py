@@ -1,9 +1,11 @@
 from collections.abc import Iterator
+from typing import IO
 from typing import TypeVar
 
 from pydantic import BaseModel
 
 from onyx.connectors.connector_runner import CheckpointOutputWrapper
+from onyx.connectors.interfaces import BaseConnector
 from onyx.connectors.interfaces import CheckpointedConnector
 from onyx.connectors.interfaces import CheckpointedConnectorWithPermSync
 from onyx.connectors.interfaces import SecondsSinceUnixEpoch
@@ -12,6 +14,7 @@ from onyx.connectors.models import ConnectorFailure
 from onyx.connectors.models import Document
 from onyx.connectors.models import HierarchyNode
 from onyx.connectors.models import ImageSection
+from onyx.connectors.models import TabularSection
 from onyx.connectors.models import TextSection
 
 _ITERATION_LIMIT = 100_000
@@ -27,6 +30,21 @@ class ConnectorOutput(BaseModel):
     hierarchy_nodes: list[HierarchyNode]
 
     model_config = {"arbitrary_types_allowed": True}
+
+
+def set_test_staging_callback(connector: BaseConnector) -> dict[str, bytes]:
+    """Install an in-memory staging callback so tabular files produce file-backed
+    sections in tests, the way docfetching does in production. Returns the
+    {csv_file_id: bytes} map for content assertions."""
+    staged: dict[str, bytes] = {}
+
+    def _callback(content: IO[bytes], content_type: str) -> str:  # noqa: ARG001
+        file_id = f"test-staged-csv-{len(staged)}"
+        staged[file_id] = content.read()
+        return file_id
+
+    connector.set_raw_file_callback(_callback)
+    return staged
 
 
 def load_all_from_connector(
@@ -53,6 +71,10 @@ def load_all_from_connector(
     ):
         raise ValueError("Connector does not support permission syncing")
 
+    # Tabular files need a staging callback to produce file-backed sections;
+    # docfetching installs one in production, so mirror that here.
+    set_test_staging_callback(connector)
+
     checkpoint = connector.build_dummy_checkpoint()
     documents: list[Document] = []
     failures: list[ConnectorFailure] = []
@@ -69,7 +91,11 @@ def load_all_from_connector(
             else connector.load_from_checkpoint
         )
         doc_batch_generator = CheckpointOutputWrapper[CT]()(
-            load_from_checkpoint_generator(start, end, checkpoint)
+            load_from_checkpoint_generator(  # ty: ignore[invalid-argument-type]
+                start,
+                end,
+                checkpoint,  # ty: ignore[invalid-argument-type]
+            )
         )
 
         # Collect hierarchy nodes from this batch (for end-of-batch validation)
@@ -141,13 +167,15 @@ def load_all_from_connector(
 
 def to_sections(
     documents: list[Document],
-) -> Iterator[TextSection | ImageSection]:
+) -> Iterator[TextSection | ImageSection | TabularSection]:
     for doc in documents:
         for section in doc.sections:
             yield section
 
 
-def to_text_sections(sections: Iterator[TextSection | ImageSection]) -> Iterator[str]:
+def to_text_sections(
+    sections: Iterator[TextSection | ImageSection | TabularSection],
+) -> Iterator[str]:
     for section in sections:
         if isinstance(section, TextSection):
             yield section.text

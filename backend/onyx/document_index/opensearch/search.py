@@ -106,9 +106,9 @@ def _get_hybrid_search_normalization_weights() -> list[float]:
             f"Bug: Unhandled hybrid search subquery configuration: {HYBRID_SEARCH_SUBQUERY_CONFIGURATION}."
         )
 
-    assert (
-        sum(hybrid_search_normalization_weights) == 1.0
-    ), "Bug: Hybrid search normalization weights do not sum to 1.0."
+    assert sum(hybrid_search_normalization_weights) == 1.0, (
+        "Bug: Hybrid search normalization weights do not sum to 1.0."
+    )
 
     return hybrid_search_normalization_weights
 
@@ -765,7 +765,7 @@ class DocumentQuery:
         if search_filters is not None:
             query["knn"][CONTENT_VECTOR_FIELD_NAME]["filter"] = {
                 "bool": {"filter": search_filters}
-            }
+            }  # ty: ignore[invalid-assignment]
 
         return query
 
@@ -962,7 +962,9 @@ class DocumentQuery:
                 acl_subclause: TermsQuery[str] = {
                     "terms": {ACCESS_CONTROL_LIST_FIELD_NAME: list(access_control_list)}
                 }
-                acl_visibility_filter["bool"]["should"].append(acl_subclause)
+                acl_visibility_filter["bool"]["should"].append(
+                    acl_subclause  # ty: ignore[invalid-argument-type]
+                )
             return acl_visibility_filter
 
         def _get_source_type_filter(
@@ -1224,14 +1226,16 @@ class DocumentQuery:
         # persona_id_filter is a primary trigger — a persona with user files IS
         # explicit knowledge, so it can start a knowledge scope on its own.
         #
-        # project_id_filter is additive — it widens the scope to also cover
-        # overflowing project files but never restricts on its own (a chat
-        # inside a project should still search team knowledge).
+        # project_id_filter is a primary trigger — a chat inside a project is
+        # scoped to that project, so project_id_filter restricts the search to
+        # the project's files on its own (project chats do not search team
+        # knowledge).
         has_knowledge_scope = (
             attached_document_ids
             or hierarchy_node_ids
             or document_sets
             or persona_id_filter is not None
+            or project_id_filter is not None
         )
 
         if has_knowledge_scope:

@@ -1,4 +1,4 @@
-{{- if gt (int .Values.celery_worker_monitoring.replicaCount) 0 }}
+{{- if and .Values.vectorDB.enabled (gt (int .Values.celery_worker_monitoring.replicaCount) 0) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -45,14 +45,6 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- $backendRepo := .Values.global.image.repository }}
-      {{- if and .Values.celery_shared.image .Values.celery_shared.image.repository }}
-        {{- $backendRepo = .Values.celery_shared.image.repository }}
-      {{- end }}
-      {{- $backendTag := default .Values.global.image.tags.backend (printf "backend-%s" (include "onyx.version" .)) }}
-      {{- if and .Values.celery_shared.image .Values.celery_shared.image.tag }}
-        {{- $backendTag = .Values.celery_shared.image.tag }}
-      {{- end }}
       {{- with .Values.celery_worker_monitoring.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
@@ -65,29 +57,47 @@ spec:
         - name: celery-worker-monitoring
           securityContext:
             {{- toYaml .Values.celery_shared.securityContext | nindent 12 }}
-          image: "{{ $backendRepo }}:{{ $backendTag }}"
+          image: "{{ .Values.celery_shared.image.repository }}:{{ .Values.celery_shared.image.tag | default .Values.global.version }}"
           imagePullPolicy: {{ .Values.global.pullPolicy }}
           command:
             [
+              {{- with include "onyx.customCACerts.commandPrefix" . }}
+              {{- . | nindent 14 }}
+              {{- end }}
               "celery",
               "-A",
               "onyx.background.celery.versioned_apps.monitoring",
               "worker",
-              "--loglevel=INFO",
+              {{- with .Values.celery_worker_monitoring.logLevel }}
+              {{ printf "--loglevel=%s" . | quote }},
+              {{- end }}
               "--hostname=monitoring@%n",
               "-Q",
               "monitoring",
             ]
+          ports:
+            - name: metrics
+              containerPort: 9096
+              protocol: TCP
           resources:
             {{- toYaml .Values.celery_worker_monitoring.resources | nindent 12 }}
           envFrom:
             - configMapRef:
                 name: {{ .Values.config.envConfigMapName }}
+            {{- with .Values.extraEnvFromSecret }}
+            - secretRef:
+                name: {{ . }}
+            {{- end }}
           env:
             {{- include "onyx.envSecrets" . | nindent 12}}
-          {{- with .Values.celery_worker_monitoring.volumeMounts }}
-          volumeMounts:
+            {{- with include "onyx.customCACerts.env" . }}
+            {{- . | nindent 12 }}
+            {{- end }}
+            {{- with .Values.celery_worker_monitoring.extraEnv }}
             {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with include "onyx.volumeMountsWithCA" (dict "ctx" . "volumeMounts" .Values.celery_worker_monitoring.volumeMounts) }}
+          {{- . | nindent 10 }}
           {{- end }}
           startupProbe:
             {{ .Values.celery_shared.startupProbe | toYaml | nindent 12}}
@@ -111,8 +121,7 @@ spec:
                     python onyx/background/celery/celery_k8s_probe.py
                     --probe liveness
                     --filename /tmp/onyx_k8s_monitoring_liveness.txt
-      {{- with .Values.celery_worker_monitoring.volumes }}
-      volumes:
-        {{- toYaml . | nindent 8 }}
+      {{- with include "onyx.volumesWithCA" (dict "ctx" . "volumes" .Values.celery_worker_monitoring.volumes) }}
+      {{- . | nindent 6 }}
       {{- end }}
 {{- end }}

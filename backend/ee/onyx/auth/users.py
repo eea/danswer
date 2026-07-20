@@ -1,5 +1,7 @@
 import os
+import secrets
 from datetime import datetime
+from datetime import timezone
 
 import jwt
 from fastapi import Depends
@@ -17,7 +19,6 @@ from onyx.db.enums import Permission
 from onyx.db.models import User
 from onyx.utils.logger import setup_logger
 
-
 logger = setup_logger()
 
 
@@ -28,7 +29,7 @@ def verify_auth_setting() -> None:
         logger.warning(
             "AUTH_TYPE='disabled' is no longer supported. Using 'basic' instead. Please update your configuration."
         )
-    logger.notice(f"Using Auth Type: {AUTH_TYPE.value}")
+    logger.notice("Using Auth Type: %s", AUTH_TYPE.value)
 
 
 def get_default_admin_user_emails_() -> list[str]:
@@ -42,8 +43,12 @@ async def current_cloud_superuser(
     request: Request,
     user: User = Depends(require_permission(Permission.FULL_ADMIN_PANEL_ACCESS)),
 ) -> User:
+    if not SUPER_CLOUD_API_KEY:
+        logger.warning("SUPER_CLOUD_API_KEY is not configured; rejecting request")
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
     api_key = request.headers.get("Authorization", "").replace("Bearer ", "")
-    if api_key != SUPER_CLOUD_API_KEY:
+    if not secrets.compare_digest(api_key, SUPER_CLOUD_API_KEY):
         raise HTTPException(status_code=401, detail="Invalid API key")
 
     if user and user.email not in SUPER_USERS:
@@ -58,7 +63,7 @@ def generate_anonymous_user_jwt_token(tenant_id: str) -> str:
     payload = {
         "tenant_id": tenant_id,
         # Token does not expire
-        "iat": datetime.utcnow(),  # Issued at time
+        "iat": datetime.now(timezone.utc),  # Issued at time
     }
 
     return jwt.encode(payload, USER_AUTH_SECRET, algorithm="HS256")

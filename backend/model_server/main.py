@@ -1,10 +1,10 @@
 import logging
 import os
+import shutil
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-import sentry_sdk
 import torch
 import uvicorn
 from fastapi import FastAPI
@@ -15,6 +15,7 @@ from transformers import logging as transformer_logging
 
 from model_server.encoders import router as encoders_router
 from model_server.management_endpoints import router as management_router
+from model_server.utils import get_cgroup_cpu_limit
 from model_server.utils import get_gpu_type
 from onyx import __version__
 from onyx.utils.logger import setup_logger
@@ -26,13 +27,13 @@ from shared_configs.configs import MIN_THREADS_ML_MODELS
 from shared_configs.configs import MODEL_SERVER_ALLOWED_HOST
 from shared_configs.configs import MODEL_SERVER_PORT
 from shared_configs.configs import SENTRY_DSN
+from shared_configs.configs import SENTRY_TRACES_SAMPLE_RATE
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
-os.environ["HF_HUB_OFFLINE"] = "1"
 
-HF_HOME = os.environ.get("HF_HOME", "/usr/share/huggingface")
-HF_CACHE_PATH = Path(HF_HOME)
+HF_CACHE_PATH = Path(".cache/huggingface")
+TEMP_HF_CACHE_PATH = Path(".cache/temp_huggingface")
 
 transformer_logging.set_verbosity_error()
 
@@ -45,15 +46,64 @@ file_handlers = [
 setup_uvicorn_logger(shared_file_handlers=file_handlers)
 
 
+def _move_files_recursively(source: Path, dest: Path, overwrite: bool = False) -> None:
+    """
+    This moves the files from the temp huggingface cache to the huggingface cache
+
+    We have to move each file individually because the directories might
+    have the same name but not the same contents and we dont want to remove
+    the files in the existing huggingface cache that don't exist in the temp
+    huggingface cache.
+    """
+
+    for item in source.iterdir():
+        target_path = dest / item.relative_to(source)
+        if item.is_dir():
+            _move_files_recursively(item, target_path, overwrite)
+        else:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            if target_path.exists() and not overwrite:
+                continue
+            shutil.move(str(item), str(target_path))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator:
     gpu_type = get_gpu_type()
-    logger.notice(f"Torch GPU Detection: gpu_type={gpu_type}")
+    logger.notice("Torch GPU Detection: gpu_type=%s", gpu_type)
 
     app.state.gpu_type = gpu_type
 
-    torch.set_num_threads(max(MIN_THREADS_ML_MODELS, torch.get_num_threads()))
-    logger.notice(f"Torch Threads: {torch.get_num_threads()}")
+    try:
+        if TEMP_HF_CACHE_PATH.is_dir():
+            logger.notice("Moving contents of temp_huggingface to huggingface cache.")
+            _move_files_recursively(TEMP_HF_CACHE_PATH, HF_CACHE_PATH)
+            shutil.rmtree(TEMP_HF_CACHE_PATH, ignore_errors=True)
+            logger.notice("Moved contents of temp_huggingface to huggingface cache.")
+    except Exception as e:
+        logger.warning(
+            "Error moving contents of temp_huggingface to huggingface cache: %s. This is not a critical error and the model server will continue to run.",
+            e,
+        )
+
+    # torch sizes its intra-op thread pool from the host core count, ignoring the
+    # container's cgroup CPU quota. On a large node this oversubscribes threads against
+    # a small quota, causing thread thrash and CFS throttling. Cap to the quota (while
+    # keeping the historical MIN_THREADS_ML_MODELS floor).
+    torch_default_threads = torch.get_num_threads()
+    cpu_limit = get_cgroup_cpu_limit()
+    num_threads = (
+        torch_default_threads
+        if cpu_limit is None
+        else min(torch_default_threads, cpu_limit)
+    )
+    torch.set_num_threads(max(MIN_THREADS_ML_MODELS, num_threads))
+    logger.notice(
+        "Torch Threads: %s (torch default: %s, cgroup cpu limit: %s)",
+        torch.get_num_threads(),
+        torch_default_threads,
+        cpu_limit,
+    )
 
     yield
 
@@ -63,13 +113,12 @@ def get_model_app() -> FastAPI:
         title="Onyx Model Server", version=__version__, lifespan=lifespan
     )
     if SENTRY_DSN:
-        sentry_sdk.init(
-            dsn=SENTRY_DSN,
+        from onyx.configs.sentry import init_sentry
+
+        init_sentry(
+            traces_sample_rate=SENTRY_TRACES_SAMPLE_RATE,
             integrations=[StarletteIntegration(), FastApiIntegration()],
-            traces_sample_rate=0.1,
-            release=__version__,
         )
-        logger.info("Sentry initialized")
     else:
         logger.debug("Sentry DSN not provided, skipping Sentry initialization")
 
@@ -94,7 +143,9 @@ app = get_model_app()
 
 if __name__ == "__main__":
     logger.notice(
-        f"Starting Onyx Model Server on http://{MODEL_SERVER_ALLOWED_HOST}:{str(MODEL_SERVER_PORT)}/"
+        "Starting Onyx Model Server on http://%s:%s/",
+        MODEL_SERVER_ALLOWED_HOST,
+        str(MODEL_SERVER_PORT),
     )
-    logger.notice(f"Model Server Version: {__version__}")
+    logger.notice("Model Server Version: %s", __version__)
     uvicorn.run(app, host=MODEL_SERVER_ALLOWED_HOST, port=MODEL_SERVER_PORT)

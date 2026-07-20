@@ -9,7 +9,7 @@ import React, {
   useState,
 } from "react";
 import { ScrollContainerProvider } from "@/components/chat/ScrollContainerContext";
-import { cn } from "@/lib/utils";
+import { cn } from "@opal/utils";
 
 // Size constants
 const DEFAULT_ANCHOR_OFFSET_PX = 16; // 1rem
@@ -53,6 +53,9 @@ export interface ChatScrollContainerProps {
 
   /** Hide the scrollbar (scroll still works, just invisible) */
   hideScrollbar?: boolean;
+
+  /** Drop the content-wrapper horizontal padding so content sits flush with the chat edge. */
+  flushContent?: boolean;
 }
 
 // Build a CSS mask that fades content opacity at top/bottom edges
@@ -74,6 +77,7 @@ const ChatScrollContainer = React.memo(
         onScrollButtonVisibilityChange,
         sessionId,
         hideScrollbar = false,
+        flushContent = false,
       }: ChatScrollContainerProps,
       ref: ForwardedRef<ChatScrollContainerHandle>
     ) => {
@@ -213,9 +217,12 @@ const ChatScrollContainer = React.memo(
         }
       }, [updateScrollState, getScrollState]);
 
-      // Watch for content changes (MutationObserver + ResizeObserver)
+      // MutationObserver (structural) + ResizeObserver (height growth).
+      // NOT characterData — typewriter reveals don't change scrollHeight
+      // and firing per-char thrashed auto-scroll.
       useEffect(() => {
         const container = scrollContainerRef.current;
+        const contentWrapper = contentWrapperRef.current;
         if (!container) return;
 
         let rafId: number | null = null;
@@ -244,17 +251,17 @@ const ChatScrollContainer = React.memo(
           });
         };
 
-        // MutationObserver for content changes
         const mutationObserver = new MutationObserver(onContentChange);
         mutationObserver.observe(container, {
           childList: true,
           subtree: true,
-          characterData: true,
         });
 
-        // ResizeObserver for container size changes
         const resizeObserver = new ResizeObserver(onContentChange);
         resizeObserver.observe(container);
+        if (contentWrapper) {
+          resizeObserver.observe(contentWrapper);
+        }
 
         return () => {
           mutationObserver.disconnect();
@@ -359,7 +366,9 @@ const ChatScrollContainer = React.memo(
             )}
             onScroll={handleScroll}
             style={{
-              scrollbarGutter: "stable both-edges",
+              // Full-width drops the reserved gutters so content sits flush with
+              // the chat edge; centered mode keeps both-edges to avoid shift.
+              scrollbarGutter: flushContent ? "auto" : "stable both-edges",
               // Apply mask to fade content opacity at edges
               maskImage: contentMask,
               WebkitMaskImage: contentMask,
@@ -367,7 +376,10 @@ const ChatScrollContainer = React.memo(
           >
             <div
               ref={contentWrapperRef}
-              className="w-full flex-1 flex flex-col items-center px-4"
+              className={cn(
+                "w-full flex-1 flex flex-col items-center",
+                !flushContent && "px-4"
+              )}
               data-scroll-ready={isScrollReady}
               style={{
                 visibility: isScrollReady ? "visible" : "hidden",

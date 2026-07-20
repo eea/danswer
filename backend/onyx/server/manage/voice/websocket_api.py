@@ -7,6 +7,7 @@ import os
 from collections.abc import MutableMapping
 from typing import Any
 
+import numpy as np
 from fastapi import APIRouter
 from fastapi import Depends
 from fastapi import WebSocket
@@ -18,6 +19,7 @@ from onyx.db.engine.sql_engine import get_sqlalchemy_engine
 from onyx.db.models import User
 from onyx.db.voice import fetch_default_stt_provider
 from onyx.db.voice import fetch_default_tts_provider
+from onyx.server.manage.voice.text_utils import strip_markdown_for_tts
 from onyx.utils.logger import setup_logger
 from onyx.voice.factory import get_voice_provider
 from onyx.voice.interface import StreamingSynthesizerProtocol
@@ -29,10 +31,112 @@ logger = setup_logger()
 router = APIRouter(prefix="/voice")
 
 
-# Transcribe every ~0.5 seconds of audio (webm/opus is ~2-4KB/s, so ~1-2KB per 0.5s)
+# Byte threshold for non-PCM formats, where the audio can't be analyzed server-side
 MIN_CHUNK_BYTES = 1500
+
+# The browser recorder sends raw PCM16 mono at 24kHz
+PCM_SAMPLE_RATE = 24000
+PCM_BYTES_PER_SECOND = PCM_SAMPLE_RATE * 2
+
+# Whisper-style models pad short inputs to a 30s window and hallucinate
+# training-data boilerplate (e.g. broadcast sign-offs) on silence/padding, so
+# PCM audio is transcribed in multi-second windows and windows without speech
+# are dropped without calling the provider.
+PCM_TRANSCRIBE_WINDOW_BYTES = PCM_BYTES_PER_SECOND * 3
+
+# int16 RMS below this (~-46 dBFS) is treated as silence. Speech is typically
+# an order of magnitude above; quiet-room mic noise well below.
+SILENCE_RMS_THRESHOLD = 150.0
+
+# Absolute floor (~-61 dBFS) for the low-gain fallback in
+# _speech_rms_threshold — audio quieter than this everywhere is silence.
+MIN_SPEECH_RMS = 30.0
+
+# Low-gain fallback: quiet audio counts as speech only when its loudest
+# frames stand at least this far (~8dB) above the recording's own noise
+# floor. Speech has strong dynamics (pauses between words); steady mic noise
+# stays near 1x. Below this, an empty transcript (visible, recoverable) is
+# deliberately preferred over risking hallucinated text.
+SPEECH_DYNAMICS_RATIO = 2.5
+
+# Audio kept around detected speech when trimming silence off a full recording
+SILENCE_TRIM_PADDING_SECONDS = 0.5
+
+
+def pcm16_rms(audio: bytes) -> float:
+    """RMS amplitude of raw little-endian PCM16 audio (0.0 for empty input)."""
+    usable = len(audio) - (len(audio) % 2)
+    if usable == 0:
+        return 0.0
+    samples = np.frombuffer(audio[:usable], dtype=np.int16).astype(np.float64)
+    return float(np.sqrt(np.mean(samples * samples)))
+
+
+def _speech_rms_threshold(frame_rms_values: list[float]) -> float | None:
+    """RMS threshold separating speech frames from silence for a recording.
+
+    Uses SILENCE_RMS_THRESHOLD when the recording reaches it. Otherwise falls
+    back to a relative test so quiet input from a low-gain microphone still
+    counts as speech when it stands well out of the recording's own noise
+    floor. Returns None when the recording contains no speech-like content.
+    """
+    if not frame_rms_values:
+        return None
+    peak = max(frame_rms_values)
+    if peak >= SILENCE_RMS_THRESHOLD:
+        return SILENCE_RMS_THRESHOLD
+    if peak < MIN_SPEECH_RMS:
+        return None
+    noise_floor = max(
+        sorted(frame_rms_values)[len(frame_rms_values) // 10], 1.0
+    )  # 10th percentile
+    if peak >= SPEECH_DYNAMICS_RATIO * noise_floor:
+        return max(MIN_SPEECH_RMS, peak / SPEECH_DYNAMICS_RATIO)
+    return None
+
+
+def trim_pcm16_silence(audio: bytes) -> bytes:
+    """Trim leading/trailing silence from raw PCM16 audio.
+
+    Analyzes the audio in 100ms frames and keeps everything from the first to
+    the last speech frame (per _speech_rms_threshold), plus padding. Returns
+    b"" if no frame contains speech.
+    """
+    frame_bytes = PCM_BYTES_PER_SECOND // 10
+    if frame_bytes == 0 or not audio:
+        return audio
+
+    frame_offsets = range(0, len(audio), frame_bytes)
+    frame_rms_values = [
+        pcm16_rms(audio[idx : idx + frame_bytes]) for idx in frame_offsets
+    ]
+    threshold = _speech_rms_threshold(frame_rms_values)
+    if threshold is None:
+        return b""
+
+    speech_frame_indices = [
+        idx
+        for idx, frame_rms in zip(frame_offsets, frame_rms_values)
+        if frame_rms >= threshold
+    ]
+    if not speech_frame_indices:
+        return b""
+
+    padding_bytes = int(PCM_BYTES_PER_SECOND * SILENCE_TRIM_PADDING_SECONDS)
+    start = max(0, speech_frame_indices[0] - padding_bytes)
+    end = min(len(audio), speech_frame_indices[-1] + frame_bytes + padding_bytes)
+    # Keep sample alignment
+    start -= start % 2
+    return audio[start:end]
+
+
 VOICE_DISABLE_STREAMING_FALLBACK = (
     os.environ.get("VOICE_DISABLE_STREAMING_FALLBACK", "").lower() == "true"
+)
+# Force STT onto the chunked/REST path where a provider's native streaming SDK
+# transport is unavailable in the runtime (else it yields empty transcripts).
+VOICE_DISABLE_STREAMING_STT = (
+    os.environ.get("VOICE_DISABLE_STREAMING_STT", "").lower() == "true"
 )
 
 # WebSocket size limits to prevent memory exhaustion attacks
@@ -43,14 +147,24 @@ WS_MAX_TTS_TEXT_LENGTH = 4096  # Max text length per synthesize call (matches RE
 
 
 class ChunkedTranscriber:
-    """Fallback transcriber for providers without streaming support."""
+    """Fallback transcriber for providers without streaming support.
+
+    For raw PCM16 input, audio is transcribed in multi-second windows and
+    silence is never sent to the provider — STT models hallucinate on
+    silent/near-silent audio instead of returning an empty transcript.
+    """
 
     def __init__(self, provider: Any, audio_format: str = "webm"):
         self.provider = provider
         self.audio_format = audio_format
+        self.is_pcm = audio_format == "pcm16"
+        self.window_bytes = (
+            PCM_TRANSCRIBE_WINDOW_BYTES if self.is_pcm else MIN_CHUNK_BYTES
+        )
         self.chunk_buffer = io.BytesIO()
         self.full_audio = io.BytesIO()
         self.chunk_bytes = 0
+        self.window_has_speech = False
         self.transcripts: list[str] = []
 
     async def add_chunk(self, chunk: bytes) -> str | None:
@@ -59,9 +173,28 @@ class ChunkedTranscriber:
         self.full_audio.write(chunk)
         self.chunk_bytes += len(chunk)
 
-        if self.chunk_bytes >= MIN_CHUNK_BYTES:
+        if (
+            self.is_pcm
+            and not self.window_has_speech
+            and pcm16_rms(chunk) >= SILENCE_RMS_THRESHOLD
+        ):
+            self.window_has_speech = True
+
+        if self.chunk_bytes >= self.window_bytes:
+            if self.is_pcm and not self.window_has_speech:
+                logger.debug(
+                    "Chunked transcription: dropping silent window (%s bytes)",
+                    self.chunk_bytes,
+                )
+                self._reset_window()
+                return None
             return await self._transcribe_chunk()
         return None
+
+    def _reset_window(self) -> None:
+        self.chunk_buffer = io.BytesIO()
+        self.chunk_bytes = 0
+        self.window_has_speech = False
 
     async def _transcribe_chunk(self) -> str | None:
         """Transcribe current chunk and append to running transcript."""
@@ -71,22 +204,26 @@ class ChunkedTranscriber:
 
         try:
             transcript = await self.provider.transcribe(audio_data, self.audio_format)
-            self.chunk_buffer = io.BytesIO()
-            self.chunk_bytes = 0
+            self._reset_window()
 
             if transcript and transcript.strip():
                 self.transcripts.append(transcript.strip())
                 return " ".join(self.transcripts)
             return None
         except Exception as e:
-            logger.error(f"Transcription error: {e}")
-            self.chunk_buffer = io.BytesIO()
-            self.chunk_bytes = 0
+            logger.error("Transcription error: %s", e)
+            self._reset_window()
             return None
 
     async def flush(self) -> str:
         """Get final transcript from full audio for best accuracy."""
         full_audio_data = self.full_audio.getvalue()
+        if self.is_pcm:
+            full_audio_data = trim_pcm16_silence(full_audio_data)
+            if not full_audio_data:
+                # No speech detected in the recording; empty unless earlier
+                # windows produced transcripts
+                return " ".join(self.transcripts)
         if full_audio_data:
             try:
                 transcript = await self.provider.transcribe(
@@ -95,7 +232,7 @@ class ChunkedTranscriber:
                 if transcript and transcript.strip():
                     return transcript.strip()
             except Exception as e:
-                logger.error(f"Final transcription error: {e}")
+                logger.error("Final transcription error: %s", e)
         return " ".join(self.transcripts)
 
 
@@ -122,7 +259,9 @@ async def handle_streaming_transcription(
             if result.text and (result.text != last_transcript or result.is_vad_end):
                 last_transcript = result.text
                 logger.debug(
-                    f"Streaming transcription: got transcript: {result.text[:50]}... (is_vad_end={result.is_vad_end})"
+                    "Streaming transcription: got transcript: %s... (is_vad_end=%s)",
+                    result.text[:50],
+                    result.is_vad_end,
                 )
                 await websocket.send_json(
                     {
@@ -142,7 +281,9 @@ async def handle_streaming_transcription(
 
             if msg_type == "websocket.disconnect":
                 logger.info(
-                    f"Streaming transcription: client disconnected after {chunk_count} chunks ({total_bytes} bytes)"
+                    "Streaming transcription: client disconnected after %s chunks (%s bytes)",
+                    chunk_count,
+                    total_bytes,
                 )
                 break
 
@@ -152,7 +293,8 @@ async def handle_streaming_transcription(
                 # Enforce per-message size limit
                 if chunk_size > WS_MAX_MESSAGE_SIZE:
                     logger.warning(
-                        f"Streaming transcription: message too large ({chunk_size} bytes)"
+                        "Streaming transcription: message too large (%s bytes)",
+                        chunk_size,
                     )
                     await websocket.send_json(
                         {"type": "error", "message": "Message too large"}
@@ -162,7 +304,8 @@ async def handle_streaming_transcription(
                 # Enforce total connection size limit
                 if total_bytes + chunk_size > WS_MAX_TOTAL_BYTES:
                     logger.warning(
-                        f"Streaming transcription: total size limit exceeded ({total_bytes + chunk_size} bytes)"
+                        "Streaming transcription: total size limit exceeded (%s bytes)",
+                        total_bytes + chunk_size,
                     )
                     await websocket.send_json(
                         {"type": "error", "message": "Total size limit exceeded"}
@@ -172,7 +315,10 @@ async def handle_streaming_transcription(
                 chunk_count += 1
                 total_bytes += chunk_size
                 logger.debug(
-                    f"Streaming transcription: received chunk {chunk_count} ({chunk_size} bytes, total: {total_bytes})"
+                    "Streaming transcription: received chunk %s (%s bytes, total: %s)",
+                    chunk_count,
+                    chunk_size,
+                    total_bytes,
                 )
                 await transcriber.send_audio(message["bytes"])
 
@@ -180,7 +326,7 @@ async def handle_streaming_transcription(
                 try:
                     data = json.loads(message["text"])
                     logger.debug(
-                        f"Streaming transcription: received text message: {data}"
+                        "Streaming transcription: received text message: %s", data
                     )
                     if data.get("type") == "end":
                         logger.info(
@@ -189,8 +335,8 @@ async def handle_streaming_transcription(
                         final_transcript = await transcriber.close()
                         receive_task.cancel()
                         logger.info(
-                            "Streaming transcription: final transcript: "
-                            f"{final_transcript[:100] if final_transcript else '(empty)'}..."
+                            "Streaming transcription: final transcript: %s...",
+                            final_transcript[:100] if final_transcript else "(empty)",
                         )
                         await websocket.send_json(
                             {
@@ -208,10 +354,11 @@ async def handle_streaming_transcription(
                         transcriber.reset_transcript()
                 except json.JSONDecodeError:
                     logger.warning(
-                        f"Streaming transcription: failed to parse JSON: {message.get('text', '')[:100]}"
+                        "Streaming transcription: failed to parse JSON: %s",
+                        message.get("text", "")[:100],
                     )
     except Exception as e:
-        logger.error(f"Streaming transcription: error: {e}", exc_info=True)
+        logger.error("Streaming transcription: error: %s", e, exc_info=True)
         raise
     finally:
         receive_task.cancel()
@@ -220,7 +367,9 @@ async def handle_streaming_transcription(
         except asyncio.CancelledError:
             pass
         logger.info(
-            f"Streaming transcription: handler finished. Processed {chunk_count} chunks, {total_bytes} total bytes"
+            "Streaming transcription: handler finished. Processed %s chunks, %s total bytes",
+            chunk_count,
+            total_bytes,
         )
 
 
@@ -239,7 +388,9 @@ async def handle_chunked_transcription(
 
         if msg_type == "websocket.disconnect":
             logger.info(
-                f"Chunked transcription: client disconnected after {chunk_count} chunks ({total_bytes} bytes)"
+                "Chunked transcription: client disconnected after %s chunks (%s bytes)",
+                chunk_count,
+                total_bytes,
             )
             break
 
@@ -249,7 +400,7 @@ async def handle_chunked_transcription(
             # Enforce per-message size limit
             if chunk_size > WS_MAX_MESSAGE_SIZE:
                 logger.warning(
-                    f"Chunked transcription: message too large ({chunk_size} bytes)"
+                    "Chunked transcription: message too large (%s bytes)", chunk_size
                 )
                 await websocket.send_json(
                     {"type": "error", "message": "Message too large"}
@@ -259,7 +410,8 @@ async def handle_chunked_transcription(
             # Enforce total connection size limit
             if total_bytes + chunk_size > WS_MAX_TOTAL_BYTES:
                 logger.warning(
-                    f"Chunked transcription: total size limit exceeded ({total_bytes + chunk_size} bytes)"
+                    "Chunked transcription: total size limit exceeded (%s bytes)",
+                    total_bytes + chunk_size,
                 )
                 await websocket.send_json(
                     {"type": "error", "message": "Total size limit exceeded"}
@@ -269,13 +421,16 @@ async def handle_chunked_transcription(
             chunk_count += 1
             total_bytes += chunk_size
             logger.debug(
-                f"Chunked transcription: received chunk {chunk_count} ({chunk_size} bytes, total: {total_bytes})"
+                "Chunked transcription: received chunk %s (%s bytes, total: %s)",
+                chunk_count,
+                chunk_size,
+                total_bytes,
             )
 
             transcript = await transcriber.add_chunk(message["bytes"])
             if transcript:
                 logger.debug(
-                    f"Chunked transcription: got transcript: {transcript[:50]}..."
+                    "Chunked transcription: got transcript: %s...", transcript[:50]
                 )
                 await websocket.send_json(
                     {
@@ -288,12 +443,13 @@ async def handle_chunked_transcription(
         elif "text" in message:
             try:
                 data = json.loads(message["text"])
-                logger.debug(f"Chunked transcription: received text message: {data}")
+                logger.debug("Chunked transcription: received text message: %s", data)
                 if data.get("type") == "end":
                     logger.info("Chunked transcription: end signal received, flushing")
                     final_transcript = await transcriber.flush()
                     logger.info(
-                        f"Chunked transcription: final transcript: {final_transcript[:100] if final_transcript else '(empty)'}..."
+                        "Chunked transcription: final transcript: %s...",
+                        final_transcript[:100] if final_transcript else "(empty)",
                     )
                     await websocket.send_json(
                         {
@@ -305,11 +461,14 @@ async def handle_chunked_transcription(
                     break
             except json.JSONDecodeError:
                 logger.warning(
-                    f"Chunked transcription: failed to parse JSON: {message.get('text', '')[:100]}"
+                    "Chunked transcription: failed to parse JSON: %s",
+                    message.get("text", "")[:100],
                 )
 
     logger.info(
-        f"Chunked transcription: handler finished. Processed {chunk_count} chunks, {total_bytes} total bytes"
+        "Chunked transcription: handler finished. Processed %s chunks, %s total bytes",
+        chunk_count,
+        total_bytes,
     )
 
 
@@ -337,7 +496,7 @@ async def websocket_transcribe(
         await websocket.accept()
         logger.info("WebSocket transcribe: connection accepted")
     except Exception as e:
-        logger.error(f"WebSocket transcribe: failed to accept connection: {e}")
+        logger.error("WebSocket transcribe: failed to accept connection: %s", e)
         return
 
     streaming_transcriber = None
@@ -372,62 +531,57 @@ async def websocket_transcribe(
                 return
 
             logger.info(
-                f"WebSocket transcribe: creating voice provider: {provider_db.provider_type}"
+                "WebSocket transcribe: creating voice provider: %s",
+                provider_db.provider_type,
             )
             try:
                 provider = get_voice_provider(provider_db)
                 logger.info(
-                    f"WebSocket transcribe: voice provider created, streaming supported: {provider.supports_streaming_stt()}"
+                    "WebSocket transcribe: voice provider created, streaming supported: %s",
+                    provider.supports_streaming_stt(),
                 )
             except ValueError as e:
                 logger.error(
-                    f"WebSocket transcribe: failed to create voice provider: {e}"
+                    "WebSocket transcribe: failed to create voice provider: %s", e
                 )
                 await websocket.send_json({"type": "error", "message": str(e)})
                 return
 
-        # Use native streaming if provider supports it
-        if provider.supports_streaming_stt():
-            logger.info("WebSocket transcribe: using native streaming STT")
+        # Prefer native streaming; use the chunked/REST path when the provider
+        # lacks it or it's disabled via VOICE_DISABLE_STREAMING_STT.
+        use_streaming = (
+            provider.supports_streaming_stt() and not VOICE_DISABLE_STREAMING_STT
+        )
+
+        if use_streaming:
             try:
                 streaming_transcriber = await provider.create_streaming_transcriber()
-                logger.info(
-                    "WebSocket transcribe: streaming transcriber created successfully"
-                )
+                logger.info("WebSocket transcribe: streaming transcriber created")
                 await handle_streaming_transcription(websocket, streaming_transcriber)
+                return
             except Exception as e:
-                logger.error(
-                    f"WebSocket transcribe: failed to create streaming transcriber: {e}"
-                )
+                logger.error("WebSocket transcribe: streaming STT failed: %s", e)
                 if VOICE_DISABLE_STREAMING_FALLBACK:
                     await websocket.send_json(
                         {"type": "error", "message": f"Streaming STT failed: {e}"}
                     )
                     return
                 logger.info("WebSocket transcribe: falling back to chunked STT")
-                # Browser stream provides raw PCM16 chunks over WebSocket.
-                chunked_transcriber = ChunkedTranscriber(provider, audio_format="pcm16")
-                await handle_chunked_transcription(websocket, chunked_transcriber)
-        else:
-            # Fall back to chunked transcription
-            if VOICE_DISABLE_STREAMING_FALLBACK:
-                await websocket.send_json(
-                    {
-                        "type": "error",
-                        "message": "Provider doesn't support streaming STT",
-                    }
-                )
-                return
-            logger.info(
-                "WebSocket transcribe: using chunked STT (provider doesn't support streaming)"
+        elif VOICE_DISABLE_STREAMING_FALLBACK and not VOICE_DISABLE_STREAMING_STT:
+            # Provider can't stream and chunked fallback is disabled.
+            await websocket.send_json(
+                {"type": "error", "message": "Provider doesn't support streaming STT"}
             )
-            chunked_transcriber = ChunkedTranscriber(provider, audio_format="pcm16")
-            await handle_chunked_transcription(websocket, chunked_transcriber)
+            return
+
+        # Chunked/REST path; browser sends raw PCM16 chunks.
+        chunked_transcriber = ChunkedTranscriber(provider, audio_format="pcm16")
+        await handle_chunked_transcription(websocket, chunked_transcriber)
 
     except WebSocketDisconnect:
         logger.debug("WebSocket transcribe: client disconnected")
     except Exception as e:
-        logger.error(f"WebSocket transcribe: unhandled error: {e}", exc_info=True)
+        logger.error("WebSocket transcribe: unhandled error: %s", e, exc_info=True)
         try:
             # Send generic error to avoid leaking sensitive details
             await websocket.send_json(
@@ -464,14 +618,16 @@ async def handle_streaming_synthesis(
                 audio_chunk = await synthesizer.receive_audio()
                 if audio_chunk is None:
                     logger.info(
-                        f"Streaming synthesis: audio stream ended, sent {chunk_count} chunks, {total_bytes} bytes"
+                        "Streaming synthesis: audio stream ended, sent %s chunks, %s bytes",
+                        chunk_count,
+                        total_bytes,
                     )
                     try:
                         await websocket.send_json({"type": "audio_done"})
                         logger.info("Streaming synthesis: sent audio_done to client")
                     except Exception as e:
                         logger.warning(
-                            f"Streaming synthesis: failed to send audio_done: {e}"
+                            "Streaming synthesis: failed to send audio_done: %s", e
                         )
                     break
                 if audio_chunk:  # Skip empty chunks
@@ -481,15 +637,15 @@ async def handle_streaming_synthesis(
                         await websocket.send_bytes(audio_chunk)
                     except Exception as e:
                         logger.warning(
-                            f"Streaming synthesis: failed to send chunk: {e}"
+                            "Streaming synthesis: failed to send chunk: %s", e
                         )
                         break
         except asyncio.CancelledError:
             logger.info(
-                f"Streaming synthesis: send_audio cancelled after {chunk_count} chunks"
+                "Streaming synthesis: send_audio cancelled after %s chunks", chunk_count
             )
         except Exception as e:
-            logger.error(f"Streaming synthesis: send_audio error: {e}")
+            logger.error("Streaming synthesis: send_audio error: %s", e)
 
     send_task: asyncio.Task | None = None
     disconnected = False
@@ -502,7 +658,7 @@ async def handle_streaming_synthesis(
                 logger.info("Streaming synthesis: client disconnected")
                 break
 
-            msg_type = message.get("type", "unknown")  # type: ignore[possibly-undefined]
+            msg_type = message.get("type", "unknown")
 
             if msg_type == "websocket.disconnect":
                 logger.info("Streaming synthesis: client disconnected")
@@ -514,7 +670,8 @@ async def handle_streaming_synthesis(
                 msg_size = len(message["text"])
                 if msg_size > WS_MAX_TEXT_MESSAGE_SIZE:
                     logger.warning(
-                        f"Streaming synthesis: text message too large ({msg_size} bytes)"
+                        "Streaming synthesis: text message too large (%s bytes)",
+                        msg_size,
                     )
                     await websocket.send_json(
                         {"type": "error", "message": "Message too large"}
@@ -529,7 +686,8 @@ async def handle_streaming_synthesis(
                         # Enforce per-text size limit
                         if len(text) > WS_MAX_TTS_TEXT_LENGTH:
                             logger.warning(
-                                f"Streaming synthesis: text too long ({len(text)} chars)"
+                                "Streaming synthesis: text too long (%s chars)",
+                                len(text),
                             )
                             await websocket.send_json(
                                 {"type": "error", "message": "Text too long"}
@@ -541,9 +699,10 @@ async def handle_streaming_synthesis(
                             if send_task is None:
                                 send_task = asyncio.create_task(send_audio())
                             logger.debug(
-                                f"Streaming synthesis: forwarding text chunk ({len(text)} chars)"
+                                "Streaming synthesis: forwarding text chunk (%s chars)",
+                                len(text),
                             )
-                            await synthesizer.send_text(text)
+                            await synthesizer.send_text(strip_markdown_for_tts(text))
 
                     elif data.get("type") == "end":
                         logger.info("Streaming synthesis: end signal received")
@@ -570,13 +729,14 @@ async def handle_streaming_synthesis(
 
                 except json.JSONDecodeError:
                     logger.warning(
-                        f"Streaming synthesis: failed to parse JSON: {message.get('text', '')[:100]}"
+                        "Streaming synthesis: failed to parse JSON: %s",
+                        message.get("text", "")[:100],
                     )
 
     except WebSocketDisconnect:
         logger.debug("Streaming synthesis: client disconnected during synthesis")
     except Exception as e:
-        logger.error(f"Streaming synthesis: error: {e}", exc_info=True)
+        logger.error("Streaming synthesis: error: %s", e, exc_info=True)
     finally:
         if send_task and not send_task.done():
             logger.info("Streaming synthesis: waiting for send_task to finish")
@@ -635,7 +795,7 @@ async def handle_chunked_synthesis(
             msg_size = len(message["text"])
             if msg_size > WS_MAX_TEXT_MESSAGE_SIZE:
                 logger.warning(
-                    f"Chunked synthesis: text message too large ({msg_size} bytes)"
+                    "Chunked synthesis: text message too large (%s bytes)", msg_size
                 )
                 await websocket.send_json(
                     {"type": "error", "message": "Message too large"}
@@ -646,17 +806,18 @@ async def handle_chunked_synthesis(
                 data = json.loads(message["text"])
             except json.JSONDecodeError:
                 logger.warning(
-                    f"Chunked synthesis: failed to parse JSON: {message.get('text', '')[:100]}"
+                    "Chunked synthesis: failed to parse JSON: %s",
+                    message.get("text", "")[:100],
                 )
                 continue
 
-            msg_data_type = data.get("type")  # type: ignore[possibly-undefined]
+            msg_data_type = data.get("type")
             if msg_data_type == "synthesize":
                 text = data.get("text", "")
                 # Enforce per-text size limit
                 if len(text) > WS_MAX_TTS_TEXT_LENGTH:
                     logger.warning(
-                        f"Chunked synthesis: text too long ({len(text)} chars)"
+                        "Chunked synthesis: text too long (%s chars)", len(text)
                     )
                     await websocket.send_json(
                         {"type": "error", "message": "Text too long"}
@@ -665,7 +826,9 @@ async def handle_chunked_synthesis(
                 if text:
                     text_buffer.append(text)
                     logger.debug(
-                        f"Chunked synthesis: buffered text ({len(text)} chars), total buffered: {len(text_buffer)} chunks"
+                        "Chunked synthesis: buffered text (%s chars), total buffered: %s chunks",
+                        len(text),
+                        len(text_buffer),
                     )
                 if isinstance(data.get("voice"), str) and data["voice"]:
                     voice = data["voice"]
@@ -673,7 +836,7 @@ async def handle_chunked_synthesis(
                     speed = float(data["speed"])
             elif msg_data_type == "end":
                 logger.info("Chunked synthesis: end signal received")
-                full_text = " ".join(text_buffer).strip()
+                full_text = strip_markdown_for_tts(" ".join(text_buffer))
                 if not full_text:
                     await websocket.send_json({"type": "audio_done"})
                     logger.info("Chunked synthesis: no text, sent audio_done")
@@ -682,7 +845,7 @@ async def handle_chunked_synthesis(
                 chunk_count = 0
                 total_bytes = 0
                 logger.info(
-                    f"Chunked synthesis: sending full text ({len(full_text)} chars)"
+                    "Chunked synthesis: sending full text (%s chars)", len(full_text)
                 )
                 async for audio_chunk in provider.synthesize_stream(
                     full_text, voice=voice, speed=speed
@@ -694,13 +857,15 @@ async def handle_chunked_synthesis(
                     await websocket.send_bytes(audio_chunk)
                 await websocket.send_json({"type": "audio_done"})
                 logger.info(
-                    f"Chunked synthesis: sent audio_done after {chunk_count} chunks, {total_bytes} bytes"
+                    "Chunked synthesis: sent audio_done after %s chunks, %s bytes",
+                    chunk_count,
+                    total_bytes,
                 )
                 break
     except WebSocketDisconnect:
         logger.debug("Chunked synthesis: client disconnected")
     except Exception as e:
-        logger.error(f"Chunked synthesis: error: {e}", exc_info=True)
+        logger.error("Chunked synthesis: error: %s", e, exc_info=True)
         raise
     finally:
         logger.info("Chunked synthesis: handler finished")
@@ -730,7 +895,7 @@ async def websocket_synthesize(
         await websocket.accept()
         logger.info("WebSocket synthesize: connection accepted")
     except Exception as e:
-        logger.error(f"WebSocket synthesize: failed to accept connection: {e}")
+        logger.error("WebSocket synthesize: failed to accept connection: %s", e)
         return
 
     streaming_synthesizer: StreamingSynthesizerProtocol | None = None
@@ -765,16 +930,18 @@ async def websocket_synthesize(
                 return
 
             logger.info(
-                f"WebSocket synthesize: creating voice provider: {provider_db.provider_type}"
+                "WebSocket synthesize: creating voice provider: %s",
+                provider_db.provider_type,
             )
             try:
                 provider = get_voice_provider(provider_db)
                 logger.info(
-                    f"WebSocket synthesize: voice provider created, streaming TTS supported: {provider.supports_streaming_tts()}"
+                    "WebSocket synthesize: voice provider created, streaming TTS supported: %s",
+                    provider.supports_streaming_tts(),
                 )
             except ValueError as e:
                 logger.error(
-                    f"WebSocket synthesize: failed to create voice provider: {e}"
+                    "WebSocket synthesize: failed to create voice provider: %s", e
                 )
                 await websocket.send_json({"type": "error", "message": str(e)})
                 return
@@ -805,7 +972,8 @@ async def websocket_synthesize(
                 await handle_streaming_synthesis(websocket, streaming_synthesizer)
             except Exception as e:
                 logger.error(
-                    f"WebSocket synthesize: failed to create streaming synthesizer: {e}"
+                    "WebSocket synthesize: failed to create streaming synthesizer: %s",
+                    e,
                 )
                 if VOICE_DISABLE_STREAMING_FALLBACK:
                     await websocket.send_json(
@@ -836,7 +1004,7 @@ async def websocket_synthesize(
     except WebSocketDisconnect:
         logger.debug("WebSocket synthesize: client disconnected")
     except Exception as e:
-        logger.error(f"WebSocket synthesize: unhandled error: {e}", exc_info=True)
+        logger.error("WebSocket synthesize: unhandled error: %s", e, exc_info=True)
         try:
             # Send generic error to avoid leaking sensitive details
             await websocket.send_json(

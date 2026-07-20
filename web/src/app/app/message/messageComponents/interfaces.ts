@@ -1,11 +1,11 @@
 import { JSX } from "react";
-import { MinimalPersonaSnapshot } from "@/app/admin/agents/interfaces";
+import { MinimalAgent } from "@/lib/agents/types";
 import { Packet, StopReason } from "../../services/streamingModels";
 import { OnyxDocument, MinimalOnyxDocument } from "@/lib/search/interfaces";
-import { ProjectFile } from "../../projects/projectsService";
+import { ProjectFile } from "@/lib/projects/types";
 import { LlmDescriptor } from "@/lib/hooks";
 import { IconType } from "react-icons";
-import { OnyxIconType } from "@/components/icons/icons";
+import type { IconFunctionComponent } from "@opal/types";
 import { CitationMap } from "../../interfaces";
 import { TimelineSurfaceBackground } from "@/app/app/message/messageComponents/timeline/primitives/TimelineSurface";
 
@@ -24,7 +24,7 @@ export enum RenderType {
 export type TimelineLayout = "timeline" | "content";
 
 export interface FullChatState {
-  agent: MinimalPersonaSnapshot;
+  agent: MinimalAgent;
   // Document-related context for citations
   docs?: OnyxDocument[] | null;
   userFiles?: ProjectFile[];
@@ -33,11 +33,14 @@ export interface FullChatState {
   // Regenerate functionality
   regenerate?: (modelOverRide: LlmDescriptor) => Promise<void>;
   overriddenModel?: string;
+  /** Provider slug for `overriddenModel`, used to resolve its icon in the
+   * read-only (shared) footer where there's no `llmManager` to look it up. */
+  overriddenModelProvider?: string;
   researchType?: string | null;
 }
 
 export interface RendererResult {
-  icon: IconType | OnyxIconType | null;
+  icon: IconType | IconFunctionComponent | null;
   status: string | JSX.Element | null;
   content: JSX.Element;
 

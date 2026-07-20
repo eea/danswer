@@ -7,8 +7,8 @@ from email.mime.text import MIMEText
 from email.utils import formatdate
 from email.utils import make_msgid
 
-import sendgrid  # type: ignore
-from sendgrid.helpers.mail import Attachment  # type: ignore
+import sendgrid
+from sendgrid.helpers.mail import Attachment
 from sendgrid.helpers.mail import Content
 from sendgrid.helpers.mail import ContentId
 from sendgrid.helpers.mail import Disposition
@@ -19,12 +19,14 @@ from sendgrid.helpers.mail import FileType
 from sendgrid.helpers.mail import Mail
 from sendgrid.helpers.mail import To
 
+from onyx.configs.app_configs import EMAIL_ARCHIVE_BCC_ADDRESSES
 from onyx.configs.app_configs import EMAIL_CONFIGURED
 from onyx.configs.app_configs import EMAIL_FROM
 from onyx.configs.app_configs import SENDGRID_API_KEY
 from onyx.configs.app_configs import SMTP_PASS
 from onyx.configs.app_configs import SMTP_PORT
 from onyx.configs.app_configs import SMTP_SERVER
+from onyx.configs.app_configs import SMTP_STARTTLS
 from onyx.configs.app_configs import SMTP_USER
 from onyx.configs.app_configs import WEB_DOMAIN
 from onyx.configs.constants import AuthType
@@ -72,7 +74,7 @@ HTML_EMAIL_TEMPLATE = """\
       border: 1px solid #eaeaea;
     }}
     .header {{
-      background-color: #ffffff;
+      background-color: #000000;
       padding: 20px;
       text-align: center;
     }}
@@ -128,8 +130,8 @@ HTML_EMAIL_TEMPLATE = """\
       <td class="header">
         <img
           style="background-color: #ffffff; border-radius: 8px;"
-          src="https://www.eea.europa.eu/en/newsroom/branding-materials/eea_logo_compact_en.png/@@download/image/eea_logo_compact_en.png"
-          alt="EEA AI Hub Logo"
+          src="cid:logo.png"
+          alt="{application_name} Logo"
         >
       </td>
     </tr>
@@ -144,7 +146,8 @@ HTML_EMAIL_TEMPLATE = """\
     </tr>
     <tr>
       <td class="footer">
-        EEA AI Hub is powered by open source LLMs, and software such as Onyx, Litellm, Langfuse, vLLM, Vespa.
+        © {year} {application_name}. All rights reserved.
+        {community_link_fragment}
       </td>
     </tr>
   </table>
@@ -201,6 +204,21 @@ def send_email(
     )
 
 
+def _get_archive_bcc_addresses(user_email: str) -> tuple[str, ...]:
+    seen_addresses = {user_email.casefold()}
+    archive_bcc_addresses: list[str] = []
+
+    for bcc_address in EMAIL_ARCHIVE_BCC_ADDRESSES:
+        normalized_bcc_address = bcc_address.casefold()
+        if normalized_bcc_address in seen_addresses:
+            continue
+
+        seen_addresses.add(normalized_bcc_address)
+        archive_bcc_addresses.append(bcc_address)
+
+    return tuple(archive_bcc_addresses)
+
+
 def send_email_with_sendgrid(
     user_email: str,
     subject: str,
@@ -218,6 +236,9 @@ def send_email_with_sendgrid(
         subject=subject,
         plain_text_content=Content("text/plain", text_body),
     )
+
+    for bcc_address in _get_archive_bcc_addresses(user_email):
+        mail.add_bcc(bcc_address)
 
     # Add HTML content
     mail.add_content(Content("text/html", html_body))
@@ -242,7 +263,7 @@ def send_email_with_sendgrid(
     sg = sendgrid.SendGridAPIClient(api_key=SENDGRID_API_KEY)
     response = sg.client.mail.send.post(request_body=mail_json)  # can raise
     if response.status_code != 202:
-        logger.warning(f"Unexpected status code {response.status_code}")
+        logger.warning("Unexpected status code %s", response.status_code)
 
 
 def send_email_with_smtplib(
@@ -253,13 +274,14 @@ def send_email_with_smtplib(
     mail_from: str = EMAIL_FROM,
     inline_png: tuple[str, bytes] | None = None,
 ) -> None:
-
     # Create a multipart/alternative message - this indicates these are alternative versions of the same content
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["To"] = user_email
-    if mail_from:
-        msg["From"] = mail_from
+    archive_bcc_addresses = _get_archive_bcc_addresses(user_email)
+    if not mail_from:
+        raise ValueError("EMAIL_FROM must be set when SMTP_USER is not provided")
+    msg["From"] = mail_from
     msg["Date"] = formatdate(localtime=True)
     msg["Message-ID"] = make_msgid(domain="onyx.app")
 
@@ -289,10 +311,11 @@ def send_email_with_smtplib(
         msg.attach(html_part)
 
     with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as s:
-        if SMTP_USER is not None and SMTP_USER != '':
+        if SMTP_STARTTLS:
             s.starttls()
+        if SMTP_USER and SMTP_PASS:
             s.login(SMTP_USER, SMTP_PASS)
-        s.send_message(msg)
+        s.send_message(msg, to_addrs=[user_email, *archive_bcc_addresses])
 
 
 def send_subscription_cancellation_email(user_email: str) -> None:
@@ -308,7 +331,7 @@ def send_subscription_cancellation_email(user_email: str) -> None:
     except ModuleNotFoundError:
         application_name = ONYX_DEFAULT_APPLICATION_NAME
 
-    # onyx_file = OnyxRuntime.get_emailable_logo()
+    onyx_file = OnyxRuntime.get_emailable_logo()
 
     subject = f"Your {application_name} Subscription Has Been Canceled"
     heading = "Subscription Canceled"
@@ -336,14 +359,14 @@ def send_subscription_cancellation_email(user_email: str) -> None:
         subject,
         html_content,
         text_content,
-        # inline_png=("logo.png", onyx_file.data),
+        inline_png=("logo.png", onyx_file.data),
     )
 
 
 def build_user_email_invite(
     from_email: str, to_email: str, application_name: str, auth_type: AuthType
 ) -> tuple[str, str]:
-    heading = "You've been invited to EEA AI Hub!"
+    heading = "You've Been Invited!"
 
     # the exact action taken by the user, and thus the message, depends on the auth type
     message = f"<p>You have been invited by {from_email} to join an organization on {application_name}.</p>"
@@ -353,13 +376,7 @@ def build_user_email_invite(
             "or login with Google and complete your registration.</p>"
         )
     elif auth_type == AuthType.BASIC:
-        message += (
-            "<p>To join the EEA AI Hub, please click the button below to set a password "
-            "and complete your registration.</p>"
-        )
-        message += ("<p>The EEA AI Hub is a restricted-access application designed as a safe environment to explore the potential benefits and risks of using EEA's public content with state-of-the-art Large Language Models (LLMs). The application is for experimental purposes only, with access limited to users with EEA email addresses and selected partners. AI Hub is built with a robust privacy architecture to ensure that sensitive and personal information is not sent to third-party LLM AI providers.<br/>"
-            "See <a href='https://gptlab.eea.europa.eu/pages/privacy'>Privacy Architecture</a>.<p>")
-
+        message += "<p>To join the organization, please click the button below to set a password and complete your registration.</p>"
     elif auth_type == AuthType.GOOGLE_OAUTH:
         message += "<p>To join the organization, please click the button below to login with Google and complete your registration.</p>"
     elif auth_type == AuthType.OIDC or auth_type == AuthType.SAML:
@@ -367,7 +384,7 @@ def build_user_email_invite(
     else:
         raise ValueError(f"Invalid auth type: {auth_type}")
 
-    cta_text = "Join EEA AI Hub"
+    cta_text = "Join Organization"
     cta_link = f"{WEB_DOMAIN}/auth/signup?email={to_email}"
 
     html_content = build_html_email(
@@ -381,9 +398,8 @@ def build_user_email_invite(
     # text content is the fallback for clients that don't support HTML
     # not as critical, so not having special cases for each auth type
     text_content = (
-        f"You have been invited by {from_email} (admin) to join the EEA AI Hub..\n"
-        "The EEA AI Hub is a restricted-access application designed as a safe environment to explore the potential benefits and risks of using EEA's public content with state-of-the-art Large Language Models (LLMs). The application is for experimental purposes only, with access limited to users with EEA email addresses and selected contractors. AI Hub is built with a robust privacy architecture to ensure that sensitive and personal information is not sent to third-party LLM AI providers.\n"
-        "To join the EEA AI Hub, please visit the following link:\n"
+        f"You have been invited by {from_email} to join an organization on {application_name}.\n"
+        "To join the organization, please visit the following link:\n"
         f"{WEB_DOMAIN}/auth/signup?email={to_email}\n"
     )
     if auth_type == AuthType.CLOUD:
@@ -404,7 +420,7 @@ def send_user_email_invite(
     except ModuleNotFoundError:
         application_name = ONYX_DEFAULT_APPLICATION_NAME
 
-    # onyx_file = OnyxRuntime.get_emailable_logo()
+    onyx_file = OnyxRuntime.get_emailable_logo()
 
     subject = f"Invitation to Join {application_name} Organization"
 
@@ -417,7 +433,7 @@ def send_user_email_invite(
         subject,
         html_content,
         text_content,
-        # inline_png=("logo.png", onyx_file.data),
+        inline_png=("logo.png", onyx_file.data),
     )
 
 
@@ -437,7 +453,7 @@ def send_forgot_password_email(
     except ModuleNotFoundError:
         application_name = ONYX_DEFAULT_APPLICATION_NAME
 
-    # onyx_file = OnyxRuntime.get_emailable_logo()
+    onyx_file = OnyxRuntime.get_emailable_logo()
 
     subject = f"Reset Your {application_name} Password"
     heading = "Reset Your Password"
@@ -462,7 +478,7 @@ def send_forgot_password_email(
         html_content,
         text_content,
         mail_from,
-        # inline_png=("logo.png", onyx_file.data),
+        inline_png=("logo.png", onyx_file.data),
     )
 
 
@@ -482,7 +498,7 @@ def send_user_verification_email(
     except ModuleNotFoundError:
         application_name = ONYX_DEFAULT_APPLICATION_NAME
 
-    # onyx_file = OnyxRuntime.get_emailable_logo()
+    onyx_file = OnyxRuntime.get_emailable_logo()
 
     subject = f"{application_name} Email Verification"
     link = f"{WEB_DOMAIN}/auth/verify-email?token={token}"
@@ -503,5 +519,5 @@ def send_user_verification_email(
         html_content,
         text_content,
         mail_from,
-        # inline_png=("logo.png", onyx_file.data),
+        inline_png=("logo.png", onyx_file.data),
     )

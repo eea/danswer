@@ -1,6 +1,13 @@
 "use client";
 
-import { useState, useCallback, useMemo, useEffect, useRef } from "react";
+import {
+  useState,
+  useCallback,
+  useMemo,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+} from "react";
 import { FullChatState } from "@/app/app/message/messageComponents/interfaces";
 import { Message } from "@/app/app/interfaces";
 import { LlmManager } from "@/lib/hooks";
@@ -9,7 +16,7 @@ import MultiModelPanel from "@/app/app/message/MultiModelPanel";
 import { MultiModelResponse } from "@/app/app/message/interfaces";
 import { setPreferredResponse } from "@/app/app/services/lib";
 import { useChatSessionStore } from "@/app/app/stores/useChatSessionStore";
-import { cn } from "@/lib/utils";
+import { cn } from "@opal/utils";
 
 export interface MultiModelResponseViewProps {
   responses: MultiModelResponse[];
@@ -21,6 +28,12 @@ export interface MultiModelResponseViewProps {
   onMessageSelection?: (nodeId: number) => void;
   /** Called whenever the set of hidden panel indices changes */
   onHiddenPanelsChange?: (hidden: Set<number>) => void;
+  /**
+   * Read-only mode for the shared view: every response stays equal-width and
+   * fully visible (no selection carousel), select/hide interactions are
+   * disabled, and nothing persists. The preferred response is still marked.
+   */
+  readOnly?: boolean;
 }
 
 // How many pixels of a non-preferred panel are visible at the viewport edge
@@ -63,11 +76,15 @@ export default function MultiModelResponseView({
   otherMessagesCanSwitchTo,
   onMessageSelection,
   onHiddenPanelsChange,
+  readOnly = false,
 }: MultiModelResponseViewProps) {
-  // Initialize preferredIndex from the backend's preferred_response_id when
-  // loading an existing conversation.
+  // Initialize preferredIndex from the backend's preferred_response_id. When a
+  // preferred response is picked the backend also points latest_child at it, so
+  // this marks the response the flow continued through. A turn the user never
+  // picked from (e.g. a final multi-model turn) has no preference and stays
+  // unhighlighted.
   const [preferredIndex, setPreferredIndex] = useState<number | null>(() => {
-    if (!parentMessage?.preferredResponseId) return null;
+    if (parentMessage?.preferredResponseId == null) return null;
     const match = responses.find(
       (r) => r.messageId === parentMessage.preferredResponseId
     );
@@ -110,10 +127,26 @@ export default function MultiModelResponseView({
   // Refs to each panel wrapper for height animation on deselect
   const panelElsRef = useRef<Map<number, HTMLDivElement>>(new Map());
 
-  // Tracks which non-preferred panels overflow the preferred height cap
+  // Tracks which non-preferred panels overflow the preferred height cap.
+  // Measured via useLayoutEffect after maxHeight is applied to the DOM —
+  // ref callbacks fire before layout and can't reliably detect overflow.
   const [overflowingPanels, setOverflowingPanels] = useState<Set<number>>(
     new Set()
   );
+
+  useLayoutEffect(() => {
+    if (preferredPanelHeight == null || preferredIndex === null) return;
+    const next = new Set<number>();
+    panelElsRef.current.forEach((el, idx) => {
+      if (idx === preferredIndex || hiddenPanels.has(idx)) return;
+      if (el.scrollHeight > el.clientHeight) next.add(idx);
+    });
+    setOverflowingPanels((prev) => {
+      if (prev.size === next.size && Array.from(prev).every((v) => next.has(v)))
+        return prev;
+      return next;
+    });
+  }, [preferredPanelHeight, preferredIndex, hiddenPanels, responses]);
 
   const preferredPanelRef = useCallback((el: HTMLDivElement | null) => {
     if (preferredRoRef.current) {
@@ -210,8 +243,10 @@ export default function MultiModelResponseView({
       const response = responses.find((r) => r.modelIndex === modelIndex);
       if (!response) return;
 
-      // Persist preferred response to backend + update local tree so the
-      // input bar unblocks (awaitingPreferredSelection clears).
+      // Persist preferred response + sync `latestChildNodeId`. Backend's
+      // `set_preferred_response` updates `latest_child_message_id`; if the
+      // frontend chain walk disagrees, the next follow-up fails with
+      // "not on the latest mainline".
       if (parentMessage?.messageId && response.messageId && currentSessionId) {
         setPreferredResponse(parentMessage.messageId, response.messageId).catch(
           (err) => console.error("Failed to persist preferred response:", err)
@@ -227,6 +262,7 @@ export default function MultiModelResponseView({
             updated.set(parentMessage.nodeId, {
               ...userMsg,
               preferredResponseId: response.messageId,
+              latestChildNodeId: response.nodeId,
             });
             updateSessionMessageTree(currentSessionId, updated);
           }
@@ -357,6 +393,7 @@ export default function MultiModelResponseView({
   );
 
   const isActivelySelected =
+    !readOnly &&
     preferredIndex !== null &&
     preferredIdx !== -1 &&
     !isGenerating &&
@@ -366,10 +403,12 @@ export default function MultiModelResponseView({
     if (isActivelySelected) setHasEnteredSelection(true);
   }, [isActivelySelected]);
 
-  // Use the selection layout once a preferred response has been chosen,
-  // even after deselect. Only fall through to generation layout before
-  // the first selection or during active streaming.
-  const showSelectionMode = isActivelySelected || hasEnteredSelection;
+  // Use the selection layout once a preferred response has been chosen, even
+  // after deselect. Only fall through to generation layout before the first
+  // selection or during active streaming. The read-only (shared) view stays in
+  // generation layout so every response is shown equal-width.
+  const showSelectionMode =
+    !readOnly && (isActivelySelected || hasEnteredSelection);
 
   // Trigger the slide-out animation one frame after a preferred panel is selected.
   // Uses isActivelySelected (not showSelectionMode) so re-selecting after a
@@ -392,6 +431,7 @@ export default function MultiModelResponseView({
       isPreferred: preferredIndex === response.modelIndex,
       isHidden: hiddenPanels.has(response.modelIndex),
       isNonPreferredInSelection: isNonPreferred,
+      readOnly,
       onSelect: () => handleSelectPreferred(response.modelIndex),
       onDeselect: handleDeselectPreferred,
       onToggleVisibility: () => toggleVisibility(response.modelIndex),
@@ -413,10 +453,12 @@ export default function MultiModelResponseView({
       isRetryable: response.isRetryable,
       errorStackTrace: response.errorStackTrace,
       errorDetails: response.errorDetails,
+      isGenerating,
     }),
     [
       preferredIndex,
       hiddenPanels,
+      readOnly,
       handleSelectPreferred,
       handleDeselectPreferred,
       toggleVisibility,
@@ -426,6 +468,7 @@ export default function MultiModelResponseView({
       onMessageSelection,
       onRegenerate,
       parentMessage,
+      isGenerating,
     ]
   );
 
@@ -512,17 +555,6 @@ export default function MultiModelResponseView({
                     panelElsRef.current.delete(r.modelIndex);
                   }
                   if (isPref) preferredPanelRef(el);
-                  if (capped && el) {
-                    const doesOverflow = el.scrollHeight > el.clientHeight;
-                    setOverflowingPanels((prev) => {
-                      const had = prev.has(r.modelIndex);
-                      if (doesOverflow === had) return prev;
-                      const next = new Set(prev);
-                      if (doesOverflow) next.add(r.modelIndex);
-                      else next.delete(r.modelIndex);
-                      return next;
-                    });
-                  }
                 }}
                 style={{
                   width: `${selectionEntered ? finalW : startW}px`,
@@ -533,21 +565,19 @@ export default function MultiModelResponseView({
                       : "none",
                   maxHeight: capped ? preferredPanelHeight : undefined,
                   overflow: capped ? "hidden" : undefined,
-                  position: capped ? "relative" : undefined,
+                  ...(overflows
+                    ? {
+                        maskImage:
+                          "linear-gradient(to bottom, black calc(100% - 6rem), transparent 100%)",
+                        WebkitMaskImage:
+                          "linear-gradient(to bottom, black calc(100% - 6rem), transparent 100%)",
+                      }
+                    : {}),
                 }}
               >
                 <div className={cn(isNonPref && "opacity-50")}>
                   <MultiModelPanel {...buildPanelProps(r, isNonPref)} />
                 </div>
-                {overflows && (
-                  <div
-                    className="absolute inset-x-0 bottom-0 h-24 pointer-events-none"
-                    style={{
-                      background:
-                        "linear-gradient(to top, var(--background-tint-01) 0%, transparent 100%)",
-                    }}
-                  />
-                )}
               </div>
             );
           })}

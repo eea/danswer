@@ -17,11 +17,11 @@ from uuid import uuid4
 from celery import Celery
 from celery import shared_task
 from celery import Task
-from redis import Redis
 from redis.lock import Lock as RedisLock
 from sqlalchemy.orm import Session
 
 from onyx.background.celery.apps.app_base import task_logger
+from onyx.background.celery.tasks.beat_schedule import BEAT_EXPIRES_DEFAULT
 from onyx.configs.constants import CELERY_GENERIC_BEAT_LOCK_TIMEOUT
 from onyx.configs.constants import DANSWER_REDIS_FUNCTION_LOCK_PREFIX
 from onyx.configs.constants import DocumentSource
@@ -49,6 +49,7 @@ from onyx.redis.redis_hierarchy import cache_hierarchy_nodes_batch
 from onyx.redis.redis_hierarchy import ensure_source_node_exists
 from onyx.redis.redis_hierarchy import HierarchyNodeCacheEntry
 from onyx.redis.redis_pool import get_redis_client
+from onyx.redis.tenant_redis_client import TenantRedisClient
 from onyx.utils.logger import setup_logger
 
 logger = setup_logger()
@@ -105,7 +106,7 @@ def _try_creating_hierarchy_fetching_task(
     celery_app: Celery,
     cc_pair: ConnectorCredentialPair,
     db_session: Session,
-    r: Redis,
+    r: TenantRedisClient,
     tenant_id: str,
 ) -> str | None:
     """Try to create a hierarchy fetching task for a connector.
@@ -143,6 +144,10 @@ def _try_creating_hierarchy_fetching_task(
             queue=OnyxCeleryQueues.CONNECTOR_HIERARCHY_FETCHING,
             task_id=custom_task_id,
             priority=OnyxCeleryPriority.LOW,
+            # Unexpired fan-out tasks accumulate forever if consumption stalls
+            # (a deployment with no worker on this queue collected 67k+ of
+            # these); the hourly check re-enqueues anything still due.
+            expires=BEAT_EXPIRES_DEFAULT,
         )
 
         if not result:

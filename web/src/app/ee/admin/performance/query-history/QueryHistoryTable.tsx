@@ -1,4 +1,3 @@
-import Separator from "@/refresh-components/Separator";
 import {
   Table,
   TableHead,
@@ -9,7 +8,7 @@ import {
 } from "@/components/ui/table";
 import Text from "@/refresh-components/texts/Text";
 import InputSelect from "@/refresh-components/inputs/InputSelect";
-import { ThreeDotsLoader } from "@/components/Loading";
+import SvgSimpleLoader from "@opal/icons/simple-loader";
 import { ChatSessionMinimal } from "@/app/ee/admin/performance/usage/types";
 import { Section } from "@/layouts/general-layouts";
 import { timestampToReadableDate } from "@/lib/dateUtils";
@@ -39,9 +38,9 @@ import {
   PAGES_PER_BATCH,
   PREVIOUS_CSV_TASK_BUTTON_NAME,
 } from "@/app/ee/admin/performance/query-history/constants";
-import { humanReadableFormatWithTime } from "@/lib/time";
+import { humanReadableFormatWithTime } from "@opal/time";
 import Modal from "@/refresh-components/Modal";
-import { Button } from "@opal/components";
+import { Button, Divider } from "@opal/components";
 import { Badge } from "@/components/ui/badge";
 import {
   SvgDownloadCloud,
@@ -61,7 +60,7 @@ function QueryHistoryTableRow({
       key={chatSessionMinimal.id}
       className="hover:bg-accent-background cursor-pointer relative select-none"
     >
-      <TableCell>
+      <TableCell className="max-w-xs">
         <Text className="whitespace-normal line-clamp-5">
           {chatSessionMinimal.first_user_message ||
             chatSessionMinimal.name ||
@@ -329,7 +328,7 @@ export function QueryHistoryTable() {
             </Button>
           </div>
         </div>
-        <Separator />
+        <Divider />
         <Section>
           <Table className="mt-5">
             <TableHeader>
@@ -346,7 +345,9 @@ export function QueryHistoryTable() {
               <TableBody>
                 <TableRow>
                   <TableCell colSpan={6} className="text-center">
-                    <ThreeDotsLoader />
+                    <div className="flex justify-center">
+                      <SvgSimpleLoader className="h-6 w-6" />
+                    </div>
                   </TableCell>
                 </TableRow>
               </TableBody>

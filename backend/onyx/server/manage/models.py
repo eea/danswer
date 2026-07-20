@@ -11,10 +11,10 @@ from pydantic import field_validator
 from pydantic import model_validator
 
 from onyx.auth.schemas import UserRole
-from onyx.configs.app_configs import TRACK_EXTERNAL_IDP_EXPIRY
 from onyx.configs.constants import AuthType
 from onyx.context.search.models import SavedSearchSettings
 from onyx.db.enums import DefaultAppMode
+from onyx.db.enums import SupportedLanguage
 from onyx.db.enums import ThemePreference
 from onyx.db.memory import MAX_MEMORIES_PER_USER
 from onyx.db.models import AllowedAnswerFilters
@@ -29,7 +29,6 @@ from onyx.server.features.persona.models import FullPersonaSnapshot
 from onyx.server.features.persona.models import PersonaSnapshot
 from onyx.server.models import FullUserSnapshot
 from onyx.server.models import InvitedUserSnapshot
-
 
 if TYPE_CHECKING:
     pass
@@ -82,8 +81,12 @@ class UserPreferences(BaseModel):
     auto_scroll: bool | None = None
     temperature_override_enabled: bool | None = None
     theme_preference: ThemePreference | None = None
+    language: str | None = None
     chat_background: str | None = None
     default_app_mode: DefaultAppMode = DefaultAppMode.CHAT
+
+    # Input preferences
+    paste_as_tile: bool | None = None
 
     # Voice preferences
     voice_auto_send: bool | None = None
@@ -140,6 +143,8 @@ class UserInfo(BaseModel):
     def from_model(
         cls,
         user: User,
+        *,
+        track_external_idp_expiry: bool,
         current_token_created_at: datetime | None = None,
         expiry_length: int | None = None,
         is_cloud_superuser: bool = False,
@@ -168,8 +173,10 @@ class UserInfo(BaseModel):
                     auto_scroll=user.auto_scroll,
                     temperature_override_enabled=user.temperature_override_enabled,
                     theme_preference=user.theme_preference,
+                    language=user.language,
                     chat_background=user.chat_background,
                     default_app_mode=user.default_app_mode,
+                    paste_as_tile=user.paste_as_tile,
                     voice_auto_send=user.voice_auto_send,
                     voice_auto_playback=user.voice_auto_playback,
                     voice_playback_speed=user.voice_playback_speed,
@@ -177,11 +184,11 @@ class UserInfo(BaseModel):
                 )
             ),
             team_name=team_name,
-            # set to None if TRACK_EXTERNAL_IDP_EXPIRY is False so that we avoid cases
+            # set to None if track_external_idp_expiry is False so that we avoid cases
             # where they previously had this set + used OIDC, and now they switched to
             # basic auth are now constantly getting redirected back to the login page
             # since their "oidc_expiry is old"
-            oidc_expiry=user.oidc_expiry if TRACK_EXTERNAL_IDP_EXPIRY else None,
+            oidc_expiry=user.oidc_expiry if track_external_idp_expiry else None,
             current_token_created_at=current_token_created_at,
             current_token_expiry_length=expiry_length,
             is_cloud_superuser=is_cloud_superuser,
@@ -236,6 +243,10 @@ class AutoScrollRequest(BaseModel):
 
 class ThemePreferenceRequest(BaseModel):
     theme_preference: ThemePreference
+
+
+class LanguageRequest(BaseModel):
+    language: SupportedLanguage
 
 
 class DefaultAppModeRequest(BaseModel):

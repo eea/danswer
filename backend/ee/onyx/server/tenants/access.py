@@ -1,5 +1,6 @@
 from datetime import datetime
 from datetime import timedelta
+from datetime import timezone
 
 import jwt
 from fastapi import HTTPException
@@ -14,13 +15,13 @@ logger = setup_logger()
 
 
 def generate_data_plane_token() -> str:
-    if DATA_PLANE_SECRET is None:
+    if not DATA_PLANE_SECRET:
         raise ValueError("DATA_PLANE_SECRET is not set")
 
     payload = {
         "iss": "data_plane",
-        "exp": datetime.utcnow() + timedelta(minutes=5),
-        "iat": datetime.utcnow(),
+        "exp": datetime.now(tz=timezone.utc) + timedelta(minutes=5),
+        "iat": datetime.now(tz=timezone.utc),
         "scope": "api_access",
     }
 

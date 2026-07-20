@@ -9,6 +9,10 @@ metadata:
     {{- end }}
 spec:
   replicas: {{ .Values.inferenceCapability.replicaCount }}
+  {{- with .Values.inferenceCapability.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   selector:
     matchLabels:
       {{- range .Values.inferenceCapability.labels }}
@@ -18,18 +22,11 @@ spec:
     metadata:
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
-        {{- $pgIntoChecksum := include "onyx.pgInto.checksumAnnotation" . }}
-        {{- if $pgIntoChecksum }}
-        {{- $pgIntoChecksum | nindent 8 }}
-        {{- end }}
       labels:
         {{- range .Values.inferenceCapability.podLabels }}
         {{ .key }}: {{ .value }}
         {{- end }}
     spec:
-      {{- if .Values.inferenceCapability.runtimeClassName }}
-      runtimeClassName: {{ .Values.inferenceCapability.runtimeClassName }}
-      {{- end }}
       {{- if .Values.inferenceCapability.podSecurityContext }}
       securityContext:
         {{- toYaml .Values.inferenceCapability.podSecurityContext | nindent 8 }}
@@ -37,14 +34,6 @@ spec:
       {{- with .Values.inferenceCapability.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- $modelRepo := .Values.global.image.repository }}
-      {{- if and .Values.inferenceCapability.image .Values.inferenceCapability.image.repository }}
-        {{- $modelRepo = .Values.inferenceCapability.image.repository }}
-      {{- end }}
-      {{- $modelTag := default .Values.global.image.tags.modelServer (printf "model_server-%s" .Values.global.version) }}
-      {{- if and .Values.inferenceCapability.image .Values.inferenceCapability.image.tag }}
-        {{- $modelTag = .Values.inferenceCapability.image.tag }}
       {{- end }}
       {{- with .Values.inferenceCapability.affinity }}
       affinity:
@@ -56,9 +45,9 @@ spec:
       {{- end }}
       containers:
       - name: model-server-inference
-        image: "{{ $modelRepo }}:{{ $modelTag }}"
+        image: "{{ .Values.inferenceCapability.image.repository }}:{{ .Values.inferenceCapability.image.tag | default .Values.global.version }}"
         imagePullPolicy: {{ .Values.global.pullPolicy }}
-        command: [ "uvicorn", "model_server.main:app", "--host", {{ .Values.global.host }}, "--port", "{{ .Values.inferenceCapability.containerPorts.server }}" ]
+        command: [ {{ include "onyx.customCACerts.commandPrefix" . }}"uvicorn", "model_server.main:app", "--host", "{{ .Values.global.host }}", "--port", "{{ .Values.inferenceCapability.containerPorts.server }}" ]
         ports:
         - name: model-server
           containerPort: {{ .Values.inferenceCapability.containerPorts.server }}
@@ -67,11 +56,13 @@ spec:
         - configMapRef:
             name: {{ .Values.config.envConfigMapName }}
         env:
-          {{- if .Values.inferenceCapability.huggingfaceCacheDir }}
-          - name: HF_HOME
-            value: "{{ .Values.inferenceCapability.huggingfaceCacheDir }}"
+          {{- include "onyx.envSecrets" . | nindent 12}}
+          {{- with include "onyx.customCACerts.env" . }}
+          {{- . | nindent 12 }}
           {{- end }}
-          {{- include "onyx.envSecrets" . | nindent 10 }}
+          {{- with .Values.inferenceCapability.extraEnv }}
+          {{- toYaml . | nindent 12 }}
+          {{- end }}
         {{- if .Values.inferenceCapability.securityContext }}
         securityContext:
           {{- toYaml .Values.inferenceCapability.securityContext | nindent 10 }}
@@ -92,12 +83,10 @@ spec:
         livenessProbe:
           {{- toYaml . | nindent 10 }}
         {{- end }}
-        {{- $modelVolumeMounts := include "onyx.renderVolumeMounts" (dict "ctx" . "volumeMounts" .Values.inferenceCapability.volumeMounts) }}
-        {{- if $modelVolumeMounts }}
-        {{- $modelVolumeMounts | nindent 8 }}
+        {{- with include "onyx.volumeMountsWithCA" (dict "ctx" . "volumeMounts" .Values.inferenceCapability.volumeMounts) }}
+        {{- . | nindent 8 }}
         {{- end }}
-      {{- $modelVolumes := include "onyx.renderVolumes" (dict "ctx" . "volumes" .Values.inferenceCapability.volumes) }}
-      {{- if $modelVolumes }}
-      {{- $modelVolumes | nindent 6 }}
+      {{- with include "onyx.volumesWithCA" (dict "ctx" . "volumes" .Values.inferenceCapability.volumes) }}
+      {{- . | nindent 6 }}
       {{- end }}
 {{- end }}

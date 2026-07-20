@@ -6,6 +6,8 @@ from typing import Optional
 import braintrust
 from braintrust import NOOP_SPAN
 
+from onyx.llm.cost import calculate_llm_cost_cents
+
 from .framework.processor_interface import TracingProcessor
 from .framework.span_data import AgentSpanData
 from .framework.span_data import FunctionSpanData
@@ -13,7 +15,6 @@ from .framework.span_data import GenerationSpanData
 from .framework.span_data import SpanData
 from .framework.spans import Span
 from .framework.traces import Trace
-from onyx.llm.cost import calculate_llm_cost_cents
 
 
 def _span_type(span: Span[Any]) -> braintrust.SpanTypeAttribute:
@@ -180,6 +181,11 @@ class BraintrustTracingProcessor(TracingProcessor):
         # Include reasoning in metadata if present
         if span.span_data.reasoning:
             metadata["reasoning"] = span.span_data.reasoning
+
+        # Include the full tool catalog (name, description, parameters) offered
+        # to the model on this call, if any.
+        if span.span_data.tools:
+            metadata["tools"] = span.span_data.tools
 
         return {
             "input": span.span_data.input,

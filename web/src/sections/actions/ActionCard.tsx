@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import ActionCardHeader from "@/sections/actions/ActionCardHeader";
 import ToolsSection from "@/sections/actions/ToolsSection";
-import { cn } from "@/lib/utils";
+import { cn } from "@opal/utils";
 import { ActionStatus } from "@/lib/tools/interfaces";
 import type { IconProps } from "@opal/types";
 import { SvgServer } from "@opal/icons";
@@ -112,7 +112,7 @@ export default function ActionCard({
           backgroundColor,
           "border border-border-01 rounded-16",
           "transition-shadow duration-200",
-          isHovered && "shadow-00",
+          isHovered && "shadow-box-00",
           className
         )}
         role="article"

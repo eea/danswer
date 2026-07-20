@@ -16,6 +16,7 @@ from onyx.tools.interface import Tool
 from onyx.tools.models import CustomToolCallSummary
 from onyx.tools.models import ToolResponse
 from onyx.tools.tool_implementations.mcp.mcp_client import call_mcp_tool
+from onyx.tools.tool_name import sanitize_tool_name
 from onyx.utils.logger import setup_logger
 
 logger = setup_logger()
@@ -34,6 +35,18 @@ DENYLISTED_MCP_HEADERS = {
 #     server_url: str
 #     tool_result: Any
 #     server_name: str
+
+
+def _normalize_parameters_schema(schema: dict[str, Any] | None) -> dict[str, Any]:
+    # Azure OpenAI rejects object schemas that omit `properties` with
+    # "object schema missing properties". MCP servers (e.g. AWS Knowledge MCP's
+    # aws___list_regions) may legally return `{"type": "object"}` with no
+    # properties for zero-arg tools, so seed `properties: {}` ourselves.
+    if not schema:
+        return {"type": "object", "properties": {}}
+    if schema.get("type", "object") == "object" and "properties" not in schema:
+        return {**schema, "type": "object", "properties": {}}
+    return schema
 
 
 class MCPTool(Tool[None]):
@@ -63,11 +76,12 @@ class MCPTool(Tool[None]):
         self._user_oauth_token = user_oauth_token
         self._additional_headers = additional_headers or {}
 
-        self._name = tool_name
+        self._mcp_tool_name = tool_name
+        self._name = tool_name  # NOTE: this may change in _disambiguate_mcp_tool_names
         self._tool_definition = tool_definition
         self._description = tool_description
         self._display_name = tool_definition.get("displayName", tool_name)
-        self._llm_name = f"mcp:{mcp_server.name}:{tool_name}"
+        self._llm_name = sanitize_tool_name(f"mcp_{mcp_server.name}_{tool_name}")
 
     @property
     def id(self) -> int:
@@ -85,9 +99,8 @@ class MCPTool(Tool[None]):
     def display_name(self) -> str:
         return self._display_name
 
-    @property
-    def llm_name(self) -> str:
-        return self._llm_name
+    def use_disambiguated_name(self) -> None:
+        self._name = self._llm_name
 
     def tool_definition(self) -> dict:
         """Return the tool definition from the MCP server"""
@@ -97,7 +110,7 @@ class MCPTool(Tool[None]):
             "function": {
                 "name": self._name,
                 "description": self._description,
-                "parameters": self._tool_definition,
+                "parameters": _normalize_parameters_schema(self._tool_definition),
             },
         }
 
@@ -141,7 +154,9 @@ class MCPTool(Tool[None]):
                 ]
                 if denylisted_provided:
                     logger.warning(
-                        f"MCP tool '{self._name}' received denylisted headers that were filtered: {denylisted_provided}"
+                        "MCP tool '%s' received denylisted headers that were filtered: %s",
+                        self._name,
+                        denylisted_provided,
                     )
 
             # Priority 2: Base headers from connection config (DB) - overrides request
@@ -175,7 +190,8 @@ class MCPTool(Tool[None]):
                     f"using this tool."
                 )
                 logger.warning(
-                    f"Authentication required for MCP tool '{self._name}' but no credentials found"
+                    "Authentication required for MCP tool '%s' but no credentials found",
+                    self._name,
                 )
 
                 error_result = {"error": auth_error_msg}
@@ -212,13 +228,12 @@ class MCPTool(Tool[None]):
             ):
                 if self.mcp_server.transport == MCPTransport.SSE:
                     logger.warning(
-                        f"MCP tool '{self._name}': OAuth token refresh is not supported "
-                        f"for SSE transport — auth provider will be ignored. "
-                        f"Re-authentication may be required after token expiry."
+                        "MCP tool '%s': OAuth token refresh is not supported for SSE transport — auth provider will be ignored. Re-authentication may be required after token expiry.",
+                        self._name,
                     )
                 else:
-                    from onyx.server.features.mcp.api import UNUSED_RETURN_PATH
                     from onyx.server.features.mcp.api import make_oauth_provider
+                    from onyx.server.features.mcp.api import UNUSED_RETURN_PATH
 
                     # user_id is the requesting user's UUID; safe here because
                     # UNUSED_RETURN_PATH ensures redirect_handler raises immediately
@@ -233,14 +248,14 @@ class MCPTool(Tool[None]):
 
             tool_result = call_mcp_tool(
                 self.mcp_server.server_url,
-                self._name,
+                self._mcp_tool_name,
                 llm_kwargs,
                 connection_headers=headers,
                 transport=self.mcp_server.transport or MCPTransport.STREAMABLE_HTTP,
                 auth=auth,
             )
 
-            logger.info(f"MCP tool '{self._name}' executed successfully")
+            logger.info("MCP tool '%s' executed successfully", self._name)
 
             # Format the tool result for response
             tool_result_dict = {"tool_result": tool_result}
@@ -269,7 +284,7 @@ class MCPTool(Tool[None]):
 
         except Exception as e:
             error_str = str(e).lower()
-            logger.error(f"Failed to execute MCP tool '{self._name}': {e}")
+            logger.error("Failed to execute MCP tool '%s': %s", self._name, e)
 
             # Check for authentication-related errors
             auth_error_indicators = [

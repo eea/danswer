@@ -1,17 +1,18 @@
 "use client";
 
-import React, { useContext } from "react";
-import { SettingsContext } from "@/providers/SettingsProvider";
+import React from "react";
+import { useSettings } from "@/lib/settings/hooks";
 import Text from "@/refresh-components/texts/Text";
 
 export default function LoginText() {
-  const settings = useContext(SettingsContext);
+  const { appName } = useSettings();
   return (
     <div className="w-full flex flex-col ">
       <Text as="p" headingH2 text05>
-        Log In to{" "}
-        {(settings && settings?.enterpriseSettings?.application_name) ||
-          "AI Hub"}
+        Welcome to {appName}
+      </Text>
+      <Text as="p" text03 mainUiMuted>
+        Your open source AI platform for work
       </Text>
     </div>
   );

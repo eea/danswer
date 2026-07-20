@@ -7,13 +7,14 @@ from contextlib import contextmanager
 from typing import Any
 from typing import TYPE_CHECKING
 
+from onyx.utils.logger import setup_logger
+
 from .setup import get_trace_provider
 from .span_data import AgentSpanData
 from .span_data import FunctionSpanData
 from .span_data import GenerationSpanData
 from .spans import Span
 from .traces import Trace
-from onyx.utils.logger import setup_logger
 
 if TYPE_CHECKING:
     pass
@@ -181,6 +182,7 @@ def generation_span(
     model_config: Mapping[str, Any] | None = None,
     usage: dict[str, Any] | None = None,
     time_to_first_action_seconds: float | None = None,
+    tools: Sequence[Mapping[str, Any]] | None = None,
     span_id: str | None = None,
     parent: Trace | Span[Any] | None = None,
     disabled: bool = False,
@@ -201,6 +203,7 @@ def generation_span(
         model_config: The model configuration (hyperparameters) used.
         usage: A dictionary of usage information (input tokens, output tokens, etc.).
         time_to_first_action_seconds: Time elapsed before the first model action is observed.
+        tools: The full tool schemas (name, description, parameters) offered to the model on this call.
         span_id: The ID of the span. Optional. If not provided, we will generate an ID. We
             recommend using `util.gen_span_id()` to generate a span ID, to guarantee that IDs are
             correctly formatted.
@@ -220,6 +223,7 @@ def generation_span(
             model_config=model_config,
             usage=usage,
             time_to_first_action_seconds=time_to_first_action_seconds,
+            tools=tools,
         ),
         span_id=span_id,
         parent=parent,
