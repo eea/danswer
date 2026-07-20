@@ -4196,6 +4196,7 @@ dependencies = [
     { name = "python-json-logger" },
     { name = "sentry-sdk" },
     { name = "tenacity" },
+    { name = "ultimate-sitemap-parser" },
     { name = "uvicorn" },
     { name = "voyageai" },
 ]
@@ -4367,6 +4368,7 @@ requires-dist = [
     { name = "python-json-logger", specifier = "==4.1.0" },
     { name = "sentry-sdk", specifier = "==2.14.0" },
     { name = "tenacity", specifier = "==9.1.2" },
+    { name = "ultimate-sitemap-parser", specifier = ">=1.8.1" },
     { name = "uvicorn", specifier = "==0.49.0" },
     { name = "voyageai", specifier = "==0.2.3" },
 ]
@@ -7347,6 +7349,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/8b/2e/c14812d3d4d9cd1773c6be938f89e5735a1f11a9f184ac3639b93cef35d5/tzlocal-5.3.1.tar.gz", hash = "sha256:cceffc7edecefea1f595541dbd6e990cb1ea3d19bf01b2809f362a03dd7921fd", size = 30761, upload-time = "2025-03-05T21:17:41.549Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c2/14/e2a54fabd4f08cd7af1c07030603c3356b74da07f7cc056e600436edfa17/tzlocal-5.3.1-py3-none-any.whl", hash = "sha256:eb1a66c3ef5847adf7a834f1be0800581b683b5608e74f86ecbcef8ab91bb85d", size = 18026, upload-time = "2025-03-05T21:17:39.857Z" },
+]
+
+[[package]]
+name = "ultimate-sitemap-parser"
+version = "1.8.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "python-dateutil" },
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c3/95/4b4bfd9bc572fdfd5c0ff70c85cd1b220181aaa6eb7cc70a0d2255444c10/ultimate_sitemap_parser-1.8.1.tar.gz", hash = "sha256:6cf5ae0cfd83a2af5650402fc0ec462c83ac7558ef781fba9c012d1db123344f", size = 39859, upload-time = "2026-06-16T10:36:52.117Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c7/bc/a34d6033f30bef4cdefe8597106ea375479a2006631042ce28e4f2133522/ultimate_sitemap_parser-1.8.1-py3-none-any.whl", hash = "sha256:7fe9347983ca9ca1f8960e7d5bf08cb49679b20d32532a9c7843e20fe31c0840", size = 44610, upload-time = "2026-06-16T10:36:50.783Z" },
 ]
 
 [[package]]

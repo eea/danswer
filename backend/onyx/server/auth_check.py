@@ -32,6 +32,8 @@ PUBLIC_ENDPOINT_SPECS = [
     ("/auth/type", {"GET"}),
     # just gets the version of Onyx (e.g. 0.3.11)
     ("/version", {"GET"}),
+    # EEA config is needed on login page before user is authenticated
+    ("/eea_config/get_eea_config", {"GET"}),
     # Gets stable and beta versions for Onyx docker images
     ("/versions", {"GET"}),
     # stuff related to basic auth

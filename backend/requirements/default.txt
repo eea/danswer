@@ -3478,3 +3478,6 @@ zstandard==0.25.0 \
 zulip==0.8.2 \
     --hash=sha256:22ba357f55c538120eef02781faeb46a256aad4f7a1b5419889f765766cda0a5 \
     --hash=sha256:7e3d5097feb22e912dda187cdabdebf5b2022cba95b32a43793e27abe9c52e6f
+ultimate-sitemap-parser==0.5 \
+    --hash=sha256:806e723eeb0293c38e111822d651e987b1494ae9c08be82e73172ade667418a6 \
+    --hash=sha256:9825fefcdf515e2748addc7ec5dcdb6430dfdd4ef5de4a54e39de1e7613d0ece
