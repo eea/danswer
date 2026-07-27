@@ -13,6 +13,7 @@ from sentry_sdk.integrations.fastapi import FastApiIntegration
 from sentry_sdk.integrations.starlette import StarletteIntegration
 from transformers import logging as transformer_logging
 
+from model_server import eea_hf_cache
 from model_server.encoders import router as encoders_router
 from model_server.management_endpoints import router as management_router
 from model_server.utils import get_cgroup_cpu_limit
@@ -73,6 +74,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     logger.notice("Torch GPU Detection: gpu_type=%s", gpu_type)
 
     app.state.gpu_type = gpu_type
+
+    eea_hf_cache.check_hf_cache_populated()
 
     try:
         if TEMP_HF_CACHE_PATH.is_dir():

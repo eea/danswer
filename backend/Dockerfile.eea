@@ -1,0 +1,30 @@
+# EEA overlay for backend/Dockerfile. Kept as a separate file (rather than editing
+# backend/Dockerfile in place) so upstream `fix(sync)` merges never have a reason to
+# touch this layer - see plans/hf-cache-eea-overlay.md.
+#
+# Build as a second step on top of the (untouched) upstream image:
+#   docker build -f backend/Dockerfile -t onyx-backend-base:local .
+#   docker build -f backend/Dockerfile.eea --build-arg BASE_IMAGE=onyx-backend-base:local \
+#     -t eeacms/danswer:<tag> .
+#
+# The prod Helm chart's `hfCache` init container (see
+# onyx-stack/templates/_helpers.tpl: onyx.hfCache.initContainer) copies whatever is
+# baked into the image at HF_HOME into a writable emptyDir at the same path before
+# the main container starts - so all this needs to do is bake the tokenizer into
+# HF_HOME at build time.
+ARG BASE_IMAGE=onyx-backend-base:local
+FROM ${BASE_IMAGE}
+
+ENV HF_HOME="/usr/share/huggingface" \
+    HF_HUB_OFFLINE="1"
+
+# HF_HUB_OFFLINE=0 override: the ENV above intentionally forces offline mode for the
+# running container, but this build step needs network access to populate the cache
+# it enables offline mode for.
+RUN mkdir -p "$HF_HOME" && \
+    HF_HUB_OFFLINE=0 python -c "from tokenizers import Tokenizer; \
+Tokenizer.from_pretrained('nomic-ai/nomic-embed-text-v1')"
+
+# Fail the build (not a prod pod at 3am) if the offline load doesn't actually work.
+RUN python -c "from tokenizers import Tokenizer; \
+Tokenizer.from_pretrained('nomic-ai/nomic-embed-text-v1')"
