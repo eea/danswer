@@ -67,3 +67,13 @@ plans/
 .claude/scheduled_tasks.lock
 .claude/worktrees/
 !.claude/settings.json
+
+# Local tool state/caches (CKB, opencode, Serena, Python build output)
+.ckb/
+.opencode/
+.serena/
+build/
+openspec/
+
+# Local-only deployment helper scripts
+deployment/helm/scripts/
