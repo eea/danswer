@@ -9,26 +9,34 @@
 #     --build-arg BASE_IMAGE=onyx-model-server-base:local \
 #     -t eeacms/danswer-model-server:<tag> .
 #
-# The prod Helm chart's `hfCache` init container (see
+# The prod Helm chart's `hfCache`/`tiktokenCache` init container (see
 # onyx-stack/templates/_helpers.tpl: onyx.hfCache.initContainer) copies whatever is
-# baked into the image at HF_HOME into a writable emptyDir at the same path before
-# the main container starts - so all this needs to do is bake the embedding model
-# into HF_HOME at build time. The base image bakes its own copy into
-# /app/.cache/huggingface (unused once HF_HOME points elsewhere here) - that's
-# harmless dead weight from the untouched upstream Dockerfile, not something this
-# overlay needs to clean up.
+# baked into the image at HF_HOME/TIKTOKEN_CACHE_DIR into writable emptyDirs at the
+# same paths before the main container starts - so all this needs to do is bake the
+# embedding model and the tiktoken encoding into those paths at build time. The base
+# image bakes its own HF copy into /app/.cache/huggingface (unused once HF_HOME
+# points elsewhere here) - that's harmless dead weight from the untouched upstream
+# Dockerfile, not something this overlay needs to clean up.
+#
+# tiktoken isn't directly imported by model_server code today (only reachable via a
+# lazy `from litellm.exceptions import RateLimitError` in encoders.py), but it's a
+# transitive dependency (requirements/model_server.txt, via litellm) and has no
+# forced-offline flag - baking it here is cheap insurance against any future/hidden
+# code path hitting a blocked openaipublic.blob.core.windows.net download.
 ARG BASE_IMAGE=onyx-model-server-base:local
 FROM ${BASE_IMAGE}
 
 ENV HF_HOME="/usr/share/huggingface" \
-    HF_HUB_OFFLINE="1"
+    HF_HUB_OFFLINE="1" \
+    TIKTOKEN_CACHE_DIR="/usr/share/tiktoken_cache"
 
 # HF_HUB_OFFLINE=0 override: the ENV above intentionally forces offline mode for the
 # running container, but this build step needs network access to populate the cache
 # it enables offline mode for.
-RUN mkdir -p "$HF_HOME" && \
+RUN mkdir -p "$HF_HOME" "$TIKTOKEN_CACHE_DIR" && \
     HF_HUB_OFFLINE=0 python -c "from sentence_transformers import SentenceTransformer; \
-SentenceTransformer(model_name_or_path='nomic-ai/nomic-embed-text-v1', trust_remote_code=True);"
+SentenceTransformer(model_name_or_path='nomic-ai/nomic-embed-text-v1', trust_remote_code=True);" && \
+    python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')"
 
 # Fail the build (not a prod pod at 3am) if the offline load doesn't actually work.
 RUN python -c "from sentence_transformers import SentenceTransformer; \

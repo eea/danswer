@@ -7,24 +7,36 @@
 #   docker build -f backend/Dockerfile.eea --build-arg BASE_IMAGE=onyx-backend-base:local \
 #     -t eeacms/danswer:<tag> .
 #
-# The prod Helm chart's `hfCache` init container (see
+# The prod Helm chart's `hfCache`/`tiktokenCache` init container (see
 # onyx-stack/templates/_helpers.tpl: onyx.hfCache.initContainer) copies whatever is
-# baked into the image at HF_HOME into a writable emptyDir at the same path before
-# the main container starts - so all this needs to do is bake the tokenizer into
-# HF_HOME at build time.
+# baked into the image at HF_HOME/TIKTOKEN_CACHE_DIR into writable emptyDirs at the
+# same paths before the main container starts - so all this needs to do is bake the
+# tokenizer and the tiktoken encoding into those paths at build time.
+#
+# The tiktoken bake matters independently of HF: unlike HF_HUB_OFFLINE, tiktoken has
+# no forced-offline flag, so it always tries a live download on a cache miss - but
+# openaipublic.blob.core.windows.net (its only download source) isn't allowlisted in
+# the network policy egress rules, so an empty cache at TIKTOKEN_CACHE_DIR means a
+# hard DNS-resolution failure on the first token-counting call
+# (onyx/llm/utils.py, onyx/natural_language_processing/utils.py - both used for LLM
+# token counting on the chat path).
 ARG BASE_IMAGE=onyx-backend-base:local
 FROM ${BASE_IMAGE}
 
 ENV HF_HOME="/usr/share/huggingface" \
-    HF_HUB_OFFLINE="1"
+    HF_HUB_OFFLINE="1" \
+    TIKTOKEN_CACHE_DIR="/usr/share/tiktoken_cache"
 
 # HF_HUB_OFFLINE=0 override: the ENV above intentionally forces offline mode for the
 # running container, but this build step needs network access to populate the cache
 # it enables offline mode for.
-RUN mkdir -p "$HF_HOME" && \
+RUN mkdir -p "$HF_HOME" "$TIKTOKEN_CACHE_DIR" && \
     HF_HUB_OFFLINE=0 python -c "from tokenizers import Tokenizer; \
-Tokenizer.from_pretrained('nomic-ai/nomic-embed-text-v1')"
+Tokenizer.from_pretrained('nomic-ai/nomic-embed-text-v1')" && \
+    python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')"
 
 # Fail the build (not a prod pod at 3am) if the offline load doesn't actually work.
+# tiktoken has no offline flag to force here, so this only re-proves the HF side;
+# the tiktoken bake is verified by its cache directory being non-empty (next stage).
 RUN python -c "from tokenizers import Tokenizer; \
 Tokenizer.from_pretrained('nomic-ai/nomic-embed-text-v1')"
