@@ -55,20 +55,26 @@ pipeline {
               } else {
                 tagNameB = "backend-$BRANCH_NAME"
               }
+              // Two-stage build: the upstream Dockerfile stays untouched (avoids
+              // silent reversion of EEA-specific bits on the next upstream sync -
+              // see plans/hf-cache-eea-overlay.md), and Dockerfile.eea layers the
+              // HF cache bake on top. Only the overlay image gets pushed.
               try {
                 dir('backend') {
-                  dockerImage = docker.build("$registry:$tagNameB", "--no-cache .")
+                  baseImage = docker.build("$registry:$tagNameB-base", "-f Dockerfile --no-cache .")
+                  dockerImage = docker.build("$registry:$tagNameB", "-f Dockerfile.eea --build-arg BASE_IMAGE=$registry:$tagNameB-base --no-cache .")
                   docker.withRegistry( '', 'eeajenkins' ) {
                   dockerImage.push()
                   }
                 }
               } finally {
-                sh "docker rmi $registry:$tagNameB"
+                sh "docker rmi $registry:$tagNameB || true"
+                sh "docker rmi $registry:$tagNameB-base || true"
               }
             }
           }
           },
-          
+
           "MODEL_SERVER": {
             node(label: 'docker-big-jobs') {
             script {
@@ -78,15 +84,18 @@ pipeline {
               } else {
                 tagNameM = "model_server-$BRANCH_NAME"
               }
+              // Two-stage build: see BACKEND stage comment above.
               try {
                 dir('backend') {
-                  dockerImage = docker.build("$registry:$tagNameM", "-f Dockerfile.model_server --no-cache .")
+                  baseImage = docker.build("$registry:$tagNameM-base", "-f Dockerfile.model_server --no-cache .")
+                  dockerImage = docker.build("$registry:$tagNameM", "-f Dockerfile.model_server.eea --build-arg BASE_IMAGE=$registry:$tagNameM-base --no-cache .")
                   docker.withRegistry( '', 'eeajenkins' ) {
                   dockerImage.push()
                   }
                 }
               } finally {
-                sh "docker rmi $registry:$tagNameM"
+                sh "docker rmi $registry:$tagNameM || true"
+                sh "docker rmi $registry:$tagNameM-base || true"
               }
             }
           }
