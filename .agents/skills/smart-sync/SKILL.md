@@ -92,6 +92,20 @@ The admin sidebar must include a link to the EEA Custom Pages configuration page
    ```
 4. **If missing**: Re-add the section and the route insertion logic.
 
+## Web Connector Customizations (Feature 5)
+
+The `backend/onyx/connectors/web/connector.py` file has 8 heavily customized EEA features that must survive upstream merges:
+1. **SOER Protected Auth**: `eea_global_auth` dict, `set_auth_cookies()`, and cookie injection into `requests` and Playwright contexts.
+2. **Sitemap `lastmod` Filtering**: Check `doc_updated_at` via `_filter_urls_by_timestamp` to avoid re-fetching unchanged documents. (Note: Upstream removed `doc_updated_at` for web docs, but EEA reinstated it for sitemaps).
+3. **CSS Selector Removal**: `remove_by_selector(soup, self.remove_by_selector)` called before text extraction.
+4. **GZip / Protected Sitemap Support**: Fetch sitemaps with `verify=False`, handle `.gz` extraction, and use `list_pages_for_site_eea` fallback.
+5. **Protected PDF Downloads**: Support for `@@download/file` using `io.BytesIO` streaming and `read_pdf_file()`.
+6. **Resource Blocking**: `abort_unnecessary_resources` via `page.route("**/*", ...)`.
+7. **Configurable Timeout**: `self.timeout` parameter passed to playwright.
+8. **Image Removal**: `page.evaluate()` to strip `<img>` tags before DOM parsing.
+
+**Rule**: When merging upstream updates to `connector.py` (especially if upstream refactors `WebConnector` or `SlimConnector`), you MUST surgically re-inject these 8 features into the new structure. Do not just `git checkout eea -- connector.py`, as that will destroy upstream's security/anti-bot fixes. Use the `customization_map.md` as a reference.
+
 ## Constraints
 - Do not delete our custom features.
 - Always use 'Planning Mode' for conflicts involving more than 3 files.

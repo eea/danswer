@@ -126,9 +126,11 @@
 6. `headless chrome flags`: Small fix on headless chrome flags (commit `small fix on headless chrome flags`).
 7. Docker: `added tini in the image` (commit `79c4c6b0`) — tini as PID 1 to properly handle zombie playwright processes.
 
+*Note (v4.3.9 Sync)*: The web connector was heavily refactored upstream to use `SlimConnector` and move Playwright logic to `playwright_fetch.py`. The 8 EEA features (SOER auth, lastmod filtering, remove_by_selector, GZip sitemaps, protected PDF downloads, resource blocking, configurable timeout, image removal) were surgically injected into the new upstream structure while keeping upstream's SSRF and anti-bot improvements intact.
+
 **Dependencies**: `ultimate_sitemap_parser` Python package. `playwright` Python package. `tini` in Dockerfile.
 
-**Sticky Logic** ⚠️: The playwright process-stopping logic (checking `returncode` before `terminate()`) MUST remain. Upstream may update `playwright.py` and remove this guard.
+**Sticky Logic** ⚠️: The playwright process-stopping logic (checking `returncode` before `terminate()`) MUST remain. Upstream may update `playwright.py` and remove this guard. In `connector.py`, the EEA auth block, lastmod filtering, and CSS selector removal must be preserved during upstream merges.
 
 **Key Commits**: `199a9944`, `fa04e343`, `529f3e5e`, `acdead91`, `ab5e4cd2`
 

@@ -1,7 +1,11 @@
+import gzip
+import io
 import ipaddress
 import random
 import socket
 import time
+from datetime import datetime
+from datetime import timezone
 from enum import Enum
 from typing import Any
 from typing import cast
@@ -12,6 +16,8 @@ import requests
 from bs4 import BeautifulSoup
 from playwright.sync_api import BrowserContext
 from playwright.sync_api import Playwright
+from playwright.sync_api import Request
+from playwright.sync_api import Route
 from playwright.sync_api import TimeoutError
 from typing_extensions import override
 from urllib3.exceptions import MaxRetryError
@@ -32,6 +38,9 @@ from onyx.connectors.models import Document
 from onyx.connectors.models import HierarchyNode
 from onyx.connectors.models import SlimDocument
 from onyx.connectors.models import TextSection
+from onyx.db.document import get_documents_updated_at_batch
+from onyx.db.engine.sql_engine import get_session_with_current_tenant
+from onyx.file_processing.extract_file_text import read_pdf_file
 from onyx.file_processing.html_utils import web_html_cleanup
 from onyx.indexing.indexing_heartbeat import IndexingHeartbeatInterface
 from onyx.server.security.models import web_connector_ssrf_enforced
@@ -44,19 +53,30 @@ from onyx.utils.playwright_fetch import DEFAULT_HEADERS
 from onyx.utils.playwright_fetch import DEFAULT_USER_AGENT  # noqa: F401
 from onyx.utils.playwright_fetch import start_playwright
 from onyx.utils.sitemap import list_pages_for_site
+from onyx.utils.eea_utils import (
+    is_pdf_mime_type,
+    list_pages_for_site_eea,
+    list_pages_for_protected_site_eea,
+    soer_login,
+    remove_by_selector,
+)
 from onyx.utils.web_content import extract_pdf_text
 from onyx.utils.web_content import is_pdf_resource
 from shared_configs.configs import MULTI_TENANT
 
 logger = setup_logger()
 
+# EEA: Global auth state for protected site crawling (SOER)
+eea_global_auth: dict[str, Any] = {}
+
 
 class ScrapeSessionContext:
     """Session level context for scraping"""
 
-    def __init__(self, base_url: str, to_visit: list[str]):
+    def __init__(self, base_url: str, to_visit: list[str], lastmod: list[str | None]):
         self.base_url = base_url
         self.to_visit = to_visit
+        self.lastmod = lastmod
         self.visited_links: set[str] = set()
         self.content_hashes: set[int] = set()
 
@@ -94,6 +114,18 @@ JAVASCRIPT_DISABLED_MESSAGE = "You have JavaScript disabled in your browser"
 # Grace period after page navigation to allow bot-detection challenges
 # and SPA content rendering to complete
 PAGE_RENDER_TIMEOUT_MS = 5000
+
+# EEA: Resource types to block during scraping for performance
+WEB_CONNECTOR_RESOURCE_TYPES_TO_BLOCK = [
+    "image",
+    "font",
+    "media",
+    "texttrack",
+    "eventsource",
+    "websocket",
+    "manifest",
+    "other",
+]
 
 
 class WEB_CONNECTOR_VALID_SETTINGS(str, Enum):
@@ -143,7 +175,110 @@ def protected_url_check(url: str) -> None:
             )
 
 
+def abort_unnecessary_resources(route: Route, request: Request) -> None:
+    """EEA: Block unnecessary resource types during scraping for performance."""
+    if request.resource_type in WEB_CONNECTOR_RESOURCE_TYPES_TO_BLOCK:
+        route.abort()
+    else:
+        route.continue_()
+
+
+def _get_datetime_from_last_modified_header(last_modified: str) -> datetime | None:
+    """Parse a Last-Modified or sitemap lastmod string into a UTC datetime."""
+    formats = [
+        "%a, %d %b %Y %H:%M:%S %Z",
+        "%Y-%m-%dT%H:%M:%S%z",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d",
+    ]
+    for fmt in formats:
+        try:
+            dt = datetime.strptime(last_modified, fmt)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            else:
+                dt = dt.astimezone(timezone.utc)
+            return dt
+        except (ValueError, TypeError):
+            pass
+    return None
+
+
+def _filter_urls_by_timestamp(
+    urls_data: dict[str, str | None],
+) -> tuple[dict[str, str | None], int, int]:
+    """Filter URLs based on doc_updated_at timestamps to skip unchanged documents.
+
+    Compares sitemap lastmod timestamps with existing document timestamps.
+    URLs are included if they're new, have no timestamp, or have a changed timestamp.
+    """
+    if not urls_data:
+        return urls_data, 0, 0
+
+    try:
+        url_list = list(urls_data.keys())
+        with get_session_with_current_tenant() as db_session:
+            existing_timestamps = get_documents_updated_at_batch(url_list, db_session)
+
+        filtered_urls: dict[str, str | None] = {}
+        for url, lastmod_str in urls_data.items():
+            existing_timestamp = existing_timestamps.get(url)
+
+            if existing_timestamp is None:
+                filtered_urls[url] = lastmod_str
+            elif lastmod_str is None:
+                filtered_urls[url] = lastmod_str
+            else:
+                sitemap_timestamp = _get_datetime_from_last_modified_header(lastmod_str)
+                if sitemap_timestamp is None:
+                    filtered_urls[url] = lastmod_str
+                elif sitemap_timestamp != existing_timestamp:
+                    filtered_urls[url] = lastmod_str
+
+        original_count = len(urls_data)
+        filtered_count = len(filtered_urls)
+        skipped_count = original_count - filtered_count
+
+        if skipped_count > 0:
+            logger.info(
+                "Sitemap optimization: Filtered out %s unchanged URLs "
+                "out of %s total (will scrape %s URLs)",
+                skipped_count,
+                original_count,
+                filtered_count,
+            )
+        else:
+            logger.info(
+                "Sitemap optimization: All %s URLs are new or modified, no URLs filtered",
+                original_count,
+            )
+
+        return filtered_urls, original_count, filtered_count
+
+    except Exception as e:
+        original_count = len(urls_data)
+        logger.warning(
+            "Failed to filter URLs by timestamp: %s. Proceeding with all %s URLs.",
+            e,
+            original_count,
+        )
+        return urls_data, original_count, original_count
+
+
+def set_auth_cookies() -> dict[str, str]:
+    """EEA: Return auth cookies for protected site requests."""
+    cookies: dict[str, str] = {}
+    if eea_global_auth.get("login") is not None:
+        cookies["__ac__eea"] = eea_global_auth["login"]["__ac__eea"]
+        cookies["auth_token"] = eea_global_auth["login"]["auth_token"]
+    return cookies
+
+
 def check_internet_connection(url: str) -> None:
+    # EEA: Skip validation for protected site URLs
+    if url.endswith("protected=true"):
+        return
+
     # SSRF guard on the fetch primitive itself, so no call site can reach an
     # internal target. No-op unless SSRF protection is at its strictest level.
     protected_url_check(url)
@@ -243,35 +378,61 @@ def get_internal_links(
     return internal_links
 
 
-def extract_urls_from_sitemap(sitemap_url: str) -> list[str]:
+def extract_urls_from_sitemap(sitemap_url: str) -> dict[str, str | None]:
+    """Parse a sitemap and return a dict of URL -> lastmod.
+
+    EEA: Supports gzip sitemaps, protected-site auth, and fallback to
+    ultimate_sitemap_parser via list_pages_for_site_eea().
+    """
     # SSRF guard. This fetch runs in __init__, before validation, so the check
     # must live here. Placed before the try so it surfaces as the SSRF error
     # rather than a wrapped sitemap-parse failure.
-    protected_url_check(sitemap_url)
+    if not sitemap_url.endswith("protected=true"):
+        protected_url_check(sitemap_url)
 
-    # Note: brotli compression is handled automatically by the requests library
-    # as long as the brotli package is installed in the venv.
     try:
         response = requests.get(
-            sitemap_url, headers=DEFAULT_HEADERS, timeout=REQUEST_TIMEOUT_SECONDS
+            sitemap_url, verify=False, headers=DEFAULT_HEADERS, timeout=REQUEST_TIMEOUT_SECONDS
         )
         response.raise_for_status()
-        soup = BeautifulSoup(response.content, "html.parser")
-        urls = [
-            _ensure_absolute_url(sitemap_url, loc_tag.text)
-            for loc_tag in soup.find_all("loc")
-        ]
 
-        if len(urls) == 0 and len(soup.find_all("urlset")) == 0:
+        # EEA: Handle gzip-compressed sitemaps
+        if sitemap_url.endswith(".gz"):
+            with gzip.GzipFile(fileobj=io.BytesIO(response.content)) as f:
+                content = f.read()
+        else:
+            content = response.content
+
+        urls_data: dict[str, str | None] = {}
+        soup = BeautifulSoup(content, "html.parser")
+        for url_tag in soup.find_all("url"):
+            loc_tag = url_tag.find("loc")
+            if not loc_tag or not loc_tag.text:
+                continue
+            lastmod_tag = url_tag.find("lastmod")
+            url = _ensure_absolute_url(sitemap_url, loc_tag.text)
+            urls_data[url] = lastmod_tag.text if lastmod_tag else None
+
+        # EEA: Handle protected sitemaps
+        if "protected=true" in sitemap_url:
+            eea_auth = soer_login()
+            eea_global_auth["login"] = eea_auth
+            urls_data = list_pages_for_protected_site_eea(sitemap_url, eea_auth)
+
+        if len(urls_data) == 0 and len(soup.find_all("urlset")) == 0:
             # the given url doesn't look like a sitemap, let's try to find one
-            urls = list_pages_for_site(sitemap_url)
+            urls_data = list_pages_for_site(sitemap_url)
 
-        if len(urls) == 0:
+        # EEA: Fallback to ultimate_sitemap_parser
+        if len(urls_data) == 0:
+            urls_data = list_pages_for_site_eea(sitemap_url)
+
+        if len(urls_data) == 0:
             raise ValueError(
                 f"No URLs found in sitemap {sitemap_url}. Try using the 'single' or 'recursive' scraping options instead."
             )
 
-        return urls
+        return urls_data
     except requests.RequestException as e:
         raise RuntimeError(f"Failed to fetch sitemap from {sitemap_url}: {e}")
     except ValueError as e:
@@ -337,6 +498,27 @@ def _handle_cookies(context: BrowserContext, url: str) -> None:
                 logger.debug(
                     "Failed to add cookie %s for %s: %s", cookie["name"], domain, e
                 )
+        # EEA: Inject auth cookies for protected sites
+        if eea_global_auth.get("login") is not None:
+            try:
+                context.add_cookies(
+                    [
+                        {
+                            "name": "__ac__eea",
+                            "value": eea_global_auth["login"]["__ac__eea"],
+                            "domain": "www.eea.europa.eu",
+                            "path": "/",
+                        },
+                        {
+                            "name": "auth_token",
+                            "value": eea_global_auth["login"]["auth_token"],
+                            "domain": "www.eea.europa.eu",
+                            "path": "/",
+                        },
+                    ]
+                )
+            except Exception as e:
+                logger.debug("Failed to add EEA auth cookies: %s", e)
     except Exception:
         logger.exception(
             "Unexpected error while handling cookies for Web Connector with URL %s", url
@@ -353,23 +535,47 @@ class WebConnector(LoadConnector, SlimConnector):
         mintlify_cleanup: bool = True,  # Mostly ok to apply to other websites as well
         batch_size: int = INDEX_BATCH_SIZE,
         scroll_before_scraping: bool = False,
+        remove_by_selector: list[str] | None = None,
+        skip_unchanged_documents: bool = False,
+        timeout: int = 30000,
         **kwargs: Any,  # noqa: ARG002
     ) -> None:
         self.mintlify_cleanup = mintlify_cleanup
         self.batch_size = batch_size
         self.recursive = False
         self.scroll_before_scraping = scroll_before_scraping
+        self.remove_by_selector = remove_by_selector or []
+        self.timeout = timeout or 30000
         self.web_connector_type = web_connector_type
+        self.skip_unchanged_documents = skip_unchanged_documents
+        self.original_url_count = 0
+        self.filtered_url_count = 0
+
+        if not isinstance(self.remove_by_selector, list):
+            self.remove_by_selector = []
+
         if web_connector_type == WEB_CONNECTOR_VALID_SETTINGS.RECURSIVE.value:
             self.recursive = True
             self.to_visit_list = [_ensure_valid_url(base_url)]
+            self.lastmod: list[str | None] = [None]
             return
 
         elif web_connector_type == WEB_CONNECTOR_VALID_SETTINGS.SINGLE.value:
             self.to_visit_list = [_ensure_valid_url(base_url)]
+            self.lastmod = [None]
 
         elif web_connector_type == WEB_CONNECTOR_VALID_SETTINGS.SITEMAP:
-            self.to_visit_list = extract_urls_from_sitemap(_ensure_valid_url(base_url))
+            urls_data = extract_urls_from_sitemap(_ensure_valid_url(base_url))
+            # EEA: Apply timestamp-based filtering to skip unchanged documents
+            if self.skip_unchanged_documents:
+                urls_data, self.original_url_count, self.filtered_url_count = (
+                    _filter_urls_by_timestamp(urls_data)
+                )
+            else:
+                self.original_url_count = len(urls_data)
+                self.filtered_url_count = len(urls_data)
+            self.to_visit_list = list(urls_data.keys())
+            self.lastmod = list(urls_data.values())
 
         elif web_connector_type == WEB_CONNECTOR_VALID_SETTINGS.UPLOAD:
             # Explicitly check if running in multi-tenant mode to prevent potential security risks
@@ -382,6 +588,7 @@ class WebConnector(LoadConnector, SlimConnector):
                 "This is not a UI supported Web Connector flow, are you sure you want to do this?"
             )
             self.to_visit_list = _read_urls_file(base_url)
+            self.lastmod = [None] * len(self.to_visit_list)
 
         else:
             raise ValueError(
@@ -397,6 +604,7 @@ class WebConnector(LoadConnector, SlimConnector):
         self,
         index: int,
         initial_url: str,
+        lastmod: str | None,
         session_ctx: ScrapeSessionContext,
         slim: bool = False,
     ) -> ScrapeResult:
@@ -419,16 +627,50 @@ class WebConnector(LoadConnector, SlimConnector):
         _handle_cookies(session_ctx.playwright_context, initial_url)
 
         # First do a HEAD request to check content type without downloading the entire content
+        auth_cookies = set_auth_cookies()
         head_response = requests.head(
             initial_url,
             headers=DEFAULT_HEADERS,
+            cookies=auth_cookies,
             allow_redirects=True,
-            timeout=REQUEST_TIMEOUT_SECONDS,
+            timeout=(5, 10),
         )
+        # EEA: For protected file downloads, use GET with streaming
+        if eea_global_auth.get("login") is not None and "@@download/file" in initial_url:
+            head_response = requests.get(
+                initial_url,
+                headers=DEFAULT_HEADERS,
+                cookies=auth_cookies,
+                allow_redirects=True,
+                stream=True,
+            )
         content_type = head_response.headers.get("content-type")
         is_pdf = is_pdf_resource(initial_url, content_type)
 
-        if is_pdf:
+        # EEA: Handle non-PDF protected file downloads (@@download/file)
+        if not is_pdf and "@@download/file" in initial_url:
+            response = requests.get(
+                initial_url, headers=DEFAULT_HEADERS, cookies=auth_cookies
+            )
+            page_text = response.text
+            last_modified = response.headers.get("Last-Modified") or lastmod
+            result.doc = Document(
+                id=initial_url,
+                sections=[TextSection(link=initial_url, text=page_text)],
+                source=DocumentSource.WEB,
+                semantic_identifier=initial_url.split("/")[
+                    -3 if "@@download/file" in initial_url else -1
+                ],
+                metadata={},
+                doc_updated_at=(
+                    _get_datetime_from_last_modified_header(last_modified)
+                    if last_modified
+                    else None
+                ),
+            )
+            return result
+
+        if is_pdf or initial_url.lower().endswith(".pdf"):
             if slim:
                 result.doc = Document(
                     id=initial_url,
@@ -440,36 +682,45 @@ class WebConnector(LoadConnector, SlimConnector):
                 return result
 
             response = requests.get(
-                initial_url, headers=DEFAULT_HEADERS, timeout=REQUEST_TIMEOUT_SECONDS
+                initial_url,
+                headers=DEFAULT_HEADERS,
+                cookies=auth_cookies,
+                timeout=REQUEST_TIMEOUT_SECONDS,
             )
-            page_text, metadata = extract_pdf_text(response.content)
+            page_text, metadata, images = read_pdf_file(
+                file=io.BytesIO(response.content)
+            )
+            last_modified = response.headers.get("Last-Modified") or lastmod
+            title = metadata.get("Title") or metadata.get("title")
 
-            # doc_updated_at is intentionally left unset for web documents. The HTTP
-            # Last-Modified header is an unreliable change signal: CDN/SSR origins
-            # (e.g. Vercel ISR) regenerate it on every fetch, so it advances on each
-            # crawl even when content is identical. A spurious advance bypasses the
-            # content-hash dedup gate in the indexing pipeline, forcing pointless
-            # re-indexing. The content hash is the authoritative change signal for
-            # web docs (see DocumentBase.content_hash).
             result.doc = Document(
                 id=initial_url,
                 sections=[TextSection(link=initial_url, text=page_text)],
                 source=DocumentSource.WEB,
-                semantic_identifier=initial_url.rstrip("/").split("/")[-1]
-                or initial_url,
+                semantic_identifier=title
+                or initial_url.split("/")[
+                    -3 if "@@download/file" in initial_url else -1
+                ],
                 metadata=metadata,
+                doc_updated_at=(
+                    _get_datetime_from_last_modified_header(last_modified)
+                    if last_modified
+                    else None
+                ),
             )
 
             return result
 
         page = session_ctx.playwright_context.new_page()
+        # EEA: Block unnecessary resources for performance
+        page.route("**/*", abort_unnecessary_resources)
         try:
             # Use "commit" instead of "domcontentloaded" to avoid hanging on bot-detection pages
             # that may never fire domcontentloaded. "commit" waits only for navigation to be
             # committed (response received), then we add a short wait for initial rendering.
             page_response = page.goto(
                 initial_url,
-                timeout=30000,  # 30 seconds
+                timeout=self.timeout,
                 wait_until="commit",  # Wait for navigation to commit
             )
 
@@ -490,6 +741,24 @@ class WebConnector(LoadConnector, SlimConnector):
             except TimeoutError:
                 pass
 
+            # EEA: Remove images from DOM before content extraction
+            page.evaluate("""
+                () => {
+                    const images = document.querySelectorAll('img');
+                    images.forEach(img => img.remove());
+                }
+            """)
+
+            try:
+                response_last_modified = (
+                    page_response.header_value("Last-Modified")
+                    if page_response
+                    else None
+                )
+            except Exception:
+                response_last_modified = None
+
+            last_modified = response_last_modified or lastmod
             final_url = page.url
             if final_url != initial_url:
                 protected_url_check(final_url)
@@ -548,6 +817,9 @@ class WebConnector(LoadConnector, SlimConnector):
             content = page.content()
             soup = BeautifulSoup(content, "html.parser")
 
+            # EEA: Remove elements matching CSS selectors before indexing
+            remove_by_selector(soup, self.remove_by_selector)
+
             if self.recursive:
                 internal_links = get_internal_links(
                     session_ctx.base_url, initial_url, soup
@@ -555,6 +827,7 @@ class WebConnector(LoadConnector, SlimConnector):
                 for link in internal_links:
                     if link not in session_ctx.visited_links:
                         session_ctx.to_visit.append(link)
+                        session_ctx.lastmod.append(None)
 
             if page_response and str(page_response.status)[0] in ("4", "5"):
                 session_ctx.last_error = f"Skipped indexing {initial_url} due to HTTP {page_response.status} response"
@@ -606,15 +879,17 @@ class WebConnector(LoadConnector, SlimConnector):
 
             session_ctx.content_hashes.add(hashed_text)
 
-            # doc_updated_at is intentionally left unset — see the comment in the PDF
-            # branch above. The HTTP Last-Modified header is an unreliable change
-            # signal for web content, so we rely on the content hash for dedup.
             result.doc = Document(
                 id=initial_url,
                 sections=[TextSection(link=initial_url, text=parsed_html.cleaned_text)],
                 source=DocumentSource.WEB,
                 semantic_identifier=parsed_html.title or initial_url,
                 metadata={},
+                doc_updated_at=(
+                    _get_datetime_from_last_modified_header(last_modified)
+                    if last_modified
+                    else None
+                ),
             )
         finally:
             page.close()
@@ -629,19 +904,29 @@ class WebConnector(LoadConnector, SlimConnector):
         Playwright is used in all modes — slim skips content extraction only.
         """
 
+        # EEA: Check if URLs were filtered vs never existed
+        if self.original_url_count > 0 and self.filtered_url_count == 0:
+            logger.info(
+                "No URLs to visit after filtering. All %s "
+                "documents are up-to-date. Skipping connector execution.",
+                self.original_url_count,
+            )
+            return
+
         if not self.to_visit_list:
             raise ValueError("No URLs to visit")
 
         base_url = self.to_visit_list[0]  # For the recursive case
         check_internet_connection(base_url)  # make sure we can connect to the base url
 
-        session_ctx = ScrapeSessionContext(base_url, self.to_visit_list)
+        session_ctx = ScrapeSessionContext(base_url, self.to_visit_list, self.lastmod)
         session_ctx.initialize()
 
         batch: list[Document | SlimDocument | HierarchyNode] = []
 
         while session_ctx.to_visit:
             initial_url = session_ctx.to_visit.pop()
+            lastmod = session_ctx.lastmod.pop() if session_ctx.lastmod else None
             if initial_url in session_ctx.visited_links:
                 continue
             session_ctx.visited_links.add(initial_url)
@@ -675,7 +960,9 @@ class WebConnector(LoadConnector, SlimConnector):
                     time.sleep(delay)
 
                 try:
-                    result = self._do_scrape(index, initial_url, session_ctx, slim=slim)
+                    result = self._do_scrape(
+                        index, initial_url, lastmod, session_ctx, slim=slim
+                    )
                     if result.retry:
                         continue
 
@@ -728,11 +1015,28 @@ class WebConnector(LoadConnector, SlimConnector):
         yield from self.load_from_state(slim=True)  # ty: ignore[invalid-yield]
 
     def validate_connector_settings(self) -> None:
+        # EEA: Check if URLs were filtered vs never existed
+        if self.original_url_count > 0 and self.filtered_url_count == 0:
+            logger.info(
+                "Sitemap connector has no URLs to visit after filtering. "
+                "All %s documents are up-to-date.",
+                self.original_url_count,
+            )
+            return None
+
         # Make sure we have at least one valid URL to check
         if not self.to_visit_list:
             raise ConnectorValidationError(
                 "No URL configured. Please provide at least one valid URL."
             )
+
+        # Recursive/sitemap defer page fetches to index time; skip the connectivity
+        # probe for them.
+        if (
+            self.web_connector_type == WEB_CONNECTOR_VALID_SETTINGS.SITEMAP.value
+            or self.web_connector_type == WEB_CONNECTOR_VALID_SETTINGS.RECURSIVE.value
+        ):
+            return None
 
         # We'll just test the first URL for connectivity and correctness
         test_url = self.to_visit_list[0]
@@ -748,14 +1052,6 @@ class WebConnector(LoadConnector, SlimConnector):
         except ConnectionError as e:
             # Typically DNS or other network issues
             raise ConnectorValidationError(str(e))
-
-        # Recursive/sitemap defer page fetches to index time; skip the connectivity
-        # probe for them (the SSRF check above still ran).
-        if (
-            self.web_connector_type == WEB_CONNECTOR_VALID_SETTINGS.SITEMAP.value
-            or self.web_connector_type == WEB_CONNECTOR_VALID_SETTINGS.RECURSIVE.value
-        ):
-            return None
 
         # Make a quick request to see if we get a valid response. This re-runs the
         # SSRF check internally (intentional, cheap defense-in-depth).
