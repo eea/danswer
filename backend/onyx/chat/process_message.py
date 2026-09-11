@@ -766,6 +766,16 @@ def build_chat_turn(
         )
         chat_history.append(user_message)
 
+    # EEA: store turn metadata so eea_set_turn_output() can log it later.
+    # Placed after the if/else so it always runs for both new messages and regenerations.
+    from onyx.utils.eea_utils import eea_start_turn
+    eea_start_turn(
+        user_message=user_message,
+        user_email=user.email if (user and user.email) else "anon",
+        persona_name=persona.name if persona else "Default",
+        session_id=str(chat_session.id),
+    )
+
     # Collect file IDs for the file reader tool *before* summary truncation so
     # that files attached to older (summarized-away) messages are still accessible
     # via the FileReaderTool.
@@ -1633,6 +1643,7 @@ def _stream_chat_turn(
         )
         for pre_run_packet in pre_run_packets:
             stream_buffer.append_line(get_json_line(pre_run_packet.model_dump()))
+        
         # _run_models starts the writer thread before returning; from that point
         # the writer owns the fence reset.
         run_stream = _run_models(
@@ -1902,6 +1913,10 @@ def llm_loop_completion_handle(
             llm=llm,
             compression_params=compression_params,
         )
+
+    # EEA: record final answer in the active tracing span
+    from onyx.utils.eea_utils import eea_set_turn_output
+    eea_set_turn_output(attached_message)
 
 
 _CITATION_LINK_START_PATTERN = re.compile(r"\s*\[\[\d+\]\]\(")
