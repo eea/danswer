@@ -7,16 +7,12 @@ from urllib import robotparser
 from sqlalchemy.orm import Session
 import xml.etree.ElementTree as ET
 
-from fastapi import Depends
 from langfuse import Langfuse
 from usp.tree import sitemap_tree_for_homepage
 
-from onyx.auth.users import current_curator_or_admin_user
-from onyx.db.engine.sql_engine import get_session
-from onyx.db.enums import ConnectorCredentialPairStatus
-from onyx.db.models import ChatMessage, User
-from onyx.configs.constants import DANSWER_API_KEY_PREFIX, DocumentSource
-from onyx.server.documents.models import IndexingStatusRequest
+from onyx.db.eea_connector_health import get_started_cc_pairs_in_repeated_error_state
+from onyx.db.models import ChatMessage
+from onyx.configs.constants import DANSWER_API_KEY_PREFIX
 from onyx.server.models import StatusResponse
 from onyx.utils.logger import setup_logger
 
@@ -410,29 +406,19 @@ def remove_by_selector(soup, selector):
             for tag in soup.select(s):
                 tag.decompose()
 
-def get_connectors_health(
-    user: User = Depends(current_curator_or_admin_user),
-    db_session: Session = Depends(get_session),
-) -> StatusResponse:
-    from onyx.server.documents.connector import get_connector_indexing_status
-    mock_request = IndexingStatusRequest()
-    indexing_status = get_connector_indexing_status(request = mock_request, user = user, db_session = db_session)
+def get_connectors_health(db_session: Session) -> StatusResponse:
+    """Fails if any started connector is in Onyx's repeated error state
+    (several consecutive failed index attempts). Paused connectors are ignored."""
+    failed_cc_pairs = get_started_cc_pairs_in_repeated_error_state(db_session)
+    if not failed_cc_pairs:
+        return StatusResponse(success=True, message="ok")
 
-    success = True
-    message = "ok"
-
-    error_cnt = 0
-    connector_cnt = 0
-    for connector_status in indexing_status:
-        if connector_status.cc_pair_status == ConnectorCredentialPairStatus.ACTIVE and \
-            connector_status.connector.source == DocumentSource.WEB and \
-            connector_status.connector.refresh_freq <= 86400:
-            connector_cnt += 1
-            if connector_status.in_repeated_error_state:
-                error_cnt += 1
-    if connector_cnt > 0:
-        if error_cnt == connector_cnt:
-            success = False
-            message = "Indexing failed"
-
-    return StatusResponse(success=success, message=message)
+    failed_descriptions = [
+        f"{cc_pair.name or cc_pair.connector.name} "
+        f"(cc_pair_id={cc_pair.id}, source={cc_pair.connector.source.value})"
+        for cc_pair in failed_cc_pairs
+    ]
+    return StatusResponse(
+        success=False,
+        message=f"Indexing failed: {'; '.join(failed_descriptions)}",
+    )

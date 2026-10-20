@@ -26,8 +26,6 @@ from fastapi import Depends
 from sqlalchemy.orm import Session
 from onyx.db.engine.sql_engine import get_session
 #from shared_configs.contextvars import get_current_tenant_id
-from onyx.auth.users import current_curator_or_admin_user
-from onyx.db.models import User
 from onyx.server.security.store import get_security_settings
 
 router = APIRouter()
@@ -70,12 +68,11 @@ async def get_auth_type(response: Response) -> AuthTypeResponse:
 def get_version() -> VersionResponse:
     return VersionResponse(backend_version=__version__)
 
-@router.get("/connectors_health")
+@router.get("/connectors_health", tags=PUBLIC_API_TAGS)
 def connectors_healthcheck(
-    user: User = Depends(current_curator_or_admin_user),
     db_session: Session = Depends(get_session),
 ) -> StatusResponse:
-    return get_connectors_health(user=user, db_session=db_session)
+    return get_connectors_health(db_session=db_session)
 
 @router.get("/versions", tags=PUBLIC_API_TAGS)
 def get_versions() -> AllVersions:
