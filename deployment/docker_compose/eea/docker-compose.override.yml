@@ -17,6 +17,7 @@ services:
       - cache
     volumes:
       - ../../../backend/onyx:/app/onyx
+      - ../../../backend/scripts:/app/scripts
       - ../../../backend/alembic:/app/alembic
       - ../../../backend/shared_configs:/app/shared_configs
     environment:
