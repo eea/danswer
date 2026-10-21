@@ -83,7 +83,13 @@ RUN groupadd -g 1001 onyx && \
 # libxmlsec1-openssl is the runtime counterpart to the build-time libxmlsec1-dev
 # postgresql-client for easy manual tests
 # procps so kubernetes exec sessions can use ps aux for debugging
+# Upgrade libc6 and openssl to patch critical CVEs (CVE-2026-5450, CVE-2026-75803, CVE-2026-34182)
 RUN apt-get update && \
+    apt-get --only-upgrade install -y \
+        libc6 \
+        openssl \
+        libssl3t64 \
+        && \
     apt-get install -y \
         curl \
         zip \
