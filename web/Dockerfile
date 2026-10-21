@@ -4,6 +4,9 @@
 ARG BASE_IMAGE_REGISTRY=docker.io
 FROM ${BASE_IMAGE_REGISTRY}/library/node:24-alpine@sha256:d1b3b4da11eefd5941e7f0b9cf17783fc99d9c6fc34884a665f40a06dbdfc94f AS base
 
+# Upgrade OpenSSL libraries to patch critical CVEs (CVE-2026-63073, CVE-2026-34182, CVE-2026-75803)
+RUN apk upgrade --no-cache libcrypto3 libssl3
+
 LABEL com.onyx.maintainer="founders@onyx.app"
 LABEL com.onyx.description="This image is the web/frontend container of Onyx which \
 contains code for both the Community and Enterprise editions of Onyx. If you do not \
