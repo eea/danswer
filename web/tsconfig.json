@@ -52,6 +52,11 @@
   "exclude": [
     "node_modules",
     "lib/opal",
-    "lib/shared"
+    "lib/shared",
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "**/*.spec.ts",
+    "**/*.spec.tsx",
+    "tests"
   ]
 }
