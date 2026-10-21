@@ -11,6 +11,18 @@ ENV ONYX_RUNNING_IN_DOCKER="true" \
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.25@sha256:1e3808aa9023d0980e7c15b1fa7c1ac16ff35925780cf5c459858b2d693f01a9 /uv /uvx /bin/
 
+# Upgrade glibc and openssl, remove unused perl-base to patch critical CVEs (CVE-2026-5450, CVE-2026-75803, CVE-2026-34182, CVE-2026-8376, CVE-2026-42496, CVE-2026-12087, CVE-2026-13221)
+RUN apt-get update && \
+    apt-get --only-upgrade install -y \
+        libc6 \
+        openssl \
+        libssl3t64 \
+        && \
+    apt-get remove -y --allow-remove-essential perl-base && \
+    apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/* && \
+    apt-get clean
+
 RUN mkdir -p /app/.cache/huggingface
 
 COPY ./requirements/model_server.txt /tmp/requirements.txt
