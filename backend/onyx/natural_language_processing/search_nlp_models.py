@@ -44,6 +44,7 @@ from onyx.natural_language_processing.constants import DEFAULT_VERTEX_MODEL
 from onyx.natural_language_processing.constants import DEFAULT_VOYAGE_MODEL
 from onyx.natural_language_processing.constants import EmbeddingModelTextType
 from onyx.natural_language_processing.exceptions import CohereBillingLimitError
+from onyx.natural_language_processing.exceptions import ModelServerConcurrencyLimitError
 from onyx.natural_language_processing.exceptions import ModelServerRateLimitError
 from onyx.natural_language_processing.utils import get_tokenizer
 from onyx.natural_language_processing.utils import tokenizer_trim_content
@@ -905,6 +906,11 @@ class EmbeddingModel:
             if response.status_code == 429:
                 raise ModelServerRateLimitError(response.text)
 
+            # signify that the server is saturated (e.g. Uvicorn concurrency
+            # limit); retried with backoff below
+            if response.status_code == 503:
+                raise ModelServerConcurrencyLimitError(response.text)
+
             response.raise_for_status()
             return response
 
@@ -929,20 +935,30 @@ class EmbeddingModel:
                 reraise=True,
             )(final_make_request_func)
 
-        response: Response | None = None
+        # 503 means the model server is saturated; the in-flight queue drains
+        # on its own, so back off exponentially instead of failing the batch
+        final_make_request_func = retry(
+            retry=retry_if_exception_type(ModelServerConcurrencyLimitError),
+            stop=stop_after_attempt(_RETRY_TRIES),
+            wait=wait_exponential(multiplier=_RETRY_DELAY, max=30) + wait_random(0, 1),
+            reraise=True,
+        )(final_make_request_func)
 
         try:
             response = final_make_request_func()
             return EmbedResponse(**response.json())
         except requests.HTTPError as e:
-            if not response:
-                raise HTTPError("HTTP error occurred - response is None.") from e
+            error_response = e.response
+            if error_response is None:
+                raise HTTPError(f"HTTP error occurred: {e}") from e
 
             try:
-                error_detail = response.json().get("detail", str(e))
+                error_detail = error_response.json().get("detail", str(e))
             except Exception:
-                error_detail = response.text
-            raise HTTPError(f"HTTP error occurred: {error_detail}") from e
+                error_detail = error_response.text
+            raise HTTPError(
+                f"HTTP error occurred: {error_response.status_code} {error_detail}"
+            ) from e
         except requests.RequestException as e:
             raise HTTPError(f"Request failed: {str(e)}") from e
 
