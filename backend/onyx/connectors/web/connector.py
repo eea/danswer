@@ -274,7 +274,7 @@ def set_auth_cookies() -> dict[str, str]:
     return cookies
 
 
-def check_internet_connection(url: str) -> None:
+def check_internet_connection(url: str, timeout_seconds: float = 5) -> None:
     # EEA: Skip validation for protected site URLs
     if url.endswith("protected=true"):
         return
@@ -288,7 +288,7 @@ def check_internet_connection(url: str) -> None:
         session = requests.Session()
         session.headers.update(DEFAULT_HEADERS)
 
-        response = session.get(url, timeout=5, allow_redirects=True)
+        response = session.get(url, timeout=timeout_seconds, allow_redirects=True)
 
         response.raise_for_status()
     except requests.exceptions.HTTPError as e:
@@ -594,6 +594,11 @@ class WebConnector(LoadConnector, SlimConnector):
             raise ValueError(
                 "Invalid Web Connector Config, must choose a valid type between: "
             )
+
+    @property
+    def _connection_check_timeout_seconds(self) -> float:
+        # EEA: honor the configured timeout (ms) for the pre-flight check, min 5s
+        return max(5.0, float(self.timeout) / 1000)
 
     def load_credentials(self, credentials: dict[str, Any]) -> dict[str, Any] | None:
         if credentials:
@@ -917,7 +922,8 @@ class WebConnector(LoadConnector, SlimConnector):
             raise ValueError("No URLs to visit")
 
         base_url = self.to_visit_list[0]  # For the recursive case
-        check_internet_connection(base_url)  # make sure we can connect to the base url
+        # make sure we can connect to the base url
+        check_internet_connection(base_url, self._connection_check_timeout_seconds)
 
         session_ctx = ScrapeSessionContext(base_url, self.to_visit_list, self.lastmod)
         session_ctx.initialize()
@@ -1056,7 +1062,7 @@ class WebConnector(LoadConnector, SlimConnector):
         # Make a quick request to see if we get a valid response. This re-runs the
         # SSRF check internally (intentional, cheap defense-in-depth).
         try:
-            check_internet_connection(test_url)
+            check_internet_connection(test_url, self._connection_check_timeout_seconds)
         except Exception as e:
             err_str = str(e)
             if "401" in err_str:
